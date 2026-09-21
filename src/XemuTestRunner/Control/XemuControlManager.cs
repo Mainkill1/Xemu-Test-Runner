@@ -20,6 +20,7 @@ public sealed class XemuControlManager : IDisposable
     private DateTimeOffset? _recordingStartedUtc;
     private DateTimeOffset? _recordingLastActionEndUtc;
     private string? _recordingSavedFile;
+    private bool _quitRequested;
     private readonly List<JobStep> _recordedSteps = [];
 
     public XemuControlManager(XemuControlOptions options) => _options = options;
@@ -76,7 +77,7 @@ public sealed class XemuControlManager : IDisposable
         {
             _session?.Dispose();
             _session = new ActiveSession(
-                process.Id,
+                process,
                 _options.QmpHost,
                 qmpPort,
                 resultDirectory,
@@ -89,6 +90,7 @@ public sealed class XemuControlManager : IDisposable
             _recordingLastActionEndUtc = null;
             _recordingSavedFile = null;
             _recordedSteps.Clear();
+            _quitRequested = false;
         }
     }
 
@@ -212,6 +214,38 @@ public sealed class XemuControlManager : IDisposable
             _paused = false;
             _resumeSignal.TrySetResult(true);
             _resumeSignal = CompletedSignal();
+        }
+    }
+
+    public async Task QuitAsync(CancellationToken cancellationToken)
+    {
+        var session = GetSession();
+        var client = new XemuQmpClient(session.QmpHost, session.QmpPort);
+        lock (_gate)
+            _quitRequested = true;
+        try
+        {
+            _ = await client.ExecuteAsync(
+                "quit",
+                null,
+                TimeSpan.FromMilliseconds(_options.ConnectTimeoutMs),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (IOException)
+        {
+            // xemu commonly closes QMP as part of a successful quit without
+            // returning the command result. Only accept that disconnect after
+            // the owned target process has actually exited.
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            deadline.CancelAfter(_options.ConnectTimeoutMs);
+            try
+            {
+                await session.Process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new IOException("QMP disconnected after quit, but xemu did not exit within the control timeout.");
+            }
         }
     }
 
@@ -438,6 +472,10 @@ public sealed class XemuControlManager : IDisposable
                     await ResumeAsync(cancellationToken).ConfigureAwait(false);
                     break;
 
+                case "quit":
+                    await QuitAsync(cancellationToken).ConfigureAwait(false);
+                    break;
+
                 case "require_input":
                     if (!Snapshot().InputAvailable)
                         throw new InvalidOperationException("Plan requires controller input but the configured input provider is unavailable.");
@@ -464,7 +502,13 @@ public sealed class XemuControlManager : IDisposable
             _recording = false;
             _recordingStartedUtc = null;
             _recordingLastActionEndUtc = null;
+            _quitRequested = false;
         }
+    }
+
+    public bool QuitRequested
+    {
+        get { lock (_gate) return _quitRequested; }
     }
 
     public void Dispose()
@@ -482,19 +526,128 @@ public sealed class XemuControlManager : IDisposable
         await _screenshotGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var client = new XemuQmpClient(session.QmpHost, session.QmpPort);
-            _ = await client.ExecuteAsync(
-                "screendump",
-                new { filename = path, format = "png" },
-                TimeSpan.FromMilliseconds(_options.ScreenshotTimeoutMs),
-                cancellationToken).ConfigureAwait(false);
+            var provider = _options.ScreenshotProvider.Trim().ToLowerInvariant();
+            if (provider != "external")
+            {
+                try
+                {
+                    var client = new XemuQmpClient(session.QmpHost, session.QmpPort);
+                    _ = await client.ExecuteAsync(
+                        "screendump",
+                        new { filename = path, format = "png" },
+                        TimeSpan.FromMilliseconds(_options.ScreenshotTimeoutMs),
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (QmpCommandException ex) when (provider == "auto")
+                {
+                    if (string.IsNullOrWhiteSpace(_options.ScreenshotExecutable))
+                    {
+                        throw new InvalidOperationException(
+                            "This xemu build does not provide QMP screenshots and no external screenshot command is configured.",
+                            ex);
+                    }
 
-            if (!File.Exists(path))
-                throw new IOException("xemu reported screenshot completion but the PNG file was not created.");
+                    await CaptureExternalImageAsync(session, path, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                await CaptureExternalImageAsync(session, path, cancellationToken).ConfigureAwait(false);
+            }
+
+            await ValidatePngAsync(path, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             _screenshotGate.Release();
+        }
+    }
+
+    private static async Task ValidatePngAsync(string path, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path))
+            throw new IOException("Screenshot capture completed but the PNG file was not created.");
+
+        var signature = new byte[8];
+        await using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            signature.Length,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        try
+        {
+            await stream.ReadExactlyAsync(signature, cancellationToken).ConfigureAwait(false);
+        }
+        catch (EndOfStreamException)
+        {
+            throw new InvalidDataException("Screenshot command did not create a valid PNG file.");
+        }
+        if (!signature.AsSpan().SequenceEqual(new byte[] { 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a }))
+            throw new InvalidDataException("Screenshot command did not create a valid PNG file.");
+    }
+
+    private async Task CaptureExternalImageAsync(
+        ActiveSession session,
+        string path,
+        CancellationToken cancellationToken)
+    {
+        var startInfo = new ProcessStartInfo(_options.ScreenshotExecutable)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = session.ResultDirectory
+        };
+        foreach (var argument in _options.ScreenshotArguments)
+        {
+            startInfo.ArgumentList.Add(argument
+                .Replace("{path}", path, StringComparison.Ordinal)
+                .Replace("{pid}", session.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal));
+        }
+
+        Process? started;
+        try
+        {
+            started = Process.Start(startInfo);
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            throw new IOException($"Failed to start screenshot command '{_options.ScreenshotExecutable}'.", ex);
+        }
+        using var process = started
+            ?? throw new IOException($"Failed to start screenshot command '{_options.ScreenshotExecutable}'.");
+        var stdout = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var stderr = process.StandardError.ReadToEndAsync(cancellationToken);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(_options.ScreenshotTimeoutMs);
+        try
+        {
+            await process.WaitForExitAsync(deadline.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            try
+            {
+                await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+                _ = await stdout.ConfigureAwait(false);
+                _ = await stderr.ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is TimeoutException or IOException or OperationCanceledException)
+            {
+            }
+            throw new TimeoutException($"Screenshot command exceeded {_options.ScreenshotTimeoutMs} ms.");
+        }
+
+        var output = await stdout.ConfigureAwait(false);
+        var error = await stderr.ConfigureAwait(false);
+        if (process.ExitCode != 0)
+        {
+            var detail = string.IsNullOrWhiteSpace(error) ? output : error;
+            throw new IOException($"Screenshot command exited with code {process.ExitCode}: {detail.Trim()}");
         }
     }
 
@@ -625,12 +778,13 @@ public sealed class XemuControlManager : IDisposable
     }
 
     private sealed record ActiveSession(
-        int ProcessId,
+        Process Process,
         string QmpHost,
         int QmpPort,
         string ResultDirectory,
         IXemuInputProvider Input) : IDisposable
     {
+        public int ProcessId => Process.Id;
         public void Dispose() => Input.Dispose();
     }
 

@@ -1,0 +1,12 @@
+[general]
+show_welcome = false
+skip_boot_anim = true
+
+[general.updates]
+check = false
+
+[display.ui]
+show_menubar = false
+
+[net]
+enable = false

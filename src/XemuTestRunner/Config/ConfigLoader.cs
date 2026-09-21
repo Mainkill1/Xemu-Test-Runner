@@ -43,7 +43,8 @@ public static class ConfigLoader
     {
         if (c.Queue is null || c.Monitoring is null || c.Http is null || c.XemuControl is null || c.Ui is null || c.Reliability is null ||
             c.Diagnostics is null || c.Monitoring.Gpu is null || c.Reliability.Preflight is null ||
-            c.Reliability.Watchdog is null || c.XemuControl.ButtonKeys is null)
+            c.Reliability.Watchdog is null || c.XemuControl.ButtonKeys is null ||
+            c.XemuControl.ScreenshotArguments is null)
             throw new InvalidDataException("Configuration sections cannot be null.");
         if (c.Monitoring.IntervalMs <= 0 || c.Monitoring.FlushIntervalMs <= 0 || c.Monitoring.BufferCapacity < 16 || c.Queue.ScanIntervalMs <= 0)
             throw new InvalidDataException("Sampling/flush/queue intervals must be positive; buffer capacity must be at least 16.");
@@ -52,6 +53,16 @@ public static class ConfigLoader
         if (c.XemuControl.QmpPort is < 0 or > 65535 || c.XemuControl.ConnectTimeoutMs <= 0 || c.XemuControl.ScreenshotTimeoutMs <= 0 ||
             c.XemuControl.DefaultButtonHoldMs is < 1 or > 60000)
             throw new InvalidDataException("Invalid xemu control port, timeout, or button duration.");
+        var screenshotProvider = c.XemuControl.ScreenshotProvider?.Trim().ToLowerInvariant();
+        if (screenshotProvider is not ("auto" or "qmp" or "external"))
+            throw new InvalidDataException("ScreenshotProvider must be auto, qmp, or external.");
+        if (screenshotProvider == "external" && string.IsNullOrWhiteSpace(c.XemuControl.ScreenshotExecutable))
+            throw new InvalidDataException("External screenshots require ScreenshotExecutable.");
+        if (c.XemuControl.ScreenshotArguments.Any(string.IsNullOrWhiteSpace))
+            throw new InvalidDataException("ScreenshotArguments cannot contain empty values.");
+        if (!string.IsNullOrWhiteSpace(c.XemuControl.ScreenshotExecutable) &&
+            !c.XemuControl.ScreenshotArguments.Any(argument => argument.Contains("{path}", StringComparison.Ordinal)))
+            throw new InvalidDataException("External screenshot arguments must contain the {path} placeholder.");
         if (c.Ui.CliRefreshMs <= 0 || c.Ui.WebRefreshMs <= 0 || c.Ui.LivePreviewIntervalMs < 250)
             throw new InvalidDataException("UI refresh intervals must be positive; preview interval must be at least 250 ms.");
         if (c.Queue.InterruptedAction?.ToLowerInvariant() is not ("retry" or "hold")) throw new InvalidDataException("InterruptedAction must be retry or hold.");

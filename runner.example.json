@@ -35,6 +35,9 @@
     "QmpPort": 0,
     "ConnectTimeoutMs": 10000,
     "ScreenshotTimeoutMs": 5000,
+    "ScreenshotProvider": "auto",
+    "ScreenshotExecutable": "",
+    "ScreenshotArguments": [],
     "InputProvider": "auto",
     "DefaultButtonHoldMs": 100
   },

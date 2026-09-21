@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -6,6 +8,14 @@ using XemuTestRunner.Config;
 using XemuTestRunner.Diagnostics;
 using XemuTestRunner.Queue;
 using XemuTestRunner.Reliability;
+
+if (args.Contains("--fake-xemu", StringComparer.Ordinal))
+    return await FakeXemuHost.RunAsync(args);
+if (args.Length == 2 && args[0] == "--fake-screenshot")
+{
+    FakeXemuHost.WritePng(args[1]);
+    return 0;
+}
 
 var failures = 0;
 async Task Check(string name, Func<Task> test)
@@ -18,6 +28,15 @@ var root = Path.Combine(Path.GetTempPath(), "xemu-runner-checks-" + Guid.NewGuid
 Directory.CreateDirectory(root);
 try
 {
+    await Check("HTTP defaults to a remotely reachable bind address", () =>
+    {
+        var http = new HttpOptions();
+        Assert(http.Enabled, "The HTTP control plane is disabled by default.");
+        Assert(http.BindAddress == "0.0.0.0", "The HTTP control plane no longer listens on all IPv4 interfaces.");
+        Assert(http.Port == 9368, "The documented HTTP port changed unexpectedly.");
+        return Task.CompletedTask;
+    });
+
     await Check("preflight validates exact executable hash", async () =>
     {
         var package = Path.Combine(root, "package"); Directory.CreateDirectory(package);
@@ -205,6 +224,31 @@ try
         Assert(rejected, "Unknown diagnostic plan reference was accepted.");
     });
 
+    await Check("quit is accepted only as the final plan step", () =>
+    {
+        var package = Path.Combine(root, "quit-order");
+        Directory.CreateDirectory(package);
+        File.WriteAllText(Path.Combine(package, "xemu"), "fixture");
+        AtomicJson.Write(Path.Combine(package, "job.json"), new JobDefinition
+        {
+            Id = "quit-order",
+            Executable = "xemu",
+            Plan =
+            [
+                new JobStep { Type = "quit" },
+                new JobStep { Type = "wait", DelayMs = 1 }
+            ]
+        });
+        var rejected = false;
+        try { _ = JobDefinition.LoadPackage(package); }
+        catch (InvalidDataException ex) when (ex.Message.Contains("final plan step", StringComparison.Ordinal))
+        {
+            rejected = true;
+        }
+        Assert(rejected, "A plan continued after terminating its target.");
+        return Task.CompletedTask;
+    });
+
     await Check("diagnostic tool catalog reports an explicit missing executable", () =>
     {
         var options = new DiagnosticsOptions { Addr2LineExecutable = Path.Combine(root, "definitely-not-addr2line") };
@@ -251,7 +295,160 @@ try
             summary.Diagnostics == 1, "Intervention was lost.");
         return Task.CompletedTask;
     });
+
+    await Check("runner completes a queued QMP job and retains its evidence", async () =>
+    {
+        var fixture = Path.Combine(root, "runner-integration");
+        var configPath = Path.Combine(fixture, "runner.json");
+        var httpPort = AllocateTcpPort();
+        var config = new RunnerConfig
+        {
+            Workspace = "workspace",
+            Http = new HttpOptions { Enabled = true, BindAddress = "127.0.0.1", Port = httpPort },
+            Monitoring = new MonitoringOptions
+            {
+                Enabled = true,
+                IntervalMs = 25,
+                FlushIntervalMs = 50,
+                BufferCapacity = 64,
+                Gpu = new GpuOptions { Enabled = false }
+            },
+            XemuControl = new XemuControlOptions
+            {
+                Enabled = true,
+                ConnectTimeoutMs = 3000,
+                ScreenshotTimeoutMs = 3000,
+                InputProvider = "unavailable",
+                ScreenshotProvider = "auto",
+                ScreenshotExecutable = Environment.ProcessPath!,
+                ScreenshotArguments = ["--fake-screenshot", "{path}"]
+            },
+            Reliability = new ReliabilityOptions
+            {
+                Preflight = new PreflightOptions { MinimumFreeSpaceBytes = 0 },
+                ProcessExitTimeoutMs = 3000,
+                Watchdog = new WatchdogOptions
+                {
+                    Enabled = true,
+                    StartupGraceMs = 0,
+                    IntervalMs = 100,
+                    RequestTimeoutMs = 500,
+                    FailureThreshold = 3
+                }
+            }
+        };
+
+        Directory.CreateDirectory(fixture);
+        await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(config, ConfigLoader.JsonOptions));
+        var (_, paths) = ConfigLoader.Load(configPath);
+        var package = Path.Combine(paths.Pending, "fake-qmp-job");
+        Directory.CreateDirectory(package);
+        CopyRunnerFixture(package);
+
+        var executable = Path.GetFileName(Environment.ProcessPath!);
+        var job = new JobDefinition
+        {
+            Id = "fake-qmp-job",
+            TargetOs = OperatingSystem.IsWindows() ? "windows" : "linux",
+            Executable = executable,
+            // Keep the fixture alive beyond the runner's own bounded timeout.
+            // A successful test exits promptly through the final QMP quit; a
+            // broken plan is still terminated by TimeoutSeconds below.
+            Arguments = ["--fake-xemu", "--fake-runtime-ms", "15000"],
+            TimeoutSeconds = 5,
+            StartPaused = true,
+            Plan =
+            [
+                new JobStep { Type = "screenshot", Name = "integration-frame" },
+                new JobStep { Type = "resume" },
+                new JobStep { Type = "wait", DelayMs = 100 },
+                new JobStep { Type = "pause" },
+                new JobStep { Type = "resume" },
+                new JobStep { Type = "quit" }
+            ]
+        };
+        await File.WriteAllTextAsync(
+            Path.Combine(package, "job.json"),
+            JsonSerializer.Serialize(job, ConfigLoader.JsonOptions));
+
+        var engine = new XemuTestRunner.Runtime.RunnerEngine(config, paths);
+        var runTask = engine.RunAsync(once: true, CancellationToken.None);
+        try
+        {
+            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{httpPort}") };
+            using var statusJson = await WaitForActiveRunAsync(client, TimeSpan.FromSeconds(3));
+            Assert(statusJson.RootElement.GetProperty("RunId").ValueKind == JsonValueKind.String,
+                "The live HTTP status did not identify the active run.");
+        }
+        finally
+        {
+            await runTask;
+        }
+
+        var results = Directory.GetDirectories(paths.Results);
+        Assert(results.Length == 1, $"Expected one result, found {results.Length}.");
+        using var result = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(results[0], "result.json")));
+        Assert(result.RootElement.GetProperty("status").GetString() == "completed", result.RootElement.ToString());
+        Assert(result.RootElement.GetProperty("monitoring").GetProperty("samples").GetInt64() > 0,
+            "No telemetry samples were retained.");
+        Assert(File.Exists(Path.Combine(results[0], "screenshots", "integration-frame.png")),
+            "The screenshot fallback was not retained.");
+        Assert(Directory.GetDirectories(paths.Tested).Length == 1 && Directory.GetDirectories(paths.Testing).Length == 0,
+            "The completed package was not archived exactly once.");
+    });
+
+    await Check("release identity is available to the CLI and evidence", () =>
+    {
+        Assert(!string.IsNullOrWhiteSpace(XemuTestRunner.ApplicationInfo.DisplayVersion),
+            "The runner has no display version.");
+        Assert(XemuTestRunner.ApplicationInfo.DisplayVersion != "0.0.0",
+            "The runner still exposes the placeholder version.");
+        return Task.CompletedTask;
+    });
 }
 finally { Directory.Delete(root, recursive: true); }
 Console.WriteLine($"Failures: {failures}");
 return failures == 0 ? 0 : 1;
+
+static void CopyRunnerFixture(string destination)
+{
+    var source = AppContext.BaseDirectory;
+    foreach (var file in Directory.EnumerateFiles(source))
+        File.Copy(file, Path.Combine(destination, Path.GetFileName(file)));
+    if (!OperatingSystem.IsWindows())
+        File.SetUnixFileMode(
+            Path.Combine(destination, Path.GetFileName(Environment.ProcessPath!)),
+            UnixFileMode.UserRead | UnixFileMode.UserExecute);
+}
+
+static int AllocateTcpPort()
+{
+    var listener = new TcpListener(IPAddress.Loopback, 0);
+    listener.Start();
+    try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
+    finally { listener.Stop(); }
+}
+
+static async Task<JsonDocument> WaitForActiveRunAsync(HttpClient client, TimeSpan timeout)
+{
+    using var deadline = new CancellationTokenSource(timeout);
+    Exception? last = null;
+    while (!deadline.IsCancellationRequested)
+    {
+        try
+        {
+            using var response = await client.GetAsync("/api/v1/status", deadline.Token);
+            response.EnsureSuccessStatusCode();
+            var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(deadline.Token));
+            if (document.RootElement.TryGetProperty("RunId", out var runId) && runId.ValueKind == JsonValueKind.String)
+                return document;
+            document.Dispose();
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            last = ex;
+        }
+        await Task.Delay(25, deadline.Token);
+    }
+    throw new TimeoutException("HTTP endpoint did not expose an active run.", last);
+}

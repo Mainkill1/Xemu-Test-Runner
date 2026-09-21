@@ -366,7 +366,7 @@ public sealed class RunnerEngine
                         exitCode = process.ExitCode;
                         status = exitCode != 0
                             ? "failed"
-                            : plan is not null && !plan.IsCompletedSuccessfully
+                            : plan is not null && !plan.IsCompletedSuccessfully && !_control.QuitRequested
                                 ? "incomplete_plan"
                                 : "completed";
                         break;
@@ -655,6 +655,7 @@ public sealed class RunnerEngine
 
     private static object HostInfo() => new
     {
+        runnerVersion = ApplicationInfo.DisplayVersion,
         machine = Environment.MachineName,
         os = System.Runtime.InteropServices.RuntimeInformation.OSDescription,
         architecture = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture.ToString(),

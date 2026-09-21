@@ -64,9 +64,12 @@ public sealed class JobDefinition
             if (diagnostic.Type.Equals("symbolize", StringComparison.OrdinalIgnoreCase))
                 _ = ResolveInsidePackage(packageDirectory, diagnostic.DebugFile!);
         }
-        foreach (var step in job.Plan)
+        for (var stepIndex = 0; stepIndex < job.Plan.Count; stepIndex++)
         {
+            var step = job.Plan[stepIndex];
             (step ?? throw new InvalidDataException("Null plan step.")).Validate(job.Id);
+            if (step.Type.Equals("quit", StringComparison.OrdinalIgnoreCase) && stepIndex != job.Plan.Count - 1)
+                throw new InvalidDataException("quit must be the final plan step.");
             if (step.Type.Equals("diagnostic", StringComparison.OrdinalIgnoreCase) &&
                 !diagnosticIds.Contains(step.DiagnosticId!))
                 throw new InvalidDataException($"Plan references unknown diagnostic '{step.DiagnosticId}'.");
@@ -108,6 +111,7 @@ public sealed class JobStep
             case "screenshot": break;
             case "pause": break;
             case "resume": break;
+            case "quit": break;
             case "require_input": break;
             case "diagnostic":
                 if (string.IsNullOrWhiteSpace(DiagnosticId))

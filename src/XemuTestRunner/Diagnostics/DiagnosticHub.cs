@@ -280,7 +280,7 @@ public sealed class DiagnosticHub
                     ended,
                     directory,
                     detail,
-                    artifacts.Select(Path.GetFileName).ToArray());
+                    artifacts.Select(Path.GetFileName).OfType<string>().ToArray());
                 AtomicJson.Write(Path.Combine(directory, "result.json"), result);
                 lock (_gate)
                 {

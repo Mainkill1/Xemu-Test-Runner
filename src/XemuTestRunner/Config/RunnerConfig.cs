@@ -62,6 +62,9 @@ public sealed class XemuControlOptions
     public int QmpPort { get; set; }
     public int ConnectTimeoutMs { get; set; } = 10000;
     public int ScreenshotTimeoutMs { get; set; } = 5000;
+    public string ScreenshotProvider { get; set; } = "auto";
+    public string ScreenshotExecutable { get; set; } = "";
+    public List<string> ScreenshotArguments { get; set; } = [];
     public string InputProvider { get; set; } = "auto";
     public int DefaultButtonHoldMs { get; set; } = 100;
     public Dictionary<string, string> ButtonKeys { get; set; } = new(StringComparer.OrdinalIgnoreCase)
