@@ -27,36 +27,54 @@ public sealed class LinuxX11InputProvider : IXemuInputProvider
         }
         catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException) { Dispose(); }
     }
-    public async Task PressAsync(string hostKey, int holdMs, CancellationToken cancellationToken)
+    public Task PressAsync(string hostKey, int holdMs, CancellationToken cancellationToken) =>
+        PressChordAsync([hostKey], holdMs, cancellationToken);
+
+    public async Task PressChordAsync(IReadOnlyList<string> hostKeys, int holdMs, CancellationToken cancellationToken)
     {
+        if (hostKeys.Count == 0)
+            throw new InvalidDataException("At least one host key is required.");
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         await _operation.WaitAsync(linked.Token);
+        var pressed = new List<uint>();
         try
         {
             cancellationToken = linked.Token;
             if (!IsAvailable) throw new InvalidOperationException("X11 input requires DISPLAY, libX11 and libXtst. Native Wayland is not supported.");
             var window = FindWindow(XDefaultRootWindow(_display), XInternAtom(_display, "_NET_WM_PID", false), 0);
             if (window == IntPtr.Zero) throw new InvalidOperationException("No X11 xemu window for the active PID.");
-            var name = hostKey.Trim().ToLowerInvariant() switch
-            {
-                "enter" or "return" => "Return", "backspace" => "BackSpace", "up" => "Up", "down" => "Down", "left" => "Left", "right" => "Right",
-                var s when s.Length == 1 => s, _ => throw new InvalidDataException("Unsupported X11 key.")
-            };
-            var keycode = XKeysymToKeycode(_display, XStringToKeysym(name));
-            if (keycode == 0) throw new InvalidOperationException("X11 cannot resolve the configured key.");
             XRaiseWindow(_display, window); XSetInputFocus(_display, window, 2, UIntPtr.Zero); XSync(_display, false);
             XGetInputFocus(_display, out var focused, out _);
             if (focused != window) throw new InvalidOperationException("xemu did not receive input focus; no key was sent.");
-            if (XTestFakeKeyEvent(_display, keycode, true, UIntPtr.Zero) == 0) throw new InvalidOperationException("XTest key down failed.");
-            XFlush(_display);
-            try { await Task.Delay(holdMs, cancellationToken); }
-            finally
+
+            foreach (var hostKey in hostKeys)
             {
-                if (XTestFakeKeyEvent(_display, keycode, false, UIntPtr.Zero) == 0) throw new InvalidOperationException("XTest key up failed.");
-                XFlush(_display);
+                var name = hostKey.Trim().ToLowerInvariant() switch
+                {
+                    "enter" or "return" => "Return", "backspace" => "BackSpace",
+                    "up" => "Up", "down" => "Down", "left" => "Left", "right" => "Right",
+                    "ctrl" or "control" => "Control_L", "shift" => "Shift_L", "f10" => "F10",
+                    var s when s.Length == 1 => s,
+                    _ => throw new InvalidDataException("Unsupported X11 key: " + hostKey)
+                };
+                var keycode = (uint)XKeysymToKeycode(_display, XStringToKeysym(name));
+                if (keycode == 0) throw new InvalidOperationException("X11 cannot resolve the configured key: " + hostKey);
+                if (XTestFakeKeyEvent(_display, keycode, true, UIntPtr.Zero) == 0)
+                    throw new InvalidOperationException("XTest key down failed.");
+                pressed.Add(keycode);
             }
+            XFlush(_display);
+            await Task.Delay(holdMs, cancellationToken);
         }
-        finally { _operation.Release(); }
+        finally
+        {
+            for (var i = pressed.Count - 1; i >= 0; i--)
+            {
+                try { _ = XTestFakeKeyEvent(_display, pressed[i], false, UIntPtr.Zero); } catch { }
+            }
+            try { XFlush(_display); } catch { }
+            _operation.Release();
+        }
     }
     private IntPtr FindWindow(IntPtr window, IntPtr pidAtom, int depth)
     {

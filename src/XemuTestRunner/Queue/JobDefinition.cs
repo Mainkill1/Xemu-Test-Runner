@@ -1,5 +1,6 @@
 using System.Text.Json;
 using XemuTestRunner.Config;
+using XemuTestRunner.Diagnostics;
 
 namespace XemuTestRunner.Queue;
 
@@ -16,6 +17,14 @@ public sealed class JobDefinition
     public string? TargetOs { get; set; }
     public string? ExpectedExecutableSha256 { get; set; }
     public List<string> RequiredFiles { get; set; } = [];
+    public string LaunchMode { get; set; } = "direct";
+    public string? SnapshotName { get; set; }
+    public bool StartPaused { get; set; }
+    public bool RequireInput { get; set; }
+    public List<DiagnosticRecipe> Diagnostics { get; set; } = [];
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? PackageDirectory { get; private set; }
 
     public static JobDefinition LoadPackage(string packageDirectory)
     {
@@ -26,18 +35,42 @@ public sealed class JobDefinition
             ?? throw new InvalidDataException("Empty job.json.");
         if (string.IsNullOrWhiteSpace(job.Id)) job.Id = Path.GetFileName(packageDirectory);
         if (string.IsNullOrWhiteSpace(job.Executable)) throw new InvalidDataException("Executable is required.");
-        if (job.Arguments is null || job.Environment is null || job.Plan is null || job.RequiredFiles is null || job.Tags is null)
+        if (job.Arguments is null || job.Environment is null || job.Plan is null || job.RequiredFiles is null ||
+            job.Tags is null || job.Diagnostics is null)
             throw new InvalidDataException("Job collections cannot be null.");
+        job.PackageDirectory = Path.GetFullPath(packageDirectory);
         if (job.TimeoutSeconds < 0 || job.TimeoutSeconds > int.MaxValue / 1000)
             throw new InvalidDataException("TimeoutSeconds must be between 0 and 2147483.");
         if (job.TargetOs is not null && job.TargetOs.ToLowerInvariant() is not ("windows" or "linux"))
             throw new InvalidDataException("TargetOs must be windows or linux when supplied.");
         if (job.ExpectedExecutableSha256 is not null && (job.ExpectedExecutableSha256.Length != 64 || !job.ExpectedExecutableSha256.All(Uri.IsHexDigit)))
             throw new InvalidDataException("ExpectedExecutableSha256 must be 64 hexadecimal characters.");
+        if (job.LaunchMode.Trim().ToLowerInvariant() is not ("direct" or "renderdoc"))
+            throw new InvalidDataException("LaunchMode must be direct or renderdoc.");
+        if (job.SnapshotName is not null && (job.SnapshotName.Length is < 1 or > 200 ||
+            job.SnapshotName.Any(ch => char.IsControl(ch) || ch is '\r' or '\n')))
+            throw new InvalidDataException("SnapshotName contains invalid characters.");
         _ = ResolveInsidePackage(packageDirectory, job.Executable);
         _ = ResolveInsidePackage(packageDirectory, job.WorkingDirectory ?? ".");
         foreach (var file in job.RequiredFiles) _ = ResolveInsidePackage(packageDirectory, file);
-        foreach (var step in job.Plan) (step ?? throw new InvalidDataException("Null plan step.")).Validate(job.Id);
+        var diagnosticIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var diagnostic in job.Diagnostics)
+        {
+            if (diagnostic is null)
+                throw new InvalidDataException("Null diagnostic recipe.");
+            diagnostic.Validate();
+            if (!diagnosticIds.Add(diagnostic.Id))
+                throw new InvalidDataException($"Duplicate diagnostic recipe Id '{diagnostic.Id}'.");
+            if (diagnostic.Type.Equals("symbolize", StringComparison.OrdinalIgnoreCase))
+                _ = ResolveInsidePackage(packageDirectory, diagnostic.DebugFile!);
+        }
+        foreach (var step in job.Plan)
+        {
+            (step ?? throw new InvalidDataException("Null plan step.")).Validate(job.Id);
+            if (step.Type.Equals("diagnostic", StringComparison.OrdinalIgnoreCase) &&
+                !diagnosticIds.Contains(step.DiagnosticId!))
+                throw new InvalidDataException($"Plan references unknown diagnostic '{step.DiagnosticId}'.");
+        }
         return job;
     }
 
@@ -61,6 +94,7 @@ public sealed class JobStep
     public string? Button { get; set; }
     public int DurationMs { get; set; } = 100;
     public string? Name { get; set; }
+    public string? DiagnosticId { get; set; }
     public void Validate(string jobId)
     {
         if (DelayMs < 0) throw new InvalidDataException($"Job {jobId}: negative DelayMs.");
@@ -72,6 +106,13 @@ public sealed class JobStep
                     throw new InvalidDataException("button requires Button and DurationMs between 1 and 60000.");
                 break;
             case "screenshot": break;
+            case "pause": break;
+            case "resume": break;
+            case "require_input": break;
+            case "diagnostic":
+                if (string.IsNullOrWhiteSpace(DiagnosticId))
+                    throw new InvalidDataException("diagnostic step requires DiagnosticId.");
+                break;
             default: throw new InvalidDataException("Unsupported plan step: " + Type);
         }
     }

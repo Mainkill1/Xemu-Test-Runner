@@ -60,3 +60,37 @@ The foreground HTTP endpoint retains the existing Content-Length based streamed 
 ## Validation boundary
 
 See [VALIDATION.md](VALIDATION.md). Offline JavaScript/browser fixtures were run, but .NET compilation, the regression executable and native xemu/GPU/input qualification were not run in the authoring environment. The change is not yet a certified unattended test-box build.
+
+
+## Diagnostic subsystem
+
+The diagnostic subsystem is deliberately an adapter layer around the same active xemu process rather than a second runner.
+
+```text
+JobDefinition.Diagnostics
+          |
+          v
+    DiagnosticHub  <---- HTTP /diagnostics
+     /    |    \
+    /     |     \
+ToolProcess QMP  RenderDocSession
+  |        |          |
+WPR/perf  pmemsave    Python RenderDoc target control
+GDB/etc   HMP/QMP     xemu guest-frame hotkey
+```
+
+A `DiagnosticHub` is attached only after the runner knows the actual target PID and result directory. One semaphore serializes diagnostic recipes so two heavyweight captures cannot unknowingly overlap. Each recipe receives a dedicated evidence directory and machine-readable request/result documents.
+
+`TargetLaunch` abstracts normal Process.Start and RenderDoc launch. Direct launch exposes xemu stdout/stderr normally. RenderDoc launch uses the bundled Python bridge because the official RenderDoc API must inject before renderer initialization and must keep target control connected. In that mode xemu stdout/stderr are not currently exposed by the RenderDoc bridge; helper errors are retained separately.
+
+The RenderDoc helper speaks newline-delimited JSON only to the C# parent. It launches with `ExecuteAndInject`, connects with `CreateTargetControl`, reports the real xemu PID, accepts capture requests, copies NewCapture files into the result directory, and stays connected until teardown. `renderdoc_analyze.py` performs a replay smoke check and inventories actions/textures/buffers. These exact Python API calls require native qualification against the installed RenderDoc version.
+
+The preferred RenderDoc recipe uses xemu's existing F10/Shift+F10 guest-render capture hook while the helper supplies target control. Ctrl requests xemu's existing bounded PGRAPH trace mode. No custom xemu QMP command is required; adding one later can replace the host-hotkey trigger without changing recipe semantics.
+
+WPR and perf start while xemu is paused when requested, then the hub resumes xemu for an explicit workload interval and pauses it before finalization. WPR optionally runs xperf summary actions. Linux perf attaches to the actual target PID and is stopped with SIGINT before `perf report`.
+
+A hang bundle is best-effort: QMP and screenshot failures do not prevent ProcDump/GDB collection. A dump tool failure does fail that diagnostic so the caller knows the expected artifact is missing.
+
+The `qmp`, `monitor`, and `external` types are intentional extension points for wiki procedures not worth hard-coding. Package contents are already executable code, so these do not create a stronger trust boundary than the queue already has. HTTP remains trusted-LAN only.
+
+Diagnostics call `RunActivity.Mark("diagnostic", ...)`; result comparison remains operator-intervened/not-evaluated rather than silently treating instrumented runs as performance evidence.

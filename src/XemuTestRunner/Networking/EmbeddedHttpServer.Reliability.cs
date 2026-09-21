@@ -1,5 +1,8 @@
 using System.Globalization;
 using XemuTestRunner.Reliability;
+using XemuTestRunner.Diagnostics;
+using XemuTestRunner.Config;
+using System.Text.Json;
 
 namespace XemuTestRunner.Networking;
 
@@ -7,6 +10,7 @@ public sealed partial class EmbeddedHttpServer
 {
     public ReliabilityOptions Reliability { get; init; } = new();
     public ActivityHub Activity { get; init; } = new();
+    public DiagnosticHub? Diagnostics { get; init; }
     private readonly PreviewCache _previewCache = new();
 
     private async Task HandleSharedPreviewAsync(Stream stream, bool keepAlive, CancellationToken ct)
@@ -46,8 +50,134 @@ public sealed partial class EmbeddedHttpServer
         await stream.FlushAsync(ct);
     }
 
+
+    private async Task<bool?> TryDiagnosticRouteAsync(
+        Stream stream,
+        HttpRequest request,
+        bool keepAlive,
+        CancellationToken ct)
+    {
+        if (request.Path == "/diagnostics" && request.Method == "GET")
+        {
+            await WriteHtmlAsync(stream, DiagnosticsPage.Html, keepAlive, ct).ConfigureAwait(false);
+            return true;
+        }
+
+        if (!request.Path.StartsWith("/api/v1/diagnostics", StringComparison.Ordinal))
+            return null;
+
+        if (Diagnostics is null)
+        {
+            await WriteJsonAsync(
+                stream,
+                503,
+                "Service Unavailable",
+                new { error = "Diagnostic hub is unavailable." },
+                keepAlive,
+                ct).ConfigureAwait(false);
+            return true;
+        }
+
+        if (request.Method == "GET" && request.Path == "/api/v1/diagnostics")
+        {
+            await WriteJsonAsync(stream, 200, "OK", Diagnostics.Snapshot(), keepAlive, ct).ConfigureAwait(false);
+            return true;
+        }
+
+        if (request.Method == "GET" && request.Path == "/api/v1/diagnostics/tools")
+        {
+            await WriteJsonAsync(stream, 200, "OK", await Diagnostics.Tools.ProbeAsync(ct).ConfigureAwait(false), keepAlive, ct).ConfigureAwait(false);
+            return true;
+        }
+
+        if (request.Method == "GET" && request.Path == "/api/v1/diagnostics/recipes")
+        {
+            await WriteJsonAsync(stream, 200, "OK", Diagnostics.Recipes(), keepAlive, ct).ConfigureAwait(false);
+            return true;
+        }
+
+        if (request.Method == "POST" && request.Path == "/api/v1/diagnostics/run")
+        {
+            if (request.ContentLength is not long length || length is < 1 or > 65536)
+            {
+                await WriteJsonAsync(
+                    stream,
+                    400,
+                    "Bad Request",
+                    new { error = "Diagnostic request requires Content-Length between 1 and 65536." },
+                    false,
+                    ct).ConfigureAwait(false);
+                return false;
+            }
+
+            var body = new byte[(int)length];
+            await ReadExactlyAsync(stream, body, ct).ConfigureAwait(false);
+
+            try
+            {
+                var command = JsonSerializer.Deserialize<DiagnosticRunRequest>(
+                    body,
+                    ConfigLoader.JsonOptions)
+                    ?? throw new InvalidDataException("Empty diagnostic request.");
+
+                DiagnosticResult result;
+                if (!string.IsNullOrWhiteSpace(command.Id))
+                {
+                    result = await Diagnostics.RunByIdAsync(command.Id, ct).ConfigureAwait(false);
+                }
+                else if (command.Recipe is not null)
+                {
+                    command.Recipe.Validate();
+                    result = await Diagnostics.RunAdHocAsync(command.Recipe, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    throw new InvalidDataException("Specify Id or Recipe.");
+                }
+
+                await WriteJsonAsync(stream, 200, "OK", result, keepAlive, ct).ConfigureAwait(false);
+            }
+            catch (KeyNotFoundException ex)
+            {
+                await WriteJsonAsync(stream, 404, "Not Found", new { error = ex.Message }, keepAlive, ct).ConfigureAwait(false);
+            }
+            catch (InvalidDataException ex)
+            {
+                await WriteJsonAsync(stream, 400, "Bad Request", new { error = ex.Message }, keepAlive, ct).ConfigureAwait(false);
+            }
+            catch (InvalidOperationException ex)
+            {
+                await WriteJsonAsync(stream, 409, "Conflict", new { error = ex.Message }, keepAlive, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (
+                ex is IOException or
+                TimeoutException or
+                PlatformNotSupportedException or
+                System.Net.Sockets.SocketException)
+            {
+                await WriteJsonAsync(stream, 503, "Service Unavailable", new { error = ex.Message }, false, ct).ConfigureAwait(false);
+                return false;
+            }
+
+            return true;
+        }
+
+        await WriteJsonAsync(stream, 404, "Not Found", new { error = "Diagnostic route not found." }, keepAlive, ct).ConfigureAwait(false);
+        return true;
+    }
+
+    private sealed class DiagnosticRunRequest
+    {
+        public string? Id { get; set; }
+        public DiagnosticRecipe? Recipe { get; set; }
+    }
+
     private async Task<bool?> TryEvidenceRouteAsync(Stream stream, HttpRequest request, bool keepAlive, CancellationToken ct)
     {
+        var diagnosticRoute = await TryDiagnosticRouteAsync(stream, request, keepAlive, ct).ConfigureAwait(false);
+        if (diagnosticRoute.HasValue)
+            return diagnosticRoute.Value;
+
         if (request.Method == "GET" && request.Path == "/results")
         { await WriteHtmlAsync(stream, EvidencePage.Html, keepAlive, ct); return true; }
         if (request.Method == "GET" && request.Path == "/api/v1/quality")

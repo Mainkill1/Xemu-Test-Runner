@@ -10,6 +10,7 @@ app.Configure(config =>
     config.AddCommand<QueueCommand>("queue").WithDescription("Show local queue state.");
     config.AddCommand<StatusCommand>("status").WithDescription("Query a running runner over HTTP.");
     config.AddCommand<DoctorCommand>("doctor").WithDescription("Check platform and provider availability.");
+    config.AddCommand<ToolsCommand>("tools").WithDescription("Show deep diagnostic tool readiness.");
     config.AddCommand<ValidateCommand>("validate").WithDescription("Check a packaged build before launching it.");
 });
 using var shutdown = new CancellationTokenSource();

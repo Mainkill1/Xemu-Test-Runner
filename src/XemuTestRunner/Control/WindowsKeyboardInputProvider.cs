@@ -11,15 +11,21 @@ public sealed class WindowsKeyboardInputProvider : IXemuInputProvider
     public string Name => "Windows SendInput";
     public bool IsAvailable => OperatingSystem.IsWindows();
     public WindowsKeyboardInputProvider(int processId) => _pid = processId;
-    public async Task PressAsync(string hostKey, int holdMs, CancellationToken cancellationToken)
+    public Task PressAsync(string hostKey, int holdMs, CancellationToken cancellationToken) =>
+        PressChordAsync([hostKey], holdMs, cancellationToken);
+
+    public async Task PressChordAsync(IReadOnlyList<string> hostKeys, int holdMs, CancellationToken cancellationToken)
     {
+        if (hostKeys.Count == 0)
+            throw new InvalidDataException("At least one host key is required.");
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         await _operation.WaitAsync(linked.Token);
+        var pressed = new List<Key>();
         try
         {
             cancellationToken = linked.Token;
             if (!IsAvailable) throw new PlatformNotSupportedException();
-            var key = Resolve(hostKey);
+            var keys = hostKeys.Select(Resolve).ToArray();
             IntPtr window = IntPtr.Zero;
             EnumWindows((h, unused) =>
             {
@@ -32,11 +38,21 @@ public sealed class WindowsKeyboardInputProvider : IXemuInputProvider
             await Task.Delay(25, cancellationToken);
             GetWindowThreadProcessId(GetForegroundWindow(), out var focusedPid);
             if (focusedPid != _pid) throw new InvalidOperationException("Windows did not grant xemu foreground focus; input was not sent.");
-            Send(key, true);
-            try { await Task.Delay(holdMs, cancellationToken); }
-            finally { Send(key, false); } // Cancellation must never leave the host key held.
+            foreach (var key in keys)
+            {
+                Send(key, true);
+                pressed.Add(key);
+            }
+            await Task.Delay(holdMs, cancellationToken);
         }
-        finally { _operation.Release(); }
+        finally
+        {
+            for (var i = pressed.Count - 1; i >= 0; i--)
+            {
+                try { Send(pressed[i], false); } catch { }
+            }
+            _operation.Release();
+        }
     }
     private static void Send(Key key, bool down)
     {
@@ -52,6 +68,7 @@ public sealed class WindowsKeyboardInputProvider : IXemuInputProvider
         "i" => new(0x17), "j" => new(0x24), "l" => new(0x26), "k" => new(0x25), "o" => new(0x18),
         "1" => new(2), "2" => new(3), "3" => new(4), "4" => new(5), "5" => new(6),
         "enter" or "return" => new(0x1c), "backspace" => new(0x0e),
+        "ctrl" or "control" => new(0x1d), "shift" => new(0x2a), "f10" => new(0x44),
         "up" => new(0x48, true), "down" => new(0x50, true), "left" => new(0x4b, true), "right" => new(0x4d, true),
         _ => throw new InvalidDataException("Unsupported host key: " + key)
     };

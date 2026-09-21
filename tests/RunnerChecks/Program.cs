@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using XemuTestRunner.Config;
+using XemuTestRunner.Diagnostics;
 using XemuTestRunner.Queue;
 using XemuTestRunner.Reliability;
 
@@ -132,13 +133,122 @@ try
         Assert(activity.Snapshot().Intervened, "In-flight transfer was not carried into the new run.");
         hub.Detach(); return Task.CompletedTask;
     });
+
+    await Check("diagnostic recipes reject ambiguous RenderDoc capture semantics", () =>
+    {
+        var genericFive = new DiagnosticRecipe
+        {
+            Id = "rdoc-generic",
+            Type = "renderdoc",
+            RenderDocTrigger = "target-control",
+            Frames = 5
+        };
+        var rejected = false;
+        try { genericFive.Validate(); } catch (InvalidDataException) { rejected = true; }
+        Assert(rejected, "Generic RenderDoc trigger accepted a multi-frame request whose completion shape is ambiguous.");
+
+        var tracedGuest = new DiagnosticRecipe
+        {
+            Id = "rdoc-guest",
+            Type = "renderdoc",
+            RenderDocTrigger = "xemu-hotkey",
+            Frames = 5,
+            TracePgraph = true
+        };
+        tracedGuest.Validate();
+
+        var memory = new DiagnosticRecipe { Id = "memory", Type = "memory_dump", Address = 0x1000, Size = 4096 };
+        memory.Validate();
+        return Task.CompletedTask;
+    });
+
+    await Check("job package validates diagnostic references and ignores runtime package property", async () =>
+    {
+        var package = Path.Combine(root, "diagnostic-package");
+        Directory.CreateDirectory(package);
+        var executable = OperatingSystem.IsWindows() ? "xemu.exe" : "xemu";
+        await File.WriteAllTextAsync(Path.Combine(package, executable), "fixture");
+
+        var jobJson = JsonSerializer.Serialize(new
+        {
+            Id = "diagnostic-fixture",
+            Executable = executable,
+            LaunchMode = "direct",
+            StartPaused = true,
+            RequireInput = true,
+            Diagnostics = new[]
+            {
+                new { Id = "monitor-state", Type = "monitor", MonitorCommand = "info registers" }
+            },
+            Plan = new[]
+            {
+                new { Type = "diagnostic", DiagnosticId = "monitor-state" }
+            }
+        }, ConfigLoader.JsonOptions);
+        await File.WriteAllTextAsync(Path.Combine(package, "job.json"), jobJson);
+
+        var loaded = JobDefinition.LoadPackage(package);
+        Assert(loaded.Diagnostics.Count == 1 && loaded.Plan[0].DiagnosticId == "monitor-state",
+            "Diagnostic recipe/plan reference was not retained.");
+        Assert(Path.GetFullPath(package) == loaded.PackageDirectory,
+            "Runtime package identity was not attached.");
+
+        var serialized = JsonSerializer.Serialize(loaded, ConfigLoader.JsonOptions);
+        Assert(!serialized.Contains("PackageDirectory", StringComparison.Ordinal),
+            "Runtime-only PackageDirectory leaked into job JSON.");
+
+        loaded.Plan[0].DiagnosticId = "missing";
+        await File.WriteAllTextAsync(Path.Combine(package, "job.json"),
+            JsonSerializer.Serialize(loaded, ConfigLoader.JsonOptions));
+        var rejected = false;
+        try { _ = JobDefinition.LoadPackage(package); } catch (InvalidDataException) { rejected = true; }
+        Assert(rejected, "Unknown diagnostic plan reference was accepted.");
+    });
+
+    await Check("diagnostic tool catalog reports an explicit missing executable", () =>
+    {
+        var options = new DiagnosticsOptions { Addr2LineExecutable = Path.Combine(root, "definitely-not-addr2line") };
+        var capability = new DiagnosticToolCatalog(options).Get("addr2line");
+        Assert(!capability.Available && capability.ResolvedPath is null,
+            "Missing configured diagnostic tool was reported available.");
+        return Task.CompletedTask;
+    });
+
+    await Check("QMP monitor and external recipes validate bounded configuration", () =>
+    {
+        new DiagnosticRecipe { Id = "monitor", Type = "monitor", MonitorCommand = "info mtree" }.Validate();
+        new DiagnosticRecipe
+        {
+            Id = "qmp",
+            Type = "qmp",
+            QmpCommand = "query-status",
+            QmpArguments = new Dictionary<string, JsonElement>()
+        }.Validate();
+        new DiagnosticRecipe
+        {
+            Id = "external",
+            Type = "external",
+            ToolExecutable = "tool",
+            ToolArguments = ["--pid", "{pid}"]
+        }.Validate();
+
+        var invalid = new DiagnosticRecipe { Id = "monitor-bad", Type = "monitor", MonitorCommand = new string('x', 513) };
+        var rejected = false;
+        try { invalid.Validate(); } catch (InvalidDataException) { rejected = true; }
+        Assert(rejected, "Unbounded monitor command was accepted.");
+        return Task.CompletedTask;
+    });
+
     await Check("benchmark intervention remains visible in final summary", () =>
     {
         var run = Path.Combine(root, "activity"); Directory.CreateDirectory(run);
         using var activity = new RunActivity(run);
-        activity.Mark("manual_input", new { button = "A" }); activity.Mark("preview_capture", null);
+        activity.Mark("manual_input", new { button = "A" });
+        activity.Mark("preview_capture", null);
+        activity.Mark("diagnostic", new { id = "perf-window" });
         var summary = activity.Snapshot();
-        Assert(summary.Intervened && summary.PreviewCaptures == 1 && summary.ManualInputs == 1, "Intervention was lost.");
+        Assert(summary.Intervened && summary.PreviewCaptures == 1 && summary.ManualInputs == 1 &&
+            summary.Diagnostics == 1, "Intervention was lost.");
         return Task.CompletedTask;
     });
 }

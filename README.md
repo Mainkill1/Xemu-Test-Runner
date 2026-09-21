@@ -103,6 +103,91 @@ Manual input, pauses, retained screenshots, preview captures and bulk transfers 
 
 This is a warning mechanism, not an automatic performance verdict. A run without interventions is `not_evaluated`, never automatically benchmark-valid. Close/disable previews during clean measurements; the 100 ms telemetry sampler stays independent of HTTP polling.
 
+
+## Deep diagnostics and snapshot recipes
+
+Diagnostic recipes are part of the same packaged job as the xemu build. They can run from the plan or on demand from `http://host:9368/diagnostics`.
+
+The host implementation currently supports:
+
+| Type | Purpose |
+| --- | --- |
+| `wpr` | Windows WPR capture around a timed unpaused workload, followed by xperf trace/profile/process exports when xperf is available. |
+| `perf` | Linux `perf record` attached to the xemu PID, followed by a text `perf report`. |
+| `renderdoc` | Launch-time RenderDoc injection plus target control. Preferred `xemu-hotkey` mode triggers xemu's existing F10 guest-renderer hook; optional PGRAPH tracing uses Ctrl+F10. |
+| `hang_bundle` | QMP state/screenshot plus ProcDump on Windows or GDB backtrace/core on Linux. |
+| `memory_dump` | QMP `pmemsave` of an exact guest physical range with SHA-256 metadata. |
+| `symbolize` | Batch `addr2line -a -f -i -C` against a package-local debug artifact. |
+| `qmp` | Execute a package-declared QMP command and retain its JSON result. |
+| `monitor` | Execute a package-declared HMP command through `human-monitor-command` and retain text output. |
+| `external` | Run another installed host diagnostic using argument placeholders such as `{pid}`, `{diagnosticDir}`, `{resultDir}`, `{packageDir}`, and `{runId}`. |
+
+Use:
+
+```sh
+xemu-test-runner tools
+```
+
+to show resolved tools and whether Python can import RenderDoc's `renderdoc` module. Tool probing is cached briefly so the diagnostics page does not spawn Python on every refresh.
+
+### Snapshot → controller → RenderDoc example
+
+The checked-in `jobs/example-diagnostic` demonstrates the intended workflow:
+
+```text
+launch candidate through RenderDoc
+  -> -S
+  -> -loadvm <SnapshotName>
+  -> QMP ready / paused state verified
+  -> host input provider verified
+  -> arm RenderDoc target-control listener
+  -> resume
+  -> Ctrl+F10 in xemu
+  -> xemu captures at its renderer frame terminator
+  -> wait for NewCapture
+  -> retain .rdc
+  -> optional RenderDoc replay inventory
+  -> pause
+  -> run next diagnostic
+```
+
+`LaunchMode: "renderdoc"` is important: xemu's RenderDoc integration looks for the RenderDoc library during graphics initialization, so this mode instruments the process before normal renderer startup and holds a target-control connection open.
+
+`RenderDocTrigger: "xemu-hotkey"` is the preferred guest-frame mode. One frame uses F10; five frames use Shift+F10; `TracePgraph: true` adds Ctrl. Generic target-control capture is also available for a single presentation frame, but it is not claimed to be equivalent to xemu's guest-renderer boundary.
+
+Snapshots are loaded with xemu/QEMU's existing `-loadvm` support. `StartPaused: true` adds `-S` and the runner verifies QMP still reports a paused VM after restore before continuing.
+
+`RequireInput: true` verifies the configured host input adapter is available. With the current xemu interface, the job's `xemu.toml` is still responsible for binding keyboard input to the Xbox controller port; the runner does not claim it can query physical controller topology.
+
+### Recipe plan steps
+
+Plans additionally support:
+
+```json
+{"Type":"pause"}
+{"Type":"resume"}
+{"Type":"require_input"}
+{"Type":"diagnostic","DiagnosticId":"guest-frame"}
+```
+
+A diagnostic has its own pause/resume policy. WPR/perf windows count unpaused runner time, so operator pauses do not silently consume the requested measurement interval.
+
+Automatic watchdog failures can request a hang bundle before xemu is terminated. `Diagnostics.AutoFailureBundle` can do the same for other failed runs, but defaults off because full process dumps can be large.
+
+Every diagnostic writes under:
+
+```text
+Results/<run-id>/diagnostics/<timestamp>-<recipe-id>/
+  request.json
+  result.json
+  raw tool artifacts...
+  command/stdout/stderr evidence...
+  optional analysis outputs...
+```
+
+These captures are explicitly diagnostic/intervened evidence. They are not clean benchmark measurements.
+
+
 ## Configuration
 
 `init` generates `runner.json`; `runner.example.json` includes all sections. Relevant defaults:
@@ -118,6 +203,14 @@ This is a warning mechanism, not an automatic performance verdict. A run without
     "EvidenceListLimit": 100,
     "MaxPreviewBytes": 16777216,
     "Watchdog": { "Enabled": true, "StartupGraceMs": 10000, "IntervalMs": 2000, "RequestTimeoutMs": 5000, "FailureThreshold": 3 }
+  },
+  "Diagnostics": {
+    "Enabled": true,
+    "ToolTimeoutMs": 15000,
+    "CaptureFinalizeTimeoutMs": 60000,
+    "AutoHangBundle": true,
+    "AutoFailureBundle": false,
+    "RenderDocPythonPath": null
   }
 }
 ```
@@ -146,6 +239,10 @@ GET  /api/v1/control
 GET  /api/v1/metrics/latest
 GET  /api/v1/queue
 GET  /api/v1/quality
+GET  /api/v1/diagnostics
+GET  /api/v1/diagnostics/tools
+GET  /api/v1/diagnostics/recipes
+POST /api/v1/diagnostics/run
 GET  /api/v1/preview
 GET  /api/v1/screenshot
 POST /api/v1/xemu/pause
@@ -170,6 +267,6 @@ The existing `GET/HEAD/PUT/POST /api/v1/files/<path>` interface streams artifact
 dotnet run --project tests/RunnerChecks -c Release
 ```
 
-This dependency-free regression executable covers preflight, ownership, recovery decisions, watchdog sequences/cancellation, concurrent preview caching, bounded tails, large-range arithmetic, input ABI size and intervention accounting. `-- --large-file` opts into an 11 GiB local file-length test; it is not a 10 GB HTTP transfer test.
+This dependency-free regression executable covers preflight, ownership, recovery decisions, watchdog sequences/cancellation, concurrent preview caching, bounded tails, large-range arithmetic, input ABI size, intervention accounting, diagnostic schema/reference validation, and tool discovery behavior. `-- --large-file` opts into an 11 GiB local file-length test; it is not a 10 GB HTTP transfer test.
 
 Optional offline browser fixtures: `python scripts/check-browser.py --browser /path/to/chromium`. Requires Python Playwright; it uses no running C# server and must not be mistaken for end-to-end xemu qualification. See [validation](docs/VALIDATION.md) and [architecture](docs/ARCHITECTURE.md).

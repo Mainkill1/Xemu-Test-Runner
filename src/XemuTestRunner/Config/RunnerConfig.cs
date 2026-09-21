@@ -1,4 +1,5 @@
 using XemuTestRunner.Reliability;
+using XemuTestRunner.Diagnostics;
 
 namespace XemuTestRunner.Config;
 
@@ -11,6 +12,7 @@ public sealed class RunnerConfig
     public XemuControlOptions XemuControl { get; set; } = new();
     public UiOptions Ui { get; set; } = new();
     public ReliabilityOptions Reliability { get; set; } = new();
+    public DiagnosticsOptions Diagnostics { get; set; } = new();
 }
 public sealed class QueueOptions
 {

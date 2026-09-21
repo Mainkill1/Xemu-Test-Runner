@@ -28,8 +28,9 @@ def html_page(body: str, script: str) -> str:
 home = html_page(stats, 'const refreshMs=500;' + common + 'refresh();')
 control = html_page(control_a + stats + control_b, 'const refreshMs=500;const previewMs=750;const previewAllowed=true;' + common + control_script)
 evidence = re.findall(r'"""\n(.*?)\n"""', (networking / "EvidencePage.cs").read_text(), re.S)[0]
+diagnostics = re.findall(r'"""\n(.*?)\n"""', (networking / "DiagnosticsPage.cs").read_text(), re.S)[0]
 with tempfile.TemporaryDirectory(prefix="runner-ui-check-") as directory:
-    for name, html in [("home", home), ("control", control), ("evidence", evidence)]:
+    for name, html in [("home", home), ("control", control), ("evidence", evidence), ("diagnostics", diagnostics)]:
         script = Path(directory) / (name + ".js")
         script.write_text(re.search(r'<script>(.*?)</script>', html, re.S)[1])
         subprocess.run(["node", "--check", str(script)], check=True)
@@ -50,7 +51,17 @@ fixtures = {
         'status': 'completed', 'comparisonStatus': 'operator_intervened'}}],
     '/api/v1/runs/run-1': {'RunId': 'run-1', 'Artifacts': [
         {'Path': 'result.json', 'Bytes': 123}, {'Path': 'stdout.log', 'Bytes': 5000000}]},
-    '/api/v1/runs/run-1/tail': {'Offset': 4999996, 'Bytes': 4, 'FileBytes': 5000000, 'Text': 'END!'}}
+    '/api/v1/runs/run-1/tail': {'Offset': 4999996, 'Bytes': 4, 'FileBytes': 5000000, 'Text': 'END!'},
+    '/api/v1/diagnostics/tools': [
+        {'Name':'perf','Available':True,'ResolvedPath':'/usr/bin/perf','Detail':'Available.'},
+        {'Name':'RenderDoc Python','Available':False,'ResolvedPath':None,'Detail':'module unavailable'}
+    ],
+    '/api/v1/diagnostics/recipes': [
+        {'Id':'cpu-window','Type':'perf','DurationMs':30000}
+    ],
+    '/api/v1/diagnostics': {
+        'Active':True,'RunId':'run-1','CurrentDiagnostic':None,'StartedUtc':None,'Completed':[]
+    }}
 
 with sync_playwright() as playwright:
     options = {'headless': True}
@@ -102,6 +113,14 @@ with sync_playwright() as playwright:
     assert page.locator('#artifacts a').count() == 2
     if args.screenshot:
         page.screenshot(path=args.screenshot)
+    page.close()
+    page = fixture_page(diagnostics)
+    page.wait_for_function("document.querySelectorAll('#tools tr').length===2")
+    page.wait_for_function("document.querySelectorAll('#recipes tr').length===1")
+    page.locator('#recipes button').click()
+    page.wait_for_function("window.testPosts.includes('/api/v1/diagnostics/run')")
+    assert 'RenderDoc Python' in page.locator('#tools').inner_text()
+    page.close()
     assert not errors, errors
     browser.close()
-print('PASS: JavaScript syntax and offline browser fixtures for stats, quality, input, recorder, preview display and evidence. No C# server or xemu was executed.')
+print('PASS: JavaScript syntax and offline browser fixtures for stats, quality, input, recorder, preview, evidence and diagnostics. No C# server or xemu was executed.')

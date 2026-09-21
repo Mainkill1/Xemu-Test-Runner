@@ -42,7 +42,8 @@ public static class ConfigLoader
     private static void Validate(RunnerConfig c)
     {
         if (c.Queue is null || c.Monitoring is null || c.Http is null || c.XemuControl is null || c.Ui is null || c.Reliability is null ||
-            c.Monitoring.Gpu is null || c.Reliability.Preflight is null || c.Reliability.Watchdog is null || c.XemuControl.ButtonKeys is null)
+            c.Diagnostics is null || c.Monitoring.Gpu is null || c.Reliability.Preflight is null ||
+            c.Reliability.Watchdog is null || c.XemuControl.ButtonKeys is null)
             throw new InvalidDataException("Configuration sections cannot be null.");
         if (c.Monitoring.IntervalMs <= 0 || c.Monitoring.FlushIntervalMs <= 0 || c.Monitoring.BufferCapacity < 16 || c.Queue.ScanIntervalMs <= 0)
             throw new InvalidDataException("Sampling/flush/queue intervals must be positive; buffer capacity must be at least 16.");
@@ -59,6 +60,15 @@ public static class ConfigLoader
             r.EvidenceListLimit is < 1 or > 200 || r.MaxPreviewBytes is < 1024 or > 67108864 || w.StartupGraceMs < 0 ||
             w.IntervalMs < 100 || w.RequestTimeoutMs < 100 || w.FailureThreshold is < 1 or > 100)
             throw new InvalidDataException("Invalid reliability limits or watchdog intervals.");
+        if (c.Diagnostics.ToolTimeoutMs < 100 || c.Diagnostics.CaptureFinalizeTimeoutMs < 1000)
+            throw new InvalidDataException("Diagnostic tool timeout must be at least 100 ms and capture finalization at least 1000 ms.");
+        if (new[]
+        {
+            c.Diagnostics.WprExecutable, c.Diagnostics.XperfExecutable, c.Diagnostics.PerfExecutable,
+            c.Diagnostics.GdbExecutable, c.Diagnostics.ProcDumpExecutable, c.Diagnostics.RenderDocCommand,
+            c.Diagnostics.PythonExecutable, c.Diagnostics.Addr2LineExecutable
+        }.Any(string.IsNullOrWhiteSpace))
+            throw new InvalidDataException("Diagnostic executable settings cannot be empty.");
         // JSON deserialization may replace the original case-insensitive dictionary.
         c.XemuControl.ButtonKeys = new(c.XemuControl.ButtonKeys, StringComparer.OrdinalIgnoreCase);
     }

@@ -59,5 +59,13 @@
       "RequestTimeoutMs": 5000,
       "FailureThreshold": 3
     }
+  },
+  "Diagnostics": {
+    "Enabled": true,
+    "ToolTimeoutMs": 15000,
+    "CaptureFinalizeTimeoutMs": 60000,
+    "AutoHangBundle": true,
+    "AutoFailureBundle": false,
+    "RenderDocPythonPath": null
   }
 }
