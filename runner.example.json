@@ -43,5 +43,21 @@
     "WebRefreshMs": 500,
     "LivePreviewEnabled": true,
     "LivePreviewIntervalMs": 750
+  },
+  "Reliability": {
+    "Preflight": {
+      "MinimumFreeSpaceBytes": 1073741824
+    },
+    "MaxInterruptedRetries": 2,
+    "ProcessExitTimeoutMs": 10000,
+    "EvidenceListLimit": 100,
+    "MaxPreviewBytes": 16777216,
+    "Watchdog": {
+      "Enabled": true,
+      "StartupGraceMs": 10000,
+      "IntervalMs": 2000,
+      "RequestTimeoutMs": 5000,
+      "FailureThreshold": 3
+    }
   }
 }

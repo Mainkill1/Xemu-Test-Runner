@@ -1,4 +1,4 @@
-using System.Net;
+using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Text.Json;
 using XemuTestRunner.Config;
@@ -18,546 +18,157 @@ public sealed partial class EmbeddedHttpServer
     private readonly XemuControlManager _control;
     private readonly Action _requestStop;
     private TcpListener? _listener;
+    private readonly ConcurrentDictionary<TcpClient, byte> _clients = new();
 
-    public EmbeddedHttpServer(
-        HttpOptions options,
-        UiOptions uiOptions,
-        RunnerPaths paths,
-        RunnerState state,
-        JobQueue queue,
-        XemuControlManager control,
-        Action requestStop)
+    public EmbeddedHttpServer(HttpOptions options, UiOptions uiOptions, RunnerPaths paths,
+        RunnerState state, JobQueue queue, XemuControlManager control, Action requestStop)
     {
-        _options = options;
-        _uiOptions = uiOptions;
-        _paths = paths;
-        _state = state;
-        _queue = queue;
-        _control = control;
-        _requestStop = requestStop;
+        _options = options; _uiOptions = uiOptions; _paths = paths; _state = state;
+        _queue = queue; _control = control; _requestStop = requestStop;
     }
-
     public async Task RunAsync(CancellationToken cancellationToken)
     {
-        if (!_options.Enabled)
-            return;
-
-        var address = await ResolveBindAddressAsync(_options.BindAddress).ConfigureAwait(false);
-        _listener = new TcpListener(address, _options.Port);
+        if (!_options.Enabled) return;
+        _listener = new TcpListener(await ResolveBindAddressAsync(_options.BindAddress), _options.Port);
         _listener.Start();
         _state.SetHttpEndpoint($"http://{_options.BindAddress}:{_options.Port}");
-
         using var registration = cancellationToken.Register(() =>
         {
-            try { _listener.Stop(); } catch { }
+            _listener?.Stop();
+            foreach (var client in _clients.Keys) client.Dispose();
         });
-
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                var client = await _listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+                var client = await _listener.AcceptTcpClientAsync(cancellationToken);
                 client.NoDelay = true;
-                client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+                _clients.TryAdd(client, 0);
                 _ = HandleClientAsync(client, cancellationToken);
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (SocketException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (SocketException) when (cancellationToken.IsCancellationRequested) { }
         finally
         {
-            try { _listener.Stop(); } catch { }
-            _listener = null;
-            _state.SetHttpEndpoint(null);
+            _listener.Stop(); _state.SetHttpEndpoint(null);
+            foreach (var client in _clients.Keys) client.Dispose();
         }
     }
-
-    private async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken)
+    private async Task HandleClientAsync(TcpClient client, CancellationToken ct)
     {
         using (client)
         {
-            await using var network = client.GetStream();
-            await using var stream = new BufferedStream(network, 64 * 1024);
-
             try
             {
-                while (!cancellationToken.IsCancellationRequested)
+                await using var network = client.GetStream();
+                await using var stream = new BufferedStream(network, 65536);
+                while (!ct.IsCancellationRequested)
                 {
                     HttpRequest? request;
-                    try
-                    {
-                        request = await HttpRequestReader.ReadAsync(
-                            stream,
-                            _options.MaxHeaderBytes,
-                            cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (InvalidDataException ex)
-                    {
-                        await WriteJsonAsync(
-                            stream,
-                            400,
-                            "Bad Request",
-                            new { error = ex.Message },
-                            false,
-                            cancellationToken).ConfigureAwait(false);
-                        return;
-                    }
-
-                    if (request is null)
-                        return;
-
-                    var keepAlive = request.KeepAlive;
-
-                    if (request.Headers.TryGetValue("Transfer-Encoding", out var transferEncoding) &&
-                        !string.Equals(transferEncoding, "identity", StringComparison.OrdinalIgnoreCase))
-                    {
-                        await WriteJsonAsync(
-                            stream,
-                            501,
-                            "Not Implemented",
-                            new { error = "Chunked request bodies are not supported. Send Content-Length." },
-                            false,
-                            cancellationToken).ConfigureAwait(false);
-                        return;
-                    }
-
-                    if (request.Headers.TryGetValue("Expect", out var expect) &&
-                        expect.Equals("100-continue", StringComparison.OrdinalIgnoreCase))
-                    {
-                        await WriteAsciiAsync(
-                            stream,
-                            "HTTP/1.1 100 Continue\r\n\r\n",
-                            cancellationToken).ConfigureAwait(false);
-                        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-                    }
-
-                    var consumedBody = await RouteAsync(
-                        stream,
-                        request,
-                        keepAlive,
-                        cancellationToken).ConfigureAwait(false);
-
-                    if (!keepAlive || !consumedBody)
-                        return;
+                    try { request = await HttpRequestReader.ReadAsync(stream, _options.MaxHeaderBytes, ct); }
+                    catch (InvalidDataException e) { await WriteJsonAsync(stream, 400, "Bad Request", new { error = e.Message }, false, ct); return; }
+                    if (request is null) return;
+                    if (request.Headers.ContainsKey("Transfer-Encoding"))
+                    { await WriteJsonAsync(stream, 501, "Not Implemented", new { error = "Send Content-Length; chunked request encoding is not supported." }, false, ct); return; }
+                    if ((request.Method is "GET" or "HEAD") && request.ContentLength.GetValueOrDefault() != 0)
+                    { await WriteJsonAsync(stream, 400, "Bad Request", new { error = "GET and HEAD must not include a body." }, false, ct); return; }
+                    if (request.Headers.TryGetValue("Expect", out var expect) && expect.Equals("100-continue", StringComparison.OrdinalIgnoreCase))
+                    { await WriteAsciiAsync(stream, "HTTP/1.1 100 Continue\r\n\r\n", ct); await stream.FlushAsync(ct); }
+                    if (!await RouteAsync(stream, request, request.KeepAlive, ct) || !request.KeepAlive) return;
                 }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-            }
-            catch (IOException)
-            {
-            }
-            catch (SocketException)
-            {
-            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+            catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException) { }
+            catch (Exception e) { System.Diagnostics.Trace.TraceError("HTTP request failed: " + e); }
+            finally { _clients.TryRemove(client, out _); }
         }
     }
-
-    private async Task<bool> RouteAsync(
-        Stream stream,
-        HttpRequest request,
-        bool keepAlive,
-        CancellationToken cancellationToken)
+    private async Task<bool> RouteAsync(Stream stream, HttpRequest request, bool keepAlive, CancellationToken ct)
     {
-        if (request.Method == "GET" && request.Path == "/")
+        var evidence = await TryEvidenceRouteAsync(stream, request, keepAlive, ct);
+        if (evidence.HasValue) return evidence.Value;
+        if (request.Method == "GET")
         {
-            await WriteHtmlAsync(
-                stream,
-                WebPages.Home(_uiOptions.WebRefreshMs),
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (request.Method == "GET" && request.Path == "/control")
-        {
-            await WriteHtmlAsync(
-                stream,
-                WebPages.Control(
-                    _uiOptions.WebRefreshMs,
-                    _uiOptions.LivePreviewIntervalMs,
-                    _uiOptions.LivePreviewEnabled),
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (request.Method == "GET" && request.Path == "/api/v1/control")
-        {
-            await WriteJsonAsync(
-                stream,
-                200,
-                "OK",
-                _control.Snapshot(),
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (request.Method == "GET" && request.Path == "/api/v1/preview")
-        {
-            await HandlePreviewAsync(stream, keepAlive, cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (request.Method == "POST" && request.Path == "/api/v1/xemu/pause")
-        {
-            await HandlePauseAsync(stream, request, keepAlive, cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (request.Method == "POST" && request.Path == "/api/v1/xemu/resume")
-        {
-            await HandleResumeAsync(stream, request, keepAlive, cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (request.Method == "GET" && request.Path == "/api/v1/input/record")
-        {
-            await WriteJsonAsync(
-                stream,
-                200,
-                "OK",
-                _control.RecordingSnapshot(),
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (request.Method == "POST" && request.Path == "/api/v1/input/record/start")
-        {
-            await HandleRecordingActionAsync(stream, request, keepAlive, "start", cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (request.Method == "POST" && request.Path == "/api/v1/input/record/stop")
-        {
-            await HandleRecordingActionAsync(stream, request, keepAlive, "stop", cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (request.Method == "POST" && request.Path == "/api/v1/input/record/clear")
-        {
-            await HandleRecordingActionAsync(stream, request, keepAlive, "clear", cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (request.Method == "GET" && request.Path == "/api/v1/health")
-        {
-            await WriteJsonAsync(
-                stream,
-                200,
-                "OK",
-                new { status = "ok", timestampUtc = DateTimeOffset.UtcNow },
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (request.Method == "GET" && request.Path == "/api/v1/status")
-        {
-            await WriteJsonAsync(
-                stream,
-                200,
-                "OK",
-                _state.Snapshot(),
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (request.Method == "GET" && request.Path == "/api/v1/metrics/latest")
-        {
-            var metric = _state.Snapshot().LatestMetric;
-            if (metric is null)
-                await WriteEmptyAsync(stream, 204, "No Content", keepAlive, cancellationToken).ConfigureAwait(false);
-            else
-                await WriteJsonAsync(stream, 200, "OK", metric, keepAlive, cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (request.Method == "GET" && request.Path == "/api/v1/queue")
-        {
-            await WriteJsonAsync(
-                stream,
-                200,
-                "OK",
-                _state.Snapshot().Queue,
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (request.Method == "GET" && request.Path == "/api/v1/screenshot")
-        {
-            await HandleScreenshotAsync(stream, request, keepAlive, cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (request.Method == "POST" && request.Path == "/api/v1/input/press")
-        {
-            await HandleButtonPressAsync(stream, request, keepAlive, cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        if (request.Method == "POST" && request.Path == "/api/v1/runner/stop")
-        {
-            if ((request.ContentLength ?? 0) > 0)
-                await DrainBodyAsync(stream, request.ContentLength!.Value, cancellationToken).ConfigureAwait(false);
-
-            await WriteJsonAsync(
-                stream,
-                202,
-                "Accepted",
-                new { stopping = true },
-                false,
-                cancellationToken).ConfigureAwait(false);
-
-            _requestStop();
-            return true;
-        }
-
-        if (request.Method == "POST" && request.Path == "/api/v1/jobs")
-        {
-            if ((request.ContentLength ?? 0) > 0)
-                await DrainBodyAsync(stream, request.ContentLength!.Value, cancellationToken).ConfigureAwait(false);
-
-            await WriteJsonAsync(
-                stream,
-                409,
-                "Conflict",
-                new
-                {
-                    error = "Queue entries are self-contained directories, not standalone JSON.",
-                    expected = "Place a directory containing job.json and the xemu executable under Queue/Pending."
-                },
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-            return true;
-        }
-
-        const string filesPrefix = "/api/v1/files/";
-        if (request.Path.StartsWith(filesPrefix, StringComparison.Ordinal))
-        {
-            var relative = request.Path[filesPrefix.Length..];
-
-            if (request.Method is "GET" or "HEAD")
+            switch (request.Path)
             {
-                await HandleFileReadAsync(
-                    stream,
-                    request,
-                    relative,
-                    keepAlive,
-                    cancellationToken).ConfigureAwait(false);
-                return true;
-            }
-
-            if (request.Method is "PUT" or "POST")
-            {
-                await HandleFileUploadAsync(
-                    stream,
-                    request,
-                    relative,
-                    keepAlive,
-                    cancellationToken).ConfigureAwait(false);
-                return true;
+                case "/": await WriteHtmlAsync(stream, WebPages.Home(_uiOptions.WebRefreshMs), keepAlive, ct); return true;
+                case "/control": await WriteHtmlAsync(stream, WebPages.Control(_uiOptions.WebRefreshMs, _uiOptions.LivePreviewIntervalMs, _uiOptions.LivePreviewEnabled), keepAlive, ct); return true;
+                case "/api/v1/health": await WriteJsonAsync(stream, 200, "OK", new { status = "ok", timestampUtc = DateTimeOffset.UtcNow }, keepAlive, ct); return true;
+                case "/api/v1/status": await WriteJsonAsync(stream, 200, "OK", _state.Snapshot(), keepAlive, ct); return true;
+                case "/api/v1/control": await WriteJsonAsync(stream, 200, "OK", _control.Snapshot(), keepAlive, ct); return true;
+                case "/api/v1/queue": await WriteJsonAsync(stream, 200, "OK", _state.Snapshot().Queue, keepAlive, ct); return true;
+                case "/api/v1/metrics/latest":
+                    var metric = _state.Snapshot().LatestMetric;
+                    if (metric is null) await WriteEmptyAsync(stream, 204, "No Content", keepAlive, ct);
+                    else await WriteJsonAsync(stream, 200, "OK", metric, keepAlive, ct);
+                    return true;
+                case "/api/v1/preview": await HandleSharedPreviewAsync(stream, keepAlive, ct); return true;
+                case "/api/v1/screenshot": return await HandleScreenshotAsync(stream, request, keepAlive, ct);
+                case "/api/v1/input/record": await WriteJsonAsync(stream, 200, "OK", _control.RecordingSnapshot(), keepAlive, ct); return true;
             }
         }
-
-        await WriteJsonAsync(
-            stream,
-            404,
-            "Not Found",
-            new { error = "Route not found." },
-            false,
-            cancellationToken).ConfigureAwait(false);
-
-        return request.ContentLength.GetValueOrDefault() == 0;
+        if (request.Method == "POST")
+        {
+            switch (request.Path)
+            {
+                case "/api/v1/input/press": return await HandleButtonPressAsync(stream, request, keepAlive, ct);
+                case "/api/v1/xemu/pause": Activity.Mark("pause", null); await HandlePauseAsync(stream, request, keepAlive, ct); return true;
+                case "/api/v1/xemu/resume": Activity.Mark("resume", null); await HandleResumeAsync(stream, request, keepAlive, ct); return true;
+                case "/api/v1/input/record/start": await HandleRecordingActionAsync(stream, request, keepAlive, "start", ct); return true;
+                case "/api/v1/input/record/stop": await HandleRecordingActionAsync(stream, request, keepAlive, "stop", ct); return true;
+                case "/api/v1/input/record/clear": await HandleRecordingActionAsync(stream, request, keepAlive, "clear", ct); return true;
+                case "/api/v1/runner/stop":
+                    await WriteJsonAsync(stream, 202, "Accepted", new { stopping = true }, false, ct); _requestStop(); return false;
+                case "/api/v1/jobs":
+                    await WriteJsonAsync(stream, 409, "Conflict", new { error = "Stage a complete directory with job.json and the candidate executable in Pending." }, false, ct); return false;
+            }
+        }
+        const string prefix = "/api/v1/files/";
+        if (request.Path.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            var relative = request.Path[prefix.Length..];
+            using var transfer = Activity.TrackTransfer(new { method = request.Method, file = relative });
+            // A dedicated transfer connection avoids interpreting unread bodies as a subsequent request on failure.
+            if (request.Method is "GET" or "HEAD") { await HandleFileReadAsync(stream, request, relative, false, ct); return false; }
+            if (request.Method is "POST" or "PUT") { await HandleFileUploadAsync(stream, request, relative, false, ct); return false; }
+        }
+        await WriteJsonAsync(stream, 404, "Not Found", new { error = "Route not found." }, false, ct); return false;
     }
-
-    private async Task HandleScreenshotAsync(
-        Stream stream,
-        HttpRequest request,
-        bool keepAlive,
-        CancellationToken cancellationToken)
+    private async Task<bool> HandleScreenshotAsync(Stream stream, HttpRequest request, bool keepAlive, CancellationToken ct)
     {
-        if (!_control.HasActiveSession)
+        if (!_control.HasActiveSession) { await WriteJsonAsync(stream, 409, "Conflict", new { error = "No active xemu." }, keepAlive, ct); return true; }
+        string path;
+        try { Activity.Mark("screenshot", null); path = await _control.CaptureScreenshotAsync(GetQueryValue(request.Query, "name"), ct); }
+        catch (Exception e) when (e is IOException or TimeoutException or InvalidOperationException or SocketException)
+        { await WriteJsonAsync(stream, 503, "Service Unavailable", new { error = e.Message }, false, ct); return false; }
+        await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, _options.TransferBufferBytes, FileOptions.Asynchronous);
+        await WriteHeadersAsync(stream, 200, "OK", new Dictionary<string, string>
         {
-            await WriteJsonAsync(
-                stream,
-                409,
-                "Conflict",
-                new { error = "No xemu test is currently active." },
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
-        var responseStarted = false;
-
+            ["Content-Type"] = "image/png", ["Content-Length"] = file.Length.ToString(), ["Cache-Control"] = "no-store",
+            ["Content-Disposition"] = $"inline; filename=\"{EscapeHeaderValue(Path.GetFileName(path))}\""
+        }, keepAlive, ct);
+        await CopyBytesAsync(file, stream, file.Length, ct); await stream.FlushAsync(ct); return true;
+    }
+    private async Task<bool> HandleButtonPressAsync(Stream stream, HttpRequest request, bool keepAlive, CancellationToken ct)
+    {
+        if (request.ContentLength is not long length || length is < 1 or > 16384)
+        { await WriteJsonAsync(stream, 400, "Bad Request", new { error = "Input body requires Content-Length between 1 and 16384." }, false, ct); return false; }
+        var bytes = new byte[(int)length]; await ReadExactlyAsync(stream, bytes, ct);
+        if (!_control.HasActiveSession || _control.Snapshot().Paused)
+        { await WriteJsonAsync(stream, 409, "Conflict", new { error = "Input requires an active, unpaused xemu." }, keepAlive, ct); return true; }
         try
         {
-            var requestedName = GetQueryValue(request.Query, "name");
-            var path = await _control.CaptureScreenshotAsync(
-                requestedName,
-                cancellationToken).ConfigureAwait(false);
-
-            var info = new FileInfo(path);
-            await using var file = new FileStream(
-                path,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                _options.TransferBufferBytes,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-
-            var headers = new Dictionary<string, string>
-            {
-                ["Content-Type"] = "image/png",
-                ["Content-Length"] = info.Length.ToString(),
-                ["Cache-Control"] = "no-store",
-                ["Content-Disposition"] = $"inline; filename=\"{EscapeHeaderValue(info.Name)}\"",
-                ["X-Xemu-Screenshot"] = EscapeHeaderValue(info.Name)
-            };
-
-            await WriteHeadersAsync(
-                stream,
-                200,
-                "OK",
-                headers,
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-            responseStarted = true;
-
-            await CopyBytesAsync(file, stream, info.Length, cancellationToken).ConfigureAwait(false);
-            await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            var input = JsonSerializer.Deserialize<ButtonPressRequest>(bytes, ConfigLoader.JsonOptions) ?? throw new InvalidDataException("Empty input.");
+            if (string.IsNullOrWhiteSpace(input.Button) || input.DurationMs is < 1 or > 60000) throw new InvalidDataException("Invalid button or duration.");
+            Activity.Mark("manual_input", new { input.Button, input.DurationMs });
+            await _control.PressButtonAsync(input.Button, input.DurationMs, ct);
+            await WriteJsonAsync(stream, 200, "OK", new { accepted = true, button = input.Button, durationMs = input.DurationMs }, keepAlive, ct);
         }
-        catch (Exception ex) when (
-            ex is IOException or
-            SocketException or
-            InvalidDataException or
-            InvalidOperationException or
-            TimeoutException)
-        {
-            if (responseStarted)
-                throw new IOException("Screenshot response failed after HTTP headers were sent.", ex);
-
-            await WriteJsonAsync(
-                stream,
-                503,
-                "Service Unavailable",
-                new { error = ex.Message },
-                false,
-                cancellationToken).ConfigureAwait(false);
-        }
+        catch (Exception e) when (e is JsonException or InvalidDataException)
+        { await WriteJsonAsync(stream, 400, "Bad Request", new { error = e.Message }, keepAlive, ct); }
+        catch (InvalidOperationException e) { await WriteJsonAsync(stream, 503, "Service Unavailable", new { error = e.Message }, keepAlive, ct); }
+        return true;
     }
-
-    private async Task HandleButtonPressAsync(
-        Stream stream,
-        HttpRequest request,
-        bool keepAlive,
-        CancellationToken cancellationToken)
-    {
-        if (!_control.HasActiveSession)
-        {
-            if ((request.ContentLength ?? 0) > 0)
-                await DrainBodyAsync(stream, request.ContentLength!.Value, cancellationToken).ConfigureAwait(false);
-
-            await WriteJsonAsync(
-                stream,
-                409,
-                "Conflict",
-                new { error = "No xemu test is currently active." },
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
-        var length = request.ContentLength;
-        if (length is null)
-        {
-            await WriteJsonAsync(
-                stream,
-                411,
-                "Length Required",
-                new { error = "Content-Length is required." },
-                false,
-                cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
-        if (length <= 0 || length > 16 * 1024)
-        {
-            await WriteJsonAsync(
-                stream,
-                413,
-                "Content Too Large",
-                new { error = "Input request JSON must be between 1 byte and 16 KiB." },
-                false,
-                cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
-        var buffer = new byte[(int)length.Value];
-        await ReadExactlyAsync(stream, buffer, cancellationToken).ConfigureAwait(false);
-
-        try
-        {
-            var input = JsonSerializer.Deserialize<ButtonPressRequest>(
-                buffer,
-                ConfigLoader.JsonOptions)
-                ?? throw new InvalidDataException("Input request was empty or invalid.");
-
-            if (string.IsNullOrWhiteSpace(input.Button))
-                throw new InvalidDataException("Button is required.");
-
-            await _control.PressButtonAsync(
-                input.Button,
-                input.DurationMs,
-                cancellationToken).ConfigureAwait(false);
-
-            await WriteJsonAsync(
-                stream,
-                200,
-                "OK",
-                new
-                {
-                    button = input.Button,
-                    durationMs = input.DurationMs,
-                    accepted = true
-                },
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch (InvalidOperationException ex)
-        {
-            await WriteJsonAsync(
-                stream,
-                503,
-                "Service Unavailable",
-                new { error = ex.Message },
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is JsonException or InvalidDataException)
-        {
-            await WriteJsonAsync(
-                stream,
-                400,
-                "Bad Request",
-                new { error = ex.Message },
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    private sealed class ButtonPressRequest
-    {
-        public string Button { get; set; } = "";
-        public int? DurationMs { get; set; }
-    }
+    private sealed class ButtonPressRequest { public string Button { get; set; } = ""; public int? DurationMs { get; set; } }
 }

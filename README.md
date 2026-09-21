@@ -1,451 +1,175 @@
 # Xemu Test Runner
 
-Host-side Windows/Linux runner for repeatable xemu build testing. It runs one queued xemu build at a time, records host/process performance telemetry, executes simple controller-driven test plans, captures screenshots and logs, survives runner crashes without losing queue state, and exposes a small LAN HTTP interface while the foreground CLI is running.
+A foreground C#/.NET 10 and Spectre.Console.Cli application for Windows/Linux xemu build testing. The console owns the queue, launched process, telemetry, test plan and embedded LAN HTTP endpoint. No ASP.NET service, separate daemon or physical Xbox is required.
 
-This repository currently targets the host only. No Original Xbox test executable or physical Xbox is required. A physical-Xbox adapter can be added later without changing the host queue/result model.
+**Validation status:** the reliability changes have source review and offline browser-fixture checks, but have not yet been compiled or exercised with real xemu on Windows/Linux. See [validation](docs/VALIDATION.md) before relying on unattended runs.
 
-## Queue model
+## Build and start
 
-A queue item is a **directory containing the exact xemu build being tested and its job plan**.
+```sh
+dotnet build src/XemuTestRunner/XemuTestRunner.csproj -c Release
+dotnet run --project src/XemuTestRunner -- init
+dotnet run --project src/XemuTestRunner -- doctor
+dotnet run --project src/XemuTestRunner -- run
+```
 
-    workspace/
-    |-- Queue/
-    |   |-- Pending/
-    |   |   `-- build-123/
-    |   |       |-- job.json
-    |   |       |-- xemu.exe          # Windows package
-    |   |       |   # or xemu         # Linux package
-    |   |       |-- xemu.toml
-    |   |       `-- other test files...
-    |   |-- Testing/
-    |   `-- Tested/
-    |-- Results/
-    `-- Files/
+Publish a self-contained executable with `scripts/publish.ps1 -Rid win-x64` or `bash scripts/publish.sh linux-x64`. Use the produced `XemuTestRunner.exe` or `XemuTestRunner` executable. The `run --once` command drains the queue and exits when it is empty. `queue` inspects the local queue; `status --url http://host:9368` reads a running instance.
 
-The **whole package directory** moves through:
+## A queue item contains the plan AND candidate executable
 
-    Pending/build-123
-        -> Testing/build-123
-        -> Tested/build-123
-
-This keeps the plan and exact executable together. A job can never silently begin testing a different xemu binary because another file elsewhere was replaced.
-
-Only one package is allowed in `Testing` at a time.
-
-If the runner or host dies while a package is in `Testing`, the directory remains there. On the next start:
-
-- `InterruptedAction = retry` records the interruption and moves the package back to Pending.
-- `InterruptedAction = hold` leaves it in Testing for manual inspection.
-
-A normal xemu crash, non-zero exit, timeout, or failed plan is still a completed test attempt. Its result is recorded and its package moves to Tested.
-
-### Safely staging a package
-
-Directories beginning with `.` are ignored by the queue. This is useful when copying a large build:
-
-    Pending/.incoming-build-123/
+```text
+workspace/
+  Queue/
+    Pending/
+      build-123/
         job.json
-        xemu.exe
+        xemu.exe             # or xemu on Linux
         xemu.toml
+        required DLLs/assets...
+    Testing/
+    Tested/
+  Results/
+  Files/
+```
 
-After the copy is complete, rename it:
+The **whole build directory** moves `Pending -> Testing -> Tested`. Only one visible package may occupy Testing. Keep these directories on the same local filesystem for directory renames. Copy incomplete packages under `.incoming-build-123`, then rename to `build-123` after all files arrive. Dot-prefixed directories are ignored.
 
-    .incoming-build-123 -> build-123
+Linux builds must retain their executable bit. Package-relative paths are used for `Executable` and `WorkingDirectory`; xemu arguments are passed separately without shell expansion. Supply your own firmware, disks and test assets; none are distributed here.
 
-The runner can then claim the complete package with a same-filesystem directory rename.
+```json
+{
+  "Id": "build-123",
+  "TargetOs": "windows",
+  "Executable": "xemu.exe",
+  "WorkingDirectory": ".",
+  "RequiredFiles": ["xemu.toml"],
+  "Arguments": ["-config_path", "xemu.toml"],
+  "TimeoutSeconds": 120,
+  "Plan": [
+    { "Type": "wait", "DelayMs": 3000 },
+    { "Type": "button", "Button": "Start", "DurationMs": 100 },
+    { "Type": "screenshot", "Name": "after-start" }
+  ]
+}
+```
 
-## Build
+For Linux, set `TargetOs` to `linux` and `Executable` to `xemu`. Optionally add `ExpectedExecutableSha256` with the expected 64-character hex hash. An absent expected hash still produces an actual executable hash in evidence. A plan finishing does not terminate xemu; target exit, timeout or an explicit operator stop ends the attempt. Exit code zero means **completed**, not proven Xbox correctness.
 
-Requires .NET 10 SDK.
+## Five reliability additions
 
-    dotnet build src/XemuTestRunner/XemuTestRunner.csproj -c Release
+### 1. Preflight before launch
 
-Spectre.Console.Cli is used for the CLI. The application does not use ASP.NET, Generic Host, Windows Service, or systemd hosting.
+`validate <package>` runs the same checks used by the queue without launching xemu:
 
-Self-contained single-file examples:
+```sh
+dotnet run --project src/XemuTestRunner -- validate workspace/Queue/Pending/build-123
+```
 
-Windows PowerShell:
+Checks cover the declared target OS, executable presence/hash, required files, working directory, Linux executable permission, and minimum free space on the result volume. A queued failure writes `preflight.json` and `result.json` with `preflight_failed` instead of launching an incomplete build. Malformed manifests receive `invalid_job`. Target OS is declared metadata, not PE/ELF architecture inspection.
 
-    ./scripts/publish.ps1 -Rid win-x64
+### 2. Exclusive ownership and bounded recovery
 
-Linux:
+Workspace and Testing-directory leases prevent a second runner using the same locations. Each package has an atomically replaced `.runner-attempt.json` recording attempt number, run ID, launch phase and process identity. Final results are written before moving to Tested.
 
-    bash ./scripts/publish.sh linux-x64
+On restart, an already-finalized attempt is archived without rerunning it. An absent/ambiguous identity, a live matching process or an uninspectable process leaves the package in Testing for inspection. A known exited interruption can be retried up to `MaxInterruptedRetries`; previous attempts retain their own result records. `Queue.InterruptedAction: "hold"` suppresses automatic retries. No recovery operation kills an arbitrary PID.
 
-## First run
+Do not delete a live `.runner.lock`. For a held package, inspect `.runner-recovery.json`, its attempt journal and the recorded process before manually requeuing it. Filesystem flushing and renames reduce loss windows; they are not a universal power-loss guarantee.
 
-Create a local config and workspace:
+### 3. QMP responsiveness watchdog
 
-    xemu-test-runner init
+An optional watchdog probes xemu's local QMP endpoint after a startup grace period. Only consecutive failed probes trigger `unresponsive`; successful probes reset the count. The normal test timeout remains separate. A paused VM can still answer QMP.
 
-Or copy `runner.example.json` to `runner.json`.
+A QMP response is **not** proof that the game is advancing, nor does an unchanged screenshot prove a hang. The result retains the watchdog reason, last successful probe time and failure count. Timeout/plan-failure handling attempts a bounded failure screenshot before stopping the process; a dead or wedged renderer may not provide one. Process shutdown and log draining are bounded. If cleanup cannot be confirmed, Testing is retained and the queue stops.
 
-Check platform and telemetry support:
+### 4. Evidence browser, log tails and downloads
 
-    xemu-test-runner doctor
+Open `http://host:9368/results`. It lists recent runs, result metadata, artifacts and a followable bounded log tail. Selecting a log reads only its final slice, not a multi-gigabyte file into memory.
 
-Start the foreground runner:
+```text
+GET /api/v1/runs
+GET /api/v1/runs/<run-id>
+GET /api/v1/runs/<run-id>/tail?file=stdout.log&bytes=32768
+GET /api/v1/runs/<run-id>/artifacts/result.json
+GET /api/v1/runs/<run-id>/artifacts/metrics.csv
+```
 
-    xemu-test-runner run
+Tails support `stdout.log`, `stderr.log` and `operator-events.jsonl`, with a maximum 64 KiB slice and explicit offsets. Artifact GET/HEAD supports one HTTP byte range using 64-bit lengths. Listing sizes are bounded; linked or escaping evidence paths are rejected. This is not a database-backed history index.
 
-Process the current queue and exit when it becomes empty:
+### 5. Benchmark hygiene and shared preview
 
-    xemu-test-runner run --once
+Preview requests share one latest frame per run and a server-side minimum capture interval. Concurrent viewers do not each start a capture; failed captures are backed off too. Run IDs and capture timestamps are returned with frames. Browser refreshes are sequential, and hidden tabs stop requesting preview images.
 
-Inspect queue counts locally:
+Manual input, pauses, retained screenshots, preview captures and bulk transfers are journaled to `operator-events.jsonl`. The result includes `operatorActivity` and `comparisonStatus: "operator_intervened"` when these occurred. In-flight transfers begun before a job also mark the new job. The home page and console display these counts through `/api/v1/quality`.
 
-    xemu-test-runner queue
+This is a warning mechanism, not an automatic performance verdict. A run without interventions is `not_evaluated`, never automatically benchmark-valid. Close/disable previews during clean measurements; the 100 ms telemetry sampler stays independent of HTTP polling.
 
-Query a running runner from another process or LAN machine:
+## Configuration
 
-    xemu-test-runner status --url http://127.0.0.1:9368
+`init` generates `runner.json`; `runner.example.json` includes all sections. Relevant defaults:
 
-### Live CLI dashboard
+```json
+{
+  "Monitoring": { "IntervalMs": 100 },
+  "Ui": { "CliRefreshMs": 250, "WebRefreshMs": 500, "LivePreviewEnabled": true, "LivePreviewIntervalMs": 750 },
+  "Reliability": {
+    "Preflight": { "MinimumFreeSpaceBytes": 1073741824 },
+    "MaxInterruptedRetries": 2,
+    "ProcessExitTimeoutMs": 10000,
+    "EvidenceListLimit": 100,
+    "MaxPreviewBytes": 16777216,
+    "Watchdog": { "Enabled": true, "StartupGraceMs": 10000, "IntervalMs": 2000, "RequestTimeoutMs": 5000, "FailureThreshold": 3 }
+  }
+}
+```
 
-`xemu-test-runner run` now keeps a Spectre live table on screen while the foreground runner is active. It shows:
+## Dashboards and xemu control
 
-- runner state: starting, idle, running, paused, interrupted, finished, stopped
-- Pending / Testing / Tested queue counts
-- current job, run ID, PID, and test runtime
-- host and process CPU
-- host and process memory
-- swap/pagefile
-- host and process GPU
-- VRAM and process VRAM
-- process read/write throughput
-- GPU temperature/power where available
-- metric collector duration and overrun state
-- last job and result
+`/` shows cached host/process statistics, job/queue status, last outcome, sample age and intervention counts. `/control` provides near-live preview, retained screenshots, pause/resume, logical Xbox buttons and a recorder that exports `Plan` JSON. Stopping a nonempty recording saves it with the active run.
 
-CLI repaint rate is controlled by `Ui.CliRefreshMs` and is independent of `Monitoring.IntervalMs`.
+The runner appends its own `-qmp tcp:127.0.0.1:<port>,server=on,wait=off`. QMP is used for status, stop/cont and PNG screendump. Availability of PNG capture depends on the xemu build and renderer; this branch still needs native verification.
 
-### Embedded web UI
+Xbox buttons are **not QMP send-key**. xemu reads SDL host keyboard state for its keyboard-as-controller mapping. Bind the packaged xemu config accordingly:
 
-Open the runner root in a browser:
+```toml
+[input]
+auto_bind = false
+[input.bindings]
+port1 = 'keyboard'
+port1_driver = 'usb-xbox-gamepad'
+```
 
-    http://<runner-host>:9368/
+Windows uses foreground-checked SendInput; Linux uses X11/XTest. Keys are released in cancellation cleanup. Native Wayland is not supported. `XemuControl.ButtonKeys` must agree with the xemu keyboard mapping. These are digital keyboard-mapped controls, not analog hardware-controller emulation.
 
-The home page shows current runner/queue state plus live system and xemu-process statistics. It links to the test console and raw JSON endpoints.
+```text
+GET  /api/v1/status
+GET  /api/v1/control
+GET  /api/v1/metrics/latest
+GET  /api/v1/queue
+GET  /api/v1/quality
+GET  /api/v1/preview
+GET  /api/v1/screenshot
+POST /api/v1/xemu/pause
+POST /api/v1/xemu/resume
+POST /api/v1/input/press
+GET  /api/v1/input/record
+POST /api/v1/input/record/start
+POST /api/v1/input/record/stop
+POST /api/v1/input/record/clear
+POST /api/v1/runner/stop
+```
 
-The interactive test console is:
+Telemetry includes host/process CPU, RAM, swap/pagefile, I/O and available GPU/VRAM/thermal counters. Missing values are shown as unavailable, not manufactured as GPU zero. Vendor support and update frequencies vary. Host/process samples are collected during active jobs; the idle dashboard is not an always-on system monitor.
 
-    http://<runner-host>:9368/control
+## Large file transfers
 
-The console provides:
+The existing `GET/HEAD/PUT/POST /api/v1/files/<path>` interface streams artifacts under the configured file root with 64-bit lengths. Uploads require Content-Length; sequential resume uses Content-Range and `.partial` files. Query `?upload-status=1` for upload position. There is no application-wide 10 GB length cap, but disk space and filesystem limits still apply. A real 10 GB+ network transfer has not been validated in this environment.
 
-- near-live xemu display preview
-- retained on-demand screenshots
-- pause/resume
-- Xbox controller buttons plus a custom logical-button command
-- current host/process CPU, GPU, memory, VRAM, swap/pagefile and I/O
-- input recording that produces ready-to-paste `Plan` JSON
+## Tests
 
-The preview cadence is intentionally separate from telemetry. Defaults:
+```sh
+dotnet run --project tests/RunnerChecks -c Release
+```
 
-    "Ui": {
-      "CliRefreshMs": 250,
-      "WebRefreshMs": 500,
-      "LivePreviewEnabled": true,
-      "LivePreviewIntervalMs": 750
-    }
+This dependency-free regression executable covers preflight, ownership, recovery decisions, watchdog sequences/cancellation, concurrent preview caching, bounded tails, large-range arithmetic, input ABI size and intervention accounting. `-- --large-file` opts into an 11 GiB local file-length test; it is not a 10 GB HTTP transfer test.
 
-The control page requests preview frames only while the page is visible. For strict performance runs, disable live preview or leave the control page closed so screenshot generation cannot perturb the benchmark.
-
-## Job package
-
-`job.json` describes how to start the executable contained in the package and what automated actions to perform.
-
-Example Windows package:
-
-    build-123/
-    |-- job.json
-    |-- xemu.exe
-    `-- xemu.toml
-
-Example Linux package:
-
-    build-123/
-    |-- job.json
-    |-- xemu
-    `-- xemu.toml
-
-The Linux executable bit must be preserved.
-
-Example `job.json`:
-
-    {
-      "Id": "xemu-smoke-example",
-      "Executable": "xemu.exe",
-      "Arguments": [
-        "-config_path",
-        "xemu.toml"
-      ],
-      "WorkingDirectory": ".",
-      "Environment": {},
-      "TimeoutSeconds": 120,
-      "Tags": ["smoke"],
-      "Plan": [
-        {
-          "Type": "wait",
-          "DelayMs": 3000
-        },
-        {
-          "Type": "button",
-          "Button": "Start",
-          "DurationMs": 100
-        },
-        {
-          "Type": "wait",
-          "DelayMs": 500
-        },
-        {
-          "Type": "screenshot",
-          "Name": "after-start"
-        }
-      ]
-    }
-
-`Executable` and `WorkingDirectory` are package-relative. Absolute executable paths and paths that escape the package are rejected.
-
-For Linux, set:
-
-    "Executable": "xemu"
-
-The current plan step types are:
-
-- `wait` — wait for `DelayMs`.
-- `button` — press a logical Xbox controller button for `DurationMs`.
-- `screenshot` — capture the current emulated display to the run result.
-
-The plan does not decide when xemu exits. It performs its actions while xemu continues running; normal process exit or `TimeoutSeconds` ends the test.
-
-## xemu control
-
-The runner owns a local QMP endpoint for each active xemu process. When xemu is launched, the runner appends an argument equivalent to:
-
-    -qmp tcp:127.0.0.1:<automatic-port>,server=on,wait=off
-
-Do not add a second `-qmp` argument to the job while `XemuControl.Enabled` is true.
-
-QMP is currently used for xemu-native control operations such as status checks, pause/resume, and screenshots. Manual pause also pauses automated plan timing and the test timeout clock.
-
-### Xbox controller button presses
-
-Controller actions intentionally **do not use QMP `send-key`**.
-
-xemu's keyboard-as-Xbox-controller implementation reads the host SDL keyboard state and maps that state into its Xbox `ControllerState`. QEMU guest-keyboard injection is a different input path.
-
-For deterministic automated input, the package should provide an `xemu.toml` that binds the keyboard to controller port 1:
-
-    [general]
-    show_welcome = false
-    skip_boot_anim = true
-
-    [general.updates]
-    check = false
-
-    [input]
-    auto_bind = false
-
-    [input.bindings]
-    port1 = 'keyboard'
-    port1_driver = 'usb-xbox-gamepad'
-
-The runner then converts logical actions such as:
-
-    A
-    B
-    X
-    Y
-    Start
-    Back
-    White
-    Black
-    DPadUp
-    DPadDown
-    DPadLeft
-    DPadRight
-    LStickUp
-    LStickDown
-    LStickLeft
-    LStickRight
-    LTrigger
-    RStickUp
-    RStickDown
-    RStickLeft
-    RStickRight
-    RTrigger
-
-into the configured host key mapping.
-
-The mapping lives under `XemuControl.ButtonKeys` and can be overridden if the package uses a custom xemu keyboard map.
-
-Current host input providers:
-
-- **Windows:** focuses the active xemu window and injects hardware scan codes with Win32 `SendInput`.
-- **Linux X11/XWayland:** finds the xemu X11 window by PID, focuses it, and injects key events with XTest.
-- **Native Wayland:** not implemented yet. Use an X11/XWayland xemu session or add a Wayland-specific provider.
-
-Windows can restrict which process is allowed to force foreground focus. The provider makes a best-effort foreground request before each automated button press; this is something the test-box validation needs to exercise.
-
-## Screenshots
-
-Screenshots use xemu/QMP's native `screendump` command with PNG output. This captures the emulated display surface instead of taking an operating-system screenshot of the xemu window.
-
-A planned screenshot is stored under:
-
-    Results/<run-id>/screenshots/
-
-A screenshot can also be requested on demand while a test is active:
-
-    GET /api/v1/screenshot
-
-Example:
-
-    curl http://127.0.0.1:9368/api/v1/screenshot -o current.png
-
-Optionally name the retained result:
-
-    curl "http://127.0.0.1:9368/api/v1/screenshot?name=before-menu" -o current.png
-
-The HTTP response body is the PNG itself with `Content-Type: image/png`.
-
-## On-demand controller API
-
-Press a logical Xbox button on the active xemu test:
-
-    POST /api/v1/input/press
-
-Example:
-
-    curl -X POST \
-      -H "Content-Type: application/json" \
-      -d '{"Button":"A","DurationMs":100}' \
-      http://127.0.0.1:9368/api/v1/input/press
-
-This uses the same input path as `button` steps in `job.json`.
-
-### Recording a test plan
-
-The web test console can record manual control activity. Starting a recording clears the current recording buffer. Manual button presses and retained screenshots are recorded with the timing gaps between them.
-
-Recorder API:
-
-    GET  /api/v1/input/record
-    POST /api/v1/input/record/start
-    POST /api/v1/input/record/stop
-    POST /api/v1/input/record/clear
-
-The returned `Plan` array can be copied directly into a job package's `job.json`. Stopping a non-empty recording also saves a `recorded-plan-<timestamp>.json` file in the active run's Results directory, so the recording is preserved even if the browser closes.
-
-Live-preview frames are never recorded as screenshot steps.
-
-## Telemetry
-
-The default monitoring interval is 100 ms and is configurable in `runner.json`.
-
-The sampler records, when the current platform/provider exposes the value:
-
-- host CPU utilization
-- xemu process CPU in core-percent; roughly 100% is one fully occupied logical processor
-- host total/used/available memory
-- process working set and private memory
-- Linux swap bytes
-- Windows page-file usage percentage
-- process disk read/write throughput
-- GPU utilization
-- process GPU utilization on Windows
-- VRAM total/used where exposed
-- process dedicated VRAM on Windows
-- GPU temperature and power through NVIDIA NVML
-- collector duration and interval overruns
-
-Sampling is single-threaded and non-overlapping. Metrics are placed into a bounded in-memory channel and written by a separate buffered writer so slow disk writes do not stall metric collection.
-
-HTTP status reads the latest cached sample. Polling the API every 100 ms does not cause another CPU/GPU collection.
-
-Raw per-run samples are stored in:
-
-    Results/<run-id>/metrics.csv
-
-The result also records sample count, collection overruns, and dropped CSV-write samples so the overhead of a 100 ms interval can be measured rather than assumed.
-
-## HTTP API
-
-The endpoint exists only while `xemu-test-runner run` is active. It is a small HTTP/1.1 listener embedded directly in the foreground CLI and is intended for a trusted LAN.
-
-Default endpoint:
-
-    http://0.0.0.0:9368
-
-Current pages:
-
-    GET  /
-    GET  /control
-
-Current control/status routes:
-
-    GET  /api/v1/health
-    GET  /api/v1/status
-    GET  /api/v1/control
-    GET  /api/v1/metrics/latest
-    GET  /api/v1/queue
-    GET  /api/v1/preview
-    GET  /api/v1/screenshot
-    POST /api/v1/xemu/pause
-    POST /api/v1/xemu/resume
-    POST /api/v1/input/press
-    GET  /api/v1/input/record
-    POST /api/v1/input/record/start
-    POST /api/v1/input/record/stop
-    POST /api/v1/input/record/clear
-    POST /api/v1/runner/stop
-
-`POST /api/v1/jobs` is intentionally not a JSON enqueue API. A real queue item must include the executable and job plan together. Complete packages should be staged in `Queue/Pending`.
-
-HTTPS is planned as a transport upgrade; LAN HTTP is the current target.
-
-### Large file upload/download
-
-The general file API remains available for moving large artifacts:
-
-    GET  /api/v1/files/<path>
-    HEAD /api/v1/files/<path>
-    PUT  /api/v1/files/<path>
-    POST /api/v1/files/<path>
-
-Uploads and downloads are streamed and use 64-bit lengths; there is no 10 GB application limit.
-
-Upload:
-
-    curl --upload-file large.iso \
-      http://127.0.0.1:9368/api/v1/files/images/large.iso
-
-Download:
-
-    curl -o large.iso \
-      http://127.0.0.1:9368/api/v1/files/images/large.iso
-
-Range downloads are supported. Resumable sequential uploads use `Content-Range`. Upload progress can be queried with:
-
-    curl "http://127.0.0.1:9368/api/v1/files/images/large.iso?upload-status=1"
-
-See `docs/ARCHITECTURE.md` for transfer and recovery details.
-
-## Current GPU providers
-
-- NVIDIA: NVML loaded directly from the installed driver on Windows or Linux.
-- Windows: cached GPU Engine and GPU Process Memory performance counters for the active test process.
-- Linux: DRM sysfs values such as `gpu_busy_percent` and VRAM counters when the driver exposes them.
-
-Providers are optional and can be combined. For example, NVML can supply physical GPU/VRAM/temperature information while Windows counters provide xemu-specific GPU and dedicated-memory usage.
-
-## Planned
-
-- HTTPS transport option without changing the route model
-- native Wayland input provider
-- richer AMD/Intel GPU providers where OS counters are insufficient
-- per-thread xemu CPU telemetry
-- richer job-plan assertions and branching
-- result comparison/report generation
-- optional adapter for a future physical Original Xbox over IP
+Optional offline browser fixtures: `python scripts/check-browser.py --browser /path/to/chromium`. Requires Python Playwright; it uses no running C# server and must not be mistaken for end-to-end xemu qualification. See [validation](docs/VALIDATION.md) and [architecture](docs/ARCHITECTURE.md).

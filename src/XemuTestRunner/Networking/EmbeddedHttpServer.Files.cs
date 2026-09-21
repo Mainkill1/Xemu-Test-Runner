@@ -19,13 +19,13 @@ public sealed partial class EmbeddedHttpServer
             var partial = path + ".partial";
             var completeExists = File.Exists(path);
             var partialExists = File.Exists(partial);
-            var length = completeExists ? new FileInfo(path).Length : partialExists ? new FileInfo(partial).Length : 0;
+            var uploadedLength = completeExists ? new FileInfo(path).Length : partialExists ? new FileInfo(partial).Length : 0;
             await WriteJsonAsync(stream, 200, "OK", new
             {
                 path = relative,
                 complete = completeExists,
                 partial = partialExists,
-                length
+                length = uploadedLength
             }, keepAlive, cancellationToken).ConfigureAwait(false);
             return;
         }
