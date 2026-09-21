@@ -77,6 +77,12 @@ public static class ConfigLoader
             throw new InvalidDataException("XemuControl.ScreenshotTimeoutMs must be greater than zero.");
         if (config.XemuControl.DefaultButtonHoldMs <= 0)
             throw new InvalidDataException("XemuControl.DefaultButtonHoldMs must be greater than zero.");
+        if (config.Ui.CliRefreshMs <= 0)
+            throw new InvalidDataException("Ui.CliRefreshMs must be greater than zero.");
+        if (config.Ui.WebRefreshMs <= 0)
+            throw new InvalidDataException("Ui.WebRefreshMs must be greater than zero.");
+        if (config.Ui.LivePreviewIntervalMs < 250)
+            throw new InvalidDataException("Ui.LivePreviewIntervalMs must be at least 250 ms.");
 
         var interrupted = config.Queue.InterruptedAction.ToLowerInvariant();
         if (interrupted is not ("retry" or "hold"))

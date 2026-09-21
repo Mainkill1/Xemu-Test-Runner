@@ -7,6 +7,7 @@ public sealed class RunnerConfig
     public MonitoringOptions Monitoring { get; set; } = new();
     public HttpOptions Http { get; set; } = new();
     public XemuControlOptions XemuControl { get; set; } = new();
+    public UiOptions Ui { get; set; } = new();
 }
 
 public sealed class QueueOptions
@@ -45,6 +46,14 @@ public sealed class HttpOptions
     public string FileRoot { get; set; } = "Files";
     public int TransferBufferBytes { get; set; } = 1024 * 1024;
     public int MaxHeaderBytes { get; set; } = 64 * 1024;
+}
+
+public sealed class UiOptions
+{
+    public int CliRefreshMs { get; set; } = 250;
+    public int WebRefreshMs { get; set; } = 500;
+    public bool LivePreviewEnabled { get; set; } = true;
+    public int LivePreviewIntervalMs { get; set; } = 750;
 }
 
 public sealed class XemuControlOptions

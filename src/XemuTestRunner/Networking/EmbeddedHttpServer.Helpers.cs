@@ -76,6 +76,32 @@ public sealed partial class EmbeddedHttpServer
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    private static async Task WriteHtmlAsync(
+        Stream stream,
+        string html,
+        bool keepAlive,
+        CancellationToken cancellationToken)
+    {
+        var body = Encoding.UTF8.GetBytes(html);
+        var headers = new Dictionary<string, string>
+        {
+            ["Content-Type"] = "text/html; charset=utf-8",
+            ["Content-Length"] = body.Length.ToString(),
+            ["Cache-Control"] = "no-store"
+        };
+
+        await WriteHeadersAsync(
+            stream,
+            200,
+            "OK",
+            headers,
+            keepAlive,
+            cancellationToken).ConfigureAwait(false);
+
+        await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     private static async Task WriteEmptyAsync(Stream stream, int code, string reason, bool keepAlive, CancellationToken cancellationToken)
     {
         await WriteHeadersAsync(stream, code, reason, new Dictionary<string, string> { ["Content-Length"] = "0" }, keepAlive, cancellationToken).ConfigureAwait(false);

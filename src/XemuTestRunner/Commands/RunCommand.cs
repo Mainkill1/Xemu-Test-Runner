@@ -19,18 +19,47 @@ public sealed class RunCommandSettings : CommandSettings
 
 public sealed class RunCommand : Command<RunCommandSettings>
 {
-    protected override int Execute(CommandContext context, RunCommandSettings settings, CancellationToken cancellationToken)
+    protected override int Execute(
+        CommandContext context,
+        RunCommandSettings settings,
+        CancellationToken cancellationToken)
     {
         try
         {
             var (config, paths) = ConfigLoader.Load(settings.ConfigPath);
-            AnsiConsole.MarkupLine($"[grey]Workspace:[/] {Markup.Escape(paths.Workspace)}");
-            AnsiConsole.MarkupLine($"[grey]Monitoring:[/] {(config.Monitoring.Enabled ? $"{config.Monitoring.IntervalMs} ms" : "disabled")}");
-            if (config.Http.Enabled)
-                AnsiConsole.MarkupLine($"[grey]HTTP:[/] http://{Markup.Escape(config.Http.BindAddress)}:{config.Http.Port}");
-            AnsiConsole.MarkupLine("[grey]Press Ctrl+C to stop.[/]");
+            var engine = new RunnerEngine(config, paths);
+            var runTask = engine.RunAsync(settings.Once, cancellationToken);
 
-            new RunnerEngine(config, paths).RunAsync(settings.Once, cancellationToken).GetAwaiter().GetResult();
+            AnsiConsole.Live(CliDashboard.Build(engine.State.Snapshot()))
+                .AutoClear(false)
+                .StartAsync(async live =>
+                {
+                    try
+                    {
+                        while (!runTask.IsCompleted)
+                        {
+                            live.UpdateTarget(CliDashboard.Build(engine.State.Snapshot()));
+                            live.Refresh();
+                            await Task.Delay(config.Ui.CliRefreshMs, cancellationToken).ConfigureAwait(false);
+                        }
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                    }
+                    finally
+                    {
+                        live.UpdateTarget(CliDashboard.Build(engine.State.Snapshot()));
+                        live.Refresh();
+                    }
+                })
+                .GetAwaiter()
+                .GetResult();
+
+            runTask.GetAwaiter().GetResult();
+            return 0;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
             return 0;
         }
         catch (Exception ex)

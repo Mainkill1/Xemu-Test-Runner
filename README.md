@@ -100,6 +100,57 @@ Query a running runner from another process or LAN machine:
 
     xemu-test-runner status --url http://127.0.0.1:9368
 
+### Live CLI dashboard
+
+`xemu-test-runner run` now keeps a Spectre live table on screen while the foreground runner is active. It shows:
+
+- runner state: starting, idle, running, paused, interrupted, finished, stopped
+- Pending / Testing / Tested queue counts
+- current job, run ID, PID, and test runtime
+- host and process CPU
+- host and process memory
+- swap/pagefile
+- host and process GPU
+- VRAM and process VRAM
+- process read/write throughput
+- GPU temperature/power where available
+- metric collector duration and overrun state
+- last job and result
+
+CLI repaint rate is controlled by `Ui.CliRefreshMs` and is independent of `Monitoring.IntervalMs`.
+
+### Embedded web UI
+
+Open the runner root in a browser:
+
+    http://<runner-host>:9368/
+
+The home page shows current runner/queue state plus live system and xemu-process statistics. It links to the test console and raw JSON endpoints.
+
+The interactive test console is:
+
+    http://<runner-host>:9368/control
+
+The console provides:
+
+- near-live xemu display preview
+- retained on-demand screenshots
+- pause/resume
+- Xbox controller buttons plus a custom logical-button command
+- current host/process CPU, GPU, memory, VRAM, swap/pagefile and I/O
+- input recording that produces ready-to-paste `Plan` JSON
+
+The preview cadence is intentionally separate from telemetry. Defaults:
+
+    "Ui": {
+      "CliRefreshMs": 250,
+      "WebRefreshMs": 500,
+      "LivePreviewEnabled": true,
+      "LivePreviewIntervalMs": 750
+    }
+
+The control page requests preview frames only while the page is visible. For strict performance runs, disable live preview or leave the control page closed so screenshot generation cannot perturb the benchmark.
+
 ## Job package
 
 `job.json` describes how to start the executable contained in the package and what automated actions to perform.
@@ -176,7 +227,7 @@ The runner owns a local QMP endpoint for each active xemu process. When xemu is 
 
 Do not add a second `-qmp` argument to the job while `XemuControl.Enabled` is true.
 
-QMP is currently used for xemu-native control operations such as screenshots and status checks.
+QMP is currently used for xemu-native control operations such as status checks, pause/resume, and screenshots. Manual pause also pauses automated plan timing and the test timeout clock.
 
 ### Xbox controller button presses
 
@@ -267,9 +318,27 @@ Press a logical Xbox button on the active xemu test:
 
 Example:
 
-    curl -X POST       -H "Content-Type: application/json"       -d "{"Button":"A","DurationMs":100}"       http://127.0.0.1:9368/api/v1/input/press
+    curl -X POST \
+      -H "Content-Type: application/json" \
+      -d '{"Button":"A","DurationMs":100}' \
+      http://127.0.0.1:9368/api/v1/input/press
 
 This uses the same input path as `button` steps in `job.json`.
+
+### Recording a test plan
+
+The web test console can record manual control activity. Starting a recording clears the current recording buffer. Manual button presses and retained screenshots are recorded with the timing gaps between them.
+
+Recorder API:
+
+    GET  /api/v1/input/record
+    POST /api/v1/input/record/start
+    POST /api/v1/input/record/stop
+    POST /api/v1/input/record/clear
+
+The returned `Plan` array can be copied directly into a job package's `job.json`. Stopping a non-empty recording also saves a `recorded-plan-<timestamp>.json` file in the active run's Results directory, so the recording is preserved even if the browser closes.
+
+Live-preview frames are never recorded as screenshot steps.
 
 ## Telemetry
 
@@ -309,14 +378,27 @@ Default endpoint:
 
     http://0.0.0.0:9368
 
+Current pages:
+
+    GET  /
+    GET  /control
+
 Current control/status routes:
 
     GET  /api/v1/health
     GET  /api/v1/status
+    GET  /api/v1/control
     GET  /api/v1/metrics/latest
     GET  /api/v1/queue
+    GET  /api/v1/preview
     GET  /api/v1/screenshot
+    POST /api/v1/xemu/pause
+    POST /api/v1/xemu/resume
     POST /api/v1/input/press
+    GET  /api/v1/input/record
+    POST /api/v1/input/record/start
+    POST /api/v1/input/record/stop
+    POST /api/v1/input/record/clear
     POST /api/v1/runner/stop
 
 `POST /api/v1/jobs` is intentionally not a JSON enqueue API. A real queue item must include the executable and job plan together. Complete packages should be staged in `Queue/Pending`.
@@ -336,11 +418,13 @@ Uploads and downloads are streamed and use 64-bit lengths; there is no 10 GB app
 
 Upload:
 
-    curl --upload-file large.iso       http://127.0.0.1:9368/api/v1/files/images/large.iso
+    curl --upload-file large.iso \
+      http://127.0.0.1:9368/api/v1/files/images/large.iso
 
 Download:
 
-    curl -o large.iso       http://127.0.0.1:9368/api/v1/files/images/large.iso
+    curl -o large.iso \
+      http://127.0.0.1:9368/api/v1/files/images/large.iso
 
 Range downloads are supported. Resumable sequential uploads use `Content-Range`. Upload progress can be queried with:
 

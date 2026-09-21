@@ -37,5 +37,11 @@
     "ScreenshotTimeoutMs": 5000,
     "InputProvider": "auto",
     "DefaultButtonHoldMs": 100
+  },
+  "Ui": {
+    "CliRefreshMs": 250,
+    "WebRefreshMs": 500,
+    "LivePreviewEnabled": true,
+    "LivePreviewIntervalMs": 750
   }
 }

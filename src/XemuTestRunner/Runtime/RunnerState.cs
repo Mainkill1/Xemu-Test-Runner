@@ -15,6 +15,9 @@ public sealed class RunnerState
     private MetricSample? _latestMetric;
     private QueueSnapshot _queue = new(0, 0, 0);
     private string? _httpEndpoint;
+    private string? _lastJob;
+    private string? _lastResult;
+    private DateTimeOffset? _lastFinishedUtc;
 
     public void SetPhase(string phase) { lock (_gate) _phase = phase; }
     public void SetHttpEndpoint(string? endpoint) { lock (_gate) _httpEndpoint = endpoint; }
@@ -24,7 +27,7 @@ public sealed class RunnerState
     {
         lock (_gate)
         {
-            _phase = "testing";
+            _phase = "running";
             _currentJob = jobId;
             _runId = runId;
             _processId = processId;
@@ -35,10 +38,13 @@ public sealed class RunnerState
 
     public void SetLatestMetric(MetricSample sample) { lock (_gate) _latestMetric = sample; }
 
-    public void EndJob()
+    public void EndJob(string result, string? jobId = null)
     {
         lock (_gate)
         {
+            _lastJob = jobId ?? _currentJob;
+            _lastResult = result;
+            _lastFinishedUtc = DateTimeOffset.UtcNow;
             _phase = "idle";
             _currentJob = null;
             _runId = null;
@@ -52,9 +58,39 @@ public sealed class RunnerState
     {
         lock (_gate)
         {
-            return new RunnerStateSnapshot(_startedUtc, DateTimeOffset.UtcNow - _startedUtc, _phase, _currentJob, _runId, _processId, _jobStartedUtc, _latestMetric, _queue, _httpEndpoint);
+            var uptime = DateTimeOffset.UtcNow - _startedUtc;
+
+            return new RunnerStateSnapshot(
+                _startedUtc,
+                uptime,
+                (long)uptime.TotalMilliseconds,
+                _phase,
+                _currentJob,
+                _runId,
+                _processId,
+                _jobStartedUtc,
+                _latestMetric,
+                _queue,
+                _httpEndpoint,
+                _lastJob,
+                _lastResult,
+                _lastFinishedUtc);
         }
     }
 }
 
-public sealed record RunnerStateSnapshot(DateTimeOffset StartedUtc, TimeSpan Uptime, string Phase, string? CurrentJob, string? RunId, int? ProcessId, DateTimeOffset? JobStartedUtc, MetricSample? LatestMetric, QueueSnapshot Queue, string? HttpEndpoint);
+public sealed record RunnerStateSnapshot(
+    DateTimeOffset StartedUtc,
+    TimeSpan Uptime,
+    long UptimeMs,
+    string Phase,
+    string? CurrentJob,
+    string? RunId,
+    int? ProcessId,
+    DateTimeOffset? JobStartedUtc,
+    MetricSample? LatestMetric,
+    QueueSnapshot Queue,
+    string? HttpEndpoint,
+    string? LastJob,
+    string? LastResult,
+    DateTimeOffset? LastFinishedUtc);

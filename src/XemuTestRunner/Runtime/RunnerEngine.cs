@@ -17,6 +17,8 @@ public sealed class RunnerEngine
     private readonly JobQueue _queue;
     private readonly XemuControlManager _control;
 
+    public RunnerState State => _state;
+
     public RunnerEngine(RunnerConfig config, RunnerPaths paths)
     {
         _config = config;
@@ -32,7 +34,14 @@ public sealed class RunnerEngine
         _state.SetQueue(_queue.Snapshot());
 
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var server = new EmbeddedHttpServer(_config.Http, _paths, _state, _queue, _control, lifetime.Cancel);
+        var server = new EmbeddedHttpServer(
+            _config.Http,
+            _config.Ui,
+            _paths,
+            _state,
+            _queue,
+            _control,
+            lifetime.Cancel);
         var serverTask = server.RunAsync(lifetime.Token);
 
         try
@@ -59,7 +68,7 @@ public sealed class RunnerEngine
                 _state.SetQueue(_queue.Snapshot());
                 if (claimed is null)
                 {
-                    _state.SetPhase("idle");
+                    _state.SetPhase(once ? "finished" : "idle");
                     if (once)
                         break;
                     await Task.Delay(_config.Queue.ScanIntervalMs, lifetime.Token).ConfigureAwait(false);
@@ -78,7 +87,9 @@ public sealed class RunnerEngine
             _control.End();
             lifetime.Cancel();
             try { await serverTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
-            _state.SetPhase("stopped");
+
+            if (cancellationToken.IsCancellationRequested)
+                _state.SetPhase("stopped");
         }
     }
 
@@ -223,6 +234,7 @@ public sealed class RunnerEngine
         }
 
         using var planCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var timeoutCts = new CancellationTokenSource();
         Task? planTask = null;
 
         if (job.Plan.Count > 0)
@@ -241,8 +253,10 @@ public sealed class RunnerEngine
             var exitTask = process.WaitForExitAsync(CancellationToken.None);
             var cancelTask = Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             var timeoutTask = job.TimeoutSeconds > 0
-                ? Task.Delay(TimeSpan.FromSeconds(job.TimeoutSeconds), CancellationToken.None)
-                : Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
+                ? _control.DelayTestTimeAsync(
+                    checked(job.TimeoutSeconds * 1000),
+                    timeoutCts.Token)
+                : Task.Delay(Timeout.InfiniteTimeSpan, timeoutCts.Token);
 
             Task planWatch = planTask ?? Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
 
@@ -305,6 +319,7 @@ public sealed class RunnerEngine
         }
         finally
         {
+            timeoutCts.Cancel();
             planCts.Cancel();
             if (planTask is not null)
             {
@@ -364,7 +379,7 @@ public sealed class RunnerEngine
 
         collector?.Dispose();
         _queue.Complete(testingPackage);
-        _state.EndJob();
+        _state.EndJob(status, job.Id);
     }
 
     private async Task FinishWithoutProcessAsync(
@@ -405,7 +420,7 @@ public sealed class RunnerEngine
             JsonSerializer.Serialize(result, ConfigLoader.JsonOptions)).ConfigureAwait(false);
 
         _queue.Complete(testingPackage);
-        _state.EndJob();
+        _state.EndJob(status, jobId);
         _state.SetQueue(_queue.Snapshot());
     }
 

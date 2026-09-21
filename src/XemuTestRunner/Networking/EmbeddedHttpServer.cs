@@ -11,6 +11,7 @@ namespace XemuTestRunner.Networking;
 public sealed partial class EmbeddedHttpServer
 {
     private readonly HttpOptions _options;
+    private readonly UiOptions _uiOptions;
     private readonly RunnerPaths _paths;
     private readonly RunnerState _state;
     private readonly JobQueue _queue;
@@ -20,6 +21,7 @@ public sealed partial class EmbeddedHttpServer
 
     public EmbeddedHttpServer(
         HttpOptions options,
+        UiOptions uiOptions,
         RunnerPaths paths,
         RunnerState state,
         JobQueue queue,
@@ -27,6 +29,7 @@ public sealed partial class EmbeddedHttpServer
         Action requestStop)
     {
         _options = options;
+        _uiOptions = uiOptions;
         _paths = paths;
         _state = state;
         _queue = queue;
@@ -160,6 +163,89 @@ public sealed partial class EmbeddedHttpServer
         bool keepAlive,
         CancellationToken cancellationToken)
     {
+        if (request.Method == "GET" && request.Path == "/")
+        {
+            await WriteHtmlAsync(
+                stream,
+                WebPages.Home(_uiOptions.WebRefreshMs),
+                keepAlive,
+                cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        if (request.Method == "GET" && request.Path == "/control")
+        {
+            await WriteHtmlAsync(
+                stream,
+                WebPages.Control(
+                    _uiOptions.WebRefreshMs,
+                    _uiOptions.LivePreviewIntervalMs,
+                    _uiOptions.LivePreviewEnabled),
+                keepAlive,
+                cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        if (request.Method == "GET" && request.Path == "/api/v1/control")
+        {
+            await WriteJsonAsync(
+                stream,
+                200,
+                "OK",
+                _control.Snapshot(),
+                keepAlive,
+                cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        if (request.Method == "GET" && request.Path == "/api/v1/preview")
+        {
+            await HandlePreviewAsync(stream, keepAlive, cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        if (request.Method == "POST" && request.Path == "/api/v1/xemu/pause")
+        {
+            await HandlePauseAsync(stream, request, keepAlive, cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        if (request.Method == "POST" && request.Path == "/api/v1/xemu/resume")
+        {
+            await HandleResumeAsync(stream, request, keepAlive, cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        if (request.Method == "GET" && request.Path == "/api/v1/input/record")
+        {
+            await WriteJsonAsync(
+                stream,
+                200,
+                "OK",
+                _control.RecordingSnapshot(),
+                keepAlive,
+                cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        if (request.Method == "POST" && request.Path == "/api/v1/input/record/start")
+        {
+            await HandleRecordingActionAsync(stream, request, keepAlive, "start", cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        if (request.Method == "POST" && request.Path == "/api/v1/input/record/stop")
+        {
+            await HandleRecordingActionAsync(stream, request, keepAlive, "stop", cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
+        if (request.Method == "POST" && request.Path == "/api/v1/input/record/clear")
+        {
+            await HandleRecordingActionAsync(stream, request, keepAlive, "clear", cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
         if (request.Method == "GET" && request.Path == "/api/v1/health")
         {
             await WriteJsonAsync(
