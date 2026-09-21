@@ -30,30 +30,40 @@ public sealed class RunCommand : Command<RunCommandSettings>
             var engine = new RunnerEngine(config, paths);
             var runTask = engine.RunAsync(settings.Once, cancellationToken);
 
-            AnsiConsole.Live(CliDashboard.Build(engine.State.Snapshot()))
-                .AutoClear(false)
-                .StartAsync(async live =>
-                {
-                    try
+            try
+            {
+                AnsiConsole.Live(CliDashboard.Build(engine.State.Snapshot()))
+                    .AutoClear(false)
+                    .StartAsync(async live =>
                     {
-                        while (!runTask.IsCompleted)
+                        try
+                        {
+                            while (!runTask.IsCompleted)
+                            {
+                                live.UpdateTarget(CliDashboard.Build(engine.State.Snapshot()));
+                                live.Refresh();
+                                await Task.Delay(config.Ui.CliRefreshMs, cancellationToken).ConfigureAwait(false);
+                            }
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                        }
+                        finally
                         {
                             live.UpdateTarget(CliDashboard.Build(engine.State.Snapshot()));
                             live.Refresh();
-                            await Task.Delay(config.Ui.CliRefreshMs, cancellationToken).ConfigureAwait(false);
                         }
-                    }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                    {
-                    }
-                    finally
-                    {
-                        live.UpdateTarget(CliDashboard.Build(engine.State.Snapshot()));
-                        live.Refresh();
-                    }
-                })
-                .GetAwaiter()
-                .GetResult();
+                    })
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or NotSupportedException)
+            {
+                // A service may outlive the terminal that launched it. Spectre's
+                // live renderer then loses its Windows console handle while the
+                // queue and HTTP service are still healthy. Continue headless;
+                // the independently started engine remains authoritative.
+            }
 
             runTask.GetAwaiter().GetResult();
             return 0;
@@ -64,7 +74,15 @@ public sealed class RunCommand : Command<RunCommandSettings>
         }
         catch (Exception ex)
         {
-            AnsiConsole.WriteException(ex, ExceptionFormats.ShortenEverything);
+            try
+            {
+                AnsiConsole.WriteException(ex, ExceptionFormats.ShortenEverything);
+            }
+            catch (Exception displayError) when (displayError is IOException or InvalidOperationException or NotSupportedException)
+            {
+                try { Console.Error.WriteLine(ex); }
+                catch (IOException) { }
+            }
             return 1;
         }
     }
