@@ -1,0 +1,14 @@
+{
+  "Id": "xemu-smoke-example",
+  "Executable": "Payloads/xemu/xemu.exe",
+  "Arguments": [
+    "-full-screen",
+    "0"
+  ],
+  "WorkingDirectory": "Payloads/xemu",
+  "Environment": {},
+  "TimeoutSeconds": 0,
+  "Tags": [
+    "example"
+  ]
+}

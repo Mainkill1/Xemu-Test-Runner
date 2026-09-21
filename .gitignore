@@ -1,0 +1,10 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+*.user
+*.suo
+publish/
+workspace/
+.DS_Store
+runner.json

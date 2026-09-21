@@ -1,0 +1,32 @@
+{
+  "Workspace": "workspace",
+  "Queue": {
+    "Pending": "Queue/Pending",
+    "Testing": "Queue/Testing",
+    "Tested": "Queue/Tested",
+    "Results": "Results",
+    "ScanIntervalMs": 500,
+    "InterruptedAction": "retry"
+  },
+  "Monitoring": {
+    "Enabled": true,
+    "IntervalMs": 100,
+    "FlushIntervalMs": 1000,
+    "BufferCapacity": 8192,
+    "ProcessIo": true,
+    "Gpu": {
+      "Enabled": true,
+      "Provider": "auto",
+      "DeviceIndex": 0,
+      "CounterRefreshMs": 5000
+    }
+  },
+  "Http": {
+    "Enabled": true,
+    "BindAddress": "0.0.0.0",
+    "Port": 9368,
+    "FileRoot": "Files",
+    "TransferBufferBytes": 1048576,
+    "MaxHeaderBytes": 65536
+  }
+}
