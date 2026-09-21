@@ -351,7 +351,10 @@ try
             Id = "fake-qmp-job",
             TargetOs = OperatingSystem.IsWindows() ? "windows" : "linux",
             Executable = executable,
-            Arguments = ["--fake-xemu", "--fake-runtime-ms", "1500"],
+            // Keep the fixture alive beyond the runner's own bounded timeout.
+            // A successful test exits promptly through the final QMP quit; a
+            // broken plan is still terminated by TimeoutSeconds below.
+            Arguments = ["--fake-xemu", "--fake-runtime-ms", "15000"],
             TimeoutSeconds = 5,
             StartPaused = true,
             Plan =
