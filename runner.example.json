@@ -6,7 +6,8 @@
     "Tested": "Queue/Tested",
     "Results": "Results",
     "ScanIntervalMs": 500,
-    "InterruptedAction": "retry"
+    "InterruptedAction": "retry",
+    "PackageStabilityMs": 750
   },
   "Monitoring": {
     "Enabled": true,
@@ -18,7 +19,9 @@
       "Enabled": true,
       "Provider": "auto",
       "DeviceIndex": 0,
-      "CounterRefreshMs": 5000
+      "CounterRefreshMs": 5000,
+      "SampleIntervalMs": 250,
+      "SensorIntervalMs": 1000
     }
   },
   "Http": {
