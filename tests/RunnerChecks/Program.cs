@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using XemuTestRunner.Commands;
 using XemuTestRunner.Config;
 using XemuTestRunner.Diagnostics;
 using XemuTestRunner.Monitoring.Providers;
@@ -483,6 +484,111 @@ try
         Assert(
             integrity?.Code == "package_changed_during_preflight",
             "Post-claim package mutation was not detected before launch.");
+    });
+
+    await Check("automation exit codes distinguish success failure and queue blockage", () =>
+    {
+        var success = new XemuTestRunner.Runtime.RunnerState();
+        success.EndJob("completed", "ok-job", "/tmp/ok");
+        Assert(
+            RunCommand.DetermineExitCode(success.Snapshot(), cancelled: false) == 0,
+            "Completed automation run did not return exit code 0.");
+
+        var failed = new XemuTestRunner.Runtime.RunnerState();
+        failed.EndJob("timeout", "failed-job", "/tmp/failed");
+        Assert(
+            RunCommand.DetermineExitCode(failed.Snapshot(), cancelled: false) == 2,
+            "Failed test did not return automation exit code 2.");
+
+        var blocked = new XemuTestRunner.Runtime.RunnerState();
+        blocked.SetQueueIssue(new QueueIssue(
+            "package_busy",
+            "build",
+            "busy",
+            DateTimeOffset.UtcNow,
+            Retryable: true,
+            HoldsTesting: false));
+        Assert(
+            RunCommand.DetermineExitCode(blocked.Snapshot(), cancelled: false) == 3,
+            "Queue issue did not return automation exit code 3.");
+
+        Assert(
+            RunCommand.DetermineExitCode(success.Snapshot(), cancelled: true) == 130,
+            "Cancellation did not return exit code 130.");
+        return Task.CompletedTask;
+    });
+
+    await Check("one-shot runner processes at most one queued package", async () =>
+    {
+        var fixture = Path.Combine(root, "one-shot");
+        var configPath = Path.Combine(fixture, "runner.json");
+        Directory.CreateDirectory(fixture);
+
+        var config = new RunnerConfig
+        {
+            Workspace = "workspace",
+            Queue = new QueueOptions
+            {
+                PackageStabilityMs = 100,
+                ScanIntervalMs = 25
+            },
+            Http = new HttpOptions { Enabled = false },
+            Monitoring = new MonitoringOptions { Enabled = false },
+            XemuControl = new XemuControlOptions
+            {
+                Enabled = true,
+                ConnectTimeoutMs = 3000,
+                InputProvider = "unavailable"
+            },
+            Reliability = new ReliabilityOptions
+            {
+                Preflight = new PreflightOptions { MinimumFreeSpaceBytes = 0 },
+                ProcessExitTimeoutMs = 3000,
+                Watchdog = new WatchdogOptions { Enabled = false }
+            }
+        };
+
+        await File.WriteAllTextAsync(
+            configPath,
+            JsonSerializer.Serialize(config, ConfigLoader.JsonOptions));
+
+        var (_, paths) = ConfigLoader.Load(configPath);
+        var executable = Path.GetFileName(Environment.ProcessPath!);
+
+        foreach (var name in new[] { "job-a", "job-b" })
+        {
+            var package = Path.Combine(paths.Pending, name);
+            Directory.CreateDirectory(package);
+            CopyRunnerFixture(package);
+
+            await File.WriteAllTextAsync(
+                Path.Combine(package, "job.json"),
+                JsonSerializer.Serialize(
+                    new JobDefinition
+                    {
+                        Id = name,
+                        TargetOs = OperatingSystem.IsWindows() ? "windows" : "linux",
+                        Executable = executable,
+                        Arguments = ["--fake-xemu", "--fake-runtime-ms", "5000"],
+                        TimeoutSeconds = 3,
+                        Plan = [new JobStep { Type = "quit" }]
+                    },
+                    ConfigLoader.JsonOptions));
+        }
+
+        var engine = new XemuTestRunner.Runtime.RunnerEngine(config, paths);
+        await engine.RunAsync(
+            once: true,
+            maxJobs: 1,
+            cancellationToken: CancellationToken.None);
+
+        var snapshot = engine.State.Snapshot();
+        Assert(snapshot.JobsFinished == 1, $"One-shot finished {snapshot.JobsFinished} jobs.");
+        Assert(snapshot.FailedJobs == 0, "One-shot fixture failed.");
+        Assert(Directory.GetDirectories(paths.Tested).Length == 1,
+            "One-shot did not archive exactly one package.");
+        Assert(Directory.GetDirectories(paths.Pending).Length == 1,
+            "One-shot consumed more than one pending package.");
     });
 
     await Check("advertised HTTP address never reports wildcard when an override is supplied", () =>

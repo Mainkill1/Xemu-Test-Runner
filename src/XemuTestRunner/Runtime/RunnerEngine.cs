@@ -32,8 +32,23 @@ public sealed class RunnerEngine
         _diagnostics = new(config.Diagnostics, _control, _state, _activity);
     }
 
-    public async Task RunAsync(bool once, CancellationToken cancellationToken)
+    public Task RunAsync(
+        bool once,
+        CancellationToken cancellationToken) =>
+        RunAsync(
+            once,
+            maxJobs: null,
+            cancellationToken);
+
+    public async Task RunAsync(
+        bool once,
+        int? maxJobs,
+        CancellationToken cancellationToken)
     {
+        if (maxJobs is <= 0)
+            throw new ArgumentOutOfRangeException(
+                nameof(maxJobs),
+                "maxJobs must be greater than zero when supplied.");
         _queue.EnsureDirectories();
         using var owner = WorkspaceLease.Acquire(_paths.Workspace);
         using var queueOwner = WorkspaceLease.Acquire(_paths.Testing);
@@ -86,6 +101,8 @@ public sealed class RunnerEngine
             Diagnostics = _diagnostics
         };
         var serverTask = server.RunAsync(lifetime.Token);
+
+        var jobsFinished = 0;
 
         try
         {
@@ -169,7 +186,15 @@ public sealed class RunnerEngine
                     serverTask,
                     telemetry,
                     lifetime.Token).ConfigureAwait(false);
+                jobsFinished++;
                 _state.SetQueue(_queue.Snapshot());
+
+                if (maxJobs is not null &&
+                    jobsFinished >= maxJobs.Value)
+                {
+                    _state.SetPhase("finished");
+                    break;
+                }
             }
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
@@ -801,7 +826,10 @@ public sealed class RunnerEngine
         {
             attempt.Phase = "held";
             AttemptJournal.Write(package, attempt);
-            _state.EndJob(status, job?.Id ?? Path.GetFileName(package));
+            _state.EndJob(
+                status,
+                job?.Id ?? Path.GetFileName(package),
+                resultDirectory);
             _state.SetQueueIssue(packageIssue);
             _state.SetPhase("queue_blocked");
             return;
@@ -811,7 +839,10 @@ public sealed class RunnerEngine
         AttemptJournal.Write(package, attempt);
         _queue.Complete(package);
         _state.SetQueueIssue(null);
-        _state.EndJob(status, job?.Id ?? Path.GetFileName(package));
+        _state.EndJob(
+                status,
+                job?.Id ?? Path.GetFileName(package),
+                resultDirectory);
 
         async Task SettleAsync(Task? task, string component)
         {

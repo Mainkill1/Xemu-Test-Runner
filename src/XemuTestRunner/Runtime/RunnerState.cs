@@ -21,6 +21,9 @@ public sealed class RunnerState
     private DateTimeOffset? _lastFinishedUtc;
     private WorkstationStateSnapshot _workstation = WorkstationStateSnapshot.Unsupported;
     private QueueIssue? _queueIssue;
+    private int _jobsFinished;
+    private int _failedJobs;
+    private string? _lastResultDirectory;
 
     public void SetPhase(string phase) { lock (_gate) _phase = phase; }
     public void SetHttpEndpoint(string? endpoint) { lock (_gate) _httpEndpoint = endpoint; }
@@ -44,13 +47,22 @@ public sealed class RunnerState
 
     public void SetLatestMetric(MetricSample sample) { lock (_gate) _latestMetric = sample; }
 
-    public void EndJob(string result, string? jobId = null)
+    public void EndJob(
+        string result,
+        string? jobId = null,
+        string? resultDirectory = null)
     {
         lock (_gate)
         {
             _lastJob = jobId ?? _currentJob;
             _lastResult = result;
             _lastFinishedUtc = DateTimeOffset.UtcNow;
+            _lastResultDirectory = resultDirectory;
+            _jobsFinished++;
+            if (!result.Equals(
+                    "completed",
+                    StringComparison.OrdinalIgnoreCase))
+                _failedJobs++;
             _phase = "idle";
             _currentJob = null;
             _runId = null;
@@ -82,7 +94,10 @@ public sealed class RunnerState
                 _lastResult,
                 _lastFinishedUtc,
                 _workstation,
-                _queueIssue);
+                _queueIssue,
+                _jobsFinished,
+                _failedJobs,
+                _lastResultDirectory);
         }
     }
 }
@@ -103,4 +118,7 @@ public sealed record RunnerStateSnapshot(
     string? LastResult,
     DateTimeOffset? LastFinishedUtc,
     WorkstationStateSnapshot Workstation,
-    QueueIssue? QueueIssue);
+    QueueIssue? QueueIssue,
+    int JobsFinished,
+    int FailedJobs,
+    string? LastResultDirectory);

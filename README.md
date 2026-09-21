@@ -15,6 +15,83 @@ dotnet run --project src/XemuTestRunner -- run
 
 Publish a self-contained executable with `scripts/publish.ps1 -Rid win-x64` or `bash scripts/publish.sh linux-x64`. Use the produced `XemuTestRunner.exe` or `XemuTestRunner` executable. The `run --once` command drains the queue and exits when it is empty. `queue` inspects the local queue; `status --url http://host:9368` reads a running instance.
 
+## Automation / AI-friendly operation
+
+The runner has a non-interactive mode intended for agents, scripts, CI, and remote orchestration. It never requires terminal input.
+
+Run at most one queued package:
+
+```sh
+xemu-test-runner run --one-shot --non-interactive
+```
+
+Run one package and return exactly one JSON document on stdout:
+
+```sh
+xemu-test-runner run --one-shot --json
+```
+
+Drain the queue and return one final JSON summary:
+
+```sh
+xemu-test-runner run --once --json
+```
+
+`--json` implies non-interactive mode and suppresses the Spectre live dashboard. Stdout is reserved for the final JSON object so an agent does not need to scrape terminal formatting.
+
+Example result:
+
+```json
+{
+  "ok": true,
+  "exitCode": 0,
+  "cancelled": false,
+  "mode": "one-shot",
+  "phase": "finished",
+  "jobsFinished": 1,
+  "failedJobs": 0,
+  "lastJob": "build-123",
+  "lastResult": "completed",
+  "evidenceDirectory": "workspace/Results/...",
+  "resultFile": "workspace/Results/.../result.json",
+  "queue": {
+    "pending": 2,
+    "testing": 0,
+    "tested": 41
+  },
+  "httpEndpoint": "http://192.168.1.42:9368"
+}
+```
+
+Automation exit codes are stable:
+
+| Exit | Meaning |
+| ---: | --- |
+| 0 | Requested work completed with no failed jobs and no blocked queue state |
+| 1 | Runner/internal failure |
+| 2 | One or more tests finished with a non-`completed` result |
+| 3 | Queue/package state blocked execution |
+| 130 | Cancelled/interrupted |
+
+`--non-interactive` without `--json` emits plain state changes instead of a repainting terminal UI. This is useful when a log stream is desired. Redirected stdout also automatically selects non-interactive rendering.
+
+The existing queue and status commands also expose JSON:
+
+```sh
+xemu-test-runner queue --json
+xemu-test-runner status --url http://runner:9368 --json
+```
+
+A typical agent loop can therefore:
+
+1. stage a complete package under `.incoming-...` and atomically rename it into Pending;
+2. run `run --one-shot --json`;
+3. check the process exit code and `lastResult`;
+4. open the returned `resultFile` / evidence directory;
+5. make a code change and repeat.
+
+`--one-shot` differs from `--once`: one-shot processes at most one claimed package, while once drains the current queue before exiting.
+
 ## A queue item contains the plan AND candidate executable
 
 ```text
