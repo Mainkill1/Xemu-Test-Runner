@@ -282,27 +282,9 @@ public sealed class RunnerEngine
                 _state.BeginJob(job.Id, runId, process.Id);
                 _activity.Attach(runId, activity);
 
-                if (_config.XemuControl.Enabled)
-                {
-                    _control.Begin(process, resultDirectory, qmpPort);
-                    await _control.WaitUntilReadyAsync(ct).ConfigureAwait(false);
-                    await _control.RefreshPauseStateAsync(ct).ConfigureAwait(false);
-                    if (job.StartPaused && !_control.Snapshot().Paused)
-                        throw new InvalidOperationException("xemu did not remain paused after StartPaused launch/snapshot restore.");
-                    _state.SetPhase(_control.Snapshot().Paused ? "paused" : "running");
-                }
-
-                if (job.RequireInput && !_control.Snapshot().InputAvailable)
-                    throw new InvalidOperationException("Job requires controller input but the configured input provider is unavailable.");
-
-                _diagnostics.Attach(
-                    runId,
-                    process,
-                    launch.RenderDoc,
-                    resultDirectory,
-                    job,
-                    tasksCts.Token);
-
+                // Start host/process telemetry as soon as the target exists. QMP,
+                // input, screenshots and diagnostics are optional control layers;
+                // they must not prevent CPU/RAM/GPU evidence from being collected.
                 if (_config.Monitoring.Enabled)
                 {
                     collector = new MetricCollector(_config.Monitoring, _state.SetLatestMetric);
@@ -312,6 +294,40 @@ public sealed class RunnerEngine
                         Path.Combine(resultDirectory, "metrics.csv"),
                         tasksCts.Token);
                 }
+
+                if (_config.XemuControl.Enabled)
+                {
+                    try
+                    {
+                        _control.Begin(process, resultDirectory, qmpPort);
+                        await _control.WaitUntilReadyAsync(ct).ConfigureAwait(false);
+                        await _control.RefreshPauseStateAsync(ct).ConfigureAwait(false);
+                        if (job.StartPaused && !_control.Snapshot().Paused)
+                            throw new InvalidOperationException("xemu did not remain paused after StartPaused launch/snapshot restore.");
+                        _state.SetPhase(_control.Snapshot().Paused ? "paused" : "running");
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+                    {
+                        status = "control_error";
+                        detail = "xemu launched, but runner control initialization failed: " + ex;
+                        throw;
+                    }
+                }
+
+                if (job.RequireInput && !_control.Snapshot().InputAvailable)
+                {
+                    status = "control_error";
+                    detail = "xemu launched, but the configured controller input provider is unavailable.";
+                    throw new InvalidOperationException(detail);
+                }
+
+                _diagnostics.Attach(
+                    runId,
+                    process,
+                    launch.RenderDoc,
+                    resultDirectory,
+                    job,
+                    tasksCts.Token);
 
                 if (job.Plan.Count > 0)
                 {
@@ -421,9 +437,9 @@ public sealed class RunnerEngine
         }
         catch (Exception ex)
         {
-            if (started)
+            if (started && status is "start_failed" or "invalid_job")
                 status = "runner_error";
-            detail = ex.ToString();
+            detail ??= ex.ToString();
         }
         finally
         {
@@ -440,8 +456,14 @@ public sealed class RunnerEngine
             if (process is not null && started)
             {
                 exited = HasExited(process);
+                var preserveTarget =
+                    !exited &&
+                    _config.Reliability.PreserveTargetOnRunnerError &&
+                    status is "runner_error" or "control_error";
 
-                if (!exited && status is not ("completed" or "cancelled" or "unresponsive"))
+                if (!preserveTarget &&
+                    !exited &&
+                    status is not ("completed" or "cancelled" or "unresponsive"))
                 {
                     try
                     {
@@ -455,8 +477,11 @@ public sealed class RunnerEngine
                     }
                 }
 
-                if (!exited && _config.XemuControl.Enabled &&
-                    automaticBundle is null && status is not ("cancelled" or "unresponsive"))
+                if (!preserveTarget &&
+                    !exited &&
+                    _config.XemuControl.Enabled &&
+                    automaticBundle is null &&
+                    status is not ("cancelled" or "unresponsive"))
                 {
                     using var screenshotDeadline = new CancellationTokenSource(
                         _config.XemuControl.ScreenshotTimeoutMs);
@@ -473,10 +498,16 @@ public sealed class RunnerEngine
                     }
                 }
 
-                if (!exited)
+                if (!preserveTarget && !exited)
                     exited = await StopProcessAsync(process).ConfigureAwait(false);
 
-                if (exited)
+                if (preserveTarget)
+                {
+                    detail = (detail ?? status) +
+                        " Target intentionally left running because Reliability.PreserveTargetOnRunnerError is enabled. " +
+                        "The package remains in Testing for inspection; stop xemu manually before retrying.";
+                }
+                else if (exited)
                 {
                     exitCode = process.ExitCode;
                     attempt.Phase = "exited";

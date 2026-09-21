@@ -27,7 +27,8 @@
     "Port": 9368,
     "FileRoot": "Files",
     "TransferBufferBytes": 1048576,
-    "MaxHeaderBytes": 65536
+    "MaxHeaderBytes": 65536,
+    "AdvertiseAddress": null
   },
   "XemuControl": {
     "Enabled": true,
@@ -61,7 +62,8 @@
       "IntervalMs": 2000,
       "RequestTimeoutMs": 5000,
       "FailureThreshold": 3
-    }
+    },
+    "PreserveTargetOnRunnerError": true
   },
   "Diagnostics": {
     "Enabled": true,

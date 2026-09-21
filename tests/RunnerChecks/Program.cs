@@ -6,6 +6,8 @@ using System.Text;
 using System.Text.Json;
 using XemuTestRunner.Config;
 using XemuTestRunner.Diagnostics;
+using XemuTestRunner.Monitoring.Providers;
+using XemuTestRunner.Networking;
 using XemuTestRunner.Queue;
 using XemuTestRunner.Reliability;
 
@@ -294,6 +296,37 @@ try
         Assert(summary.Intervened && summary.PreviewCaptures == 1 && summary.ManualInputs == 1 &&
             summary.Diagnostics == 1, "Intervention was lost.");
         return Task.CompletedTask;
+    });
+
+    await Check("advertised HTTP address never reports wildcard when an override is supplied", () =>
+    {
+        var endpoint = NetworkEndpointResolver.Resolve(new HttpOptions
+        {
+            BindAddress = "0.0.0.0",
+            AdvertiseAddress = "192.0.2.44",
+            Port = 9368
+        });
+        Assert(endpoint.ListenAddress == "0.0.0.0", "Listen address changed unexpectedly.");
+        Assert(endpoint.AdvertisedAddress == "192.0.2.44", "Advertised override was ignored.");
+        Assert(endpoint.Url == "http://192.0.2.44:9368", "Advertised URL is incorrect.");
+        return Task.CompletedTask;
+    });
+
+    await Check("system telemetry produces baseline process and memory values", async () =>
+    {
+        using var provider = new SystemMetricProvider();
+        using var current = Process.GetCurrentProcess();
+        _ = provider.Sample(current, processIo: true);
+        await Task.Delay(150);
+        var sample = provider.Sample(current, processIo: true);
+
+        Assert(sample.HostMemoryTotalBytes is > 0, "Host memory total is unavailable.");
+        Assert(sample.HostMemoryAvailableBytes is >= 0, "Host available memory is unavailable.");
+        Assert(sample.ProcessWorkingSetBytes is > 0, "Process working set is unavailable.");
+        Assert(sample.ProcessPrivateBytes is > 0, "Process private memory is unavailable.");
+        Assert(sample.ProcessCpuPercent is >= 0, "Process CPU did not become available after the priming sample.");
+        Assert(sample.HostCpuPercent is >= 0, "Host CPU did not become available after the priming sample.");
+        Assert(sample.Errors.Count == 0, "Telemetry provider reported: " + string.Join(" | ", sample.Errors));
     });
 
     await Check("runner completes a queued QMP job and retains its evidence", async () =>

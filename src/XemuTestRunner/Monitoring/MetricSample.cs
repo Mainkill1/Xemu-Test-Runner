@@ -24,9 +24,24 @@ public sealed record MetricSample
     public double? GpuPowerWatts { get; init; }
     public double CollectorDurationMs { get; init; }
     public bool Overrun { get; init; }
+    public IReadOnlyList<string> Errors { get; init; } = [];
 }
 
-public sealed record GpuSample(double? UtilizationPercent = null, double? ProcessUtilizationPercent = null, long? VramTotalBytes = null, long? VramUsedBytes = null, long? ProcessVramBytes = null, double? TemperatureC = null, double? PowerWatts = null)
+public sealed record GpuSample(
+    double? UtilizationPercent = null,
+    double? ProcessUtilizationPercent = null,
+    long? VramTotalBytes = null,
+    long? VramUsedBytes = null,
+    long? ProcessVramBytes = null,
+    double? TemperatureC = null,
+    double? PowerWatts = null)
 {
-    public GpuSample Merge(GpuSample other) => new(UtilizationPercent ?? other.UtilizationPercent, ProcessUtilizationPercent ?? other.ProcessUtilizationPercent, VramTotalBytes ?? other.VramTotalBytes, VramUsedBytes ?? other.VramUsedBytes, ProcessVramBytes ?? other.ProcessVramBytes, TemperatureC ?? other.TemperatureC, PowerWatts ?? other.PowerWatts);
+    public GpuSample Merge(GpuSample other) => new(
+        UtilizationPercent ?? other.UtilizationPercent,
+        ProcessUtilizationPercent ?? other.ProcessUtilizationPercent,
+        VramTotalBytes ?? other.VramTotalBytes,
+        VramUsedBytes ?? other.VramUsedBytes,
+        ProcessVramBytes ?? other.ProcessVramBytes,
+        TemperatureC ?? other.TemperatureC,
+        PowerWatts ?? other.PowerWatts);
 }

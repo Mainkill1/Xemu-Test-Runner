@@ -27,16 +27,20 @@ public sealed class MetricCollector : IDisposable
             InitializeGpuProviders(options.Gpu);
     }
 
-    public async Task RunAsync(Process process, string csvPath, CancellationToken cancellationToken)
+    public async Task RunAsync(
+        Process process,
+        string csvPath,
+        CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(csvPath)!);
 
-        var channel = Channel.CreateBounded<MetricSample>(new BoundedChannelOptions(_options.BufferCapacity)
-        {
-            SingleReader = true,
-            SingleWriter = true,
-            FullMode = BoundedChannelFullMode.Wait
-        });
+        var channel = Channel.CreateBounded<MetricSample>(
+            new BoundedChannelOptions(_options.BufferCapacity)
+            {
+                SingleReader = true,
+                SingleWriter = true,
+                FullMode = BoundedChannelFullMode.Wait
+            });
 
         var writerTask = WriteCsvAsync(channel.Reader, csvPath, cancellationToken);
         var interval = TimeSpan.FromMilliseconds(_options.IntervalMs);
@@ -52,22 +56,26 @@ public sealed class MetricCollector : IDisposable
                 {
                     sample = Collect(process);
                 }
-                catch
+                catch (Exception ex)
                 {
-                    sample = new MetricSample { TimestampUtc = DateTimeOffset.UtcNow };
+                    sample = new MetricSample
+                    {
+                        TimestampUtc = DateTimeOffset.UtcNow,
+                        Errors = ["collector: " + ex.Message]
+                    };
                 }
 
                 var duration = Stopwatch.GetElapsedTime(started);
-                var overrun = duration >= interval;
                 sample = sample with
                 {
                     CollectorDurationMs = duration.TotalMilliseconds,
-                    Overrun = overrun
+                    Overrun = duration >= interval
                 };
 
                 SampleCount++;
-                if (overrun)
+                if (sample.Overrun)
                     OverrunCount++;
+
                 _onSample(sample);
 
                 if (!channel.Writer.TryWrite(sample))
@@ -84,7 +92,8 @@ public sealed class MetricCollector : IDisposable
         finally
         {
             channel.Writer.TryComplete();
-            try { await writerTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
+            try { await writerTask.ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
         }
     }
 
@@ -92,6 +101,7 @@ public sealed class MetricCollector : IDisposable
     {
         var system = _system.Sample(process, _options.ProcessIo);
         var gpu = new GpuSample();
+        var errors = new List<string>(system.Errors);
 
         foreach (var provider in _gpuProviders)
         {
@@ -99,8 +109,9 @@ public sealed class MetricCollector : IDisposable
             {
                 gpu = gpu.Merge(provider.Sample(process.HasExited ? null : process.Id));
             }
-            catch
+            catch (Exception ex)
             {
+                errors.Add($"{provider.Name}: {ex.Message}");
             }
         }
 
@@ -125,7 +136,8 @@ public sealed class MetricCollector : IDisposable
             VramUsedBytes = gpu.VramUsedBytes,
             ProcessVramBytes = gpu.ProcessVramBytes,
             GpuTemperatureC = gpu.TemperatureC,
-            GpuPowerWatts = gpu.PowerWatts
+            GpuPowerWatts = gpu.PowerWatts,
+            Errors = errors
         };
     }
 
@@ -135,24 +147,33 @@ public sealed class MetricCollector : IDisposable
 
         if (requested is "auto" or "nvidia" or "nvml")
         {
-            if (NvidiaNvmlProvider.TryCreate(options, out var nvml, out _) && nvml is not null)
+            if (NvidiaNvmlProvider.TryCreate(options, out var nvml, out _) &&
+                nvml is not null)
                 _gpuProviders.Add(nvml);
         }
 
         if (requested is "auto" or "windows")
         {
-            if (WindowsGpuPerformanceCounterProvider.TryCreate(options, out var windows, out _) && windows is not null)
+            if (WindowsGpuPerformanceCounterProvider.TryCreate(
+                    options,
+                    out var windows,
+                    out _) &&
+                windows is not null)
                 _gpuProviders.Add(windows);
         }
 
         if (requested is "auto" or "linux" or "drm")
         {
-            if (LinuxDrmProvider.TryCreate(options, out var drm, out _) && drm is not null)
+            if (LinuxDrmProvider.TryCreate(options, out var drm, out _) &&
+                drm is not null)
                 _gpuProviders.Add(drm);
         }
     }
 
-    private async Task WriteCsvAsync(ChannelReader<MetricSample> reader, string path, CancellationToken cancellationToken)
+    private async Task WriteCsvAsync(
+        ChannelReader<MetricSample> reader,
+        string path,
+        CancellationToken cancellationToken)
     {
         await using var file = new FileStream(
             path,
@@ -161,9 +182,15 @@ public sealed class MetricCollector : IDisposable
             FileShare.Read,
             1024 * 1024,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
-        await using var writer = new StreamWriter(file, new System.Text.UTF8Encoding(false), 256 * 1024, leaveOpen: false);
+        await using var writer = new StreamWriter(
+            file,
+            new System.Text.UTF8Encoding(false),
+            256 * 1024,
+            leaveOpen: false);
 
-        await writer.WriteLineAsync("timestamp_utc,host_cpu_pct,process_cpu_core_pct,host_mem_total,host_mem_used,host_mem_available,process_working_set,process_private,swap_total,swap_used,pagefile_usage_pct,process_read_bps,process_write_bps,gpu_pct,process_gpu_pct,vram_total,vram_used,process_vram,gpu_temp_c,gpu_power_w,collector_ms,overrun").ConfigureAwait(false);
+        await writer.WriteLineAsync(
+            "timestamp_utc,host_cpu_pct,process_cpu_core_pct,host_mem_total,host_mem_used,host_mem_available,process_working_set,process_private,swap_total,swap_used,pagefile_usage_pct,process_read_bps,process_write_bps,gpu_pct,process_gpu_pct,vram_total,vram_used,process_vram,gpu_temp_c,gpu_power_w,collector_ms,overrun,errors")
+            .ConfigureAwait(false);
 
         var lastFlush = Stopwatch.GetTimestamp();
         await foreach (var sample in reader.ReadAllAsync(CancellationToken.None).ConfigureAwait(false))
@@ -181,8 +208,12 @@ public sealed class MetricCollector : IDisposable
 
     private static string ToCsv(MetricSample s)
     {
-        static string D(double? value) => value?.ToString("0.###", CultureInfo.InvariantCulture) ?? "";
-        static string L(long? value) => value?.ToString(CultureInfo.InvariantCulture) ?? "";
+        static string D(double? value) =>
+            value?.ToString("0.###", CultureInfo.InvariantCulture) ?? "";
+        static string L(long? value) =>
+            value?.ToString(CultureInfo.InvariantCulture) ?? "";
+        static string Q(string value) =>
+            '"' + value.Replace(""", """", StringComparison.Ordinal) + '"';
 
         return string.Join(',',
             s.TimestampUtc.ToString("O", CultureInfo.InvariantCulture),
@@ -206,13 +237,15 @@ public sealed class MetricCollector : IDisposable
             D(s.GpuTemperatureC),
             D(s.GpuPowerWatts),
             s.CollectorDurationMs.ToString("0.###", CultureInfo.InvariantCulture),
-            s.Overrun ? "1" : "0");
+            s.Overrun ? "1" : "0",
+            Q(string.Join(" | ", s.Errors)));
     }
 
     public void Dispose()
     {
         if (_disposed)
             return;
+
         _disposed = true;
         _system.Dispose();
         foreach (var provider in _gpuProviders)

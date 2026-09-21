@@ -23,6 +23,7 @@ internal static class CliDashboard
         Row("Process I/O", $"R {Bytes(m?.ProcessReadBytesPerSecond)}/s / W {Bytes(m?.ProcessWriteBytesPerSecond)}/s");
         Row("GPU temp/power", $"{m?.GpuTemperatureC:0.0} C / {m?.GpuPowerWatts:0.0} W");
         Row("Collector", m is null ? "-" : $"{m.CollectorDurationMs:0.###} ms{(m.Overrun ? " OVERRUN" : "")}");
+        Row("Metric errors", m is null || m.Errors.Count == 0 ? "-" : string.Join(" | ", m.Errors.Take(3)));
         Row("Sample age", m is null ? "-" : $"{Math.Max(0, (DateTimeOffset.UtcNow - m.TimestampUtc).TotalMilliseconds):0} ms");
         Row("Last job", s.LastJob); Row("Last result", s.LastResult);
         return table;

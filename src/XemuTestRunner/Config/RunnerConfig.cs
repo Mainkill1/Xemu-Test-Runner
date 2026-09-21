@@ -43,6 +43,7 @@ public sealed class HttpOptions
 {
     public bool Enabled { get; set; } = true;
     public string BindAddress { get; set; } = "0.0.0.0";
+    public string? AdvertiseAddress { get; set; }
     public int Port { get; set; } = 9368;
     public string FileRoot { get; set; } = "Files";
     public int TransferBufferBytes { get; set; } = 1024 * 1024;

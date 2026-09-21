@@ -1,9 +1,11 @@
 using Spectre.Console;
 using Spectre.Console.Cli;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using XemuTestRunner.Config;
 using XemuTestRunner.Monitoring.Providers;
+using XemuTestRunner.Networking;
 
 namespace XemuTestRunner.Commands;
 
@@ -30,7 +32,34 @@ public sealed class DoctorCommand : Command<DoctorCommandSettings>
             table.AddRow("CPU logical processors", Environment.ProcessorCount.ToString());
             table.AddRow("Workspace", Markup.Escape(paths.Workspace));
             table.AddRow("Sample interval", $"{config.Monitoring.IntervalMs} ms");
-            table.AddRow("HTTP", config.Http.Enabled ? $"{Markup.Escape(config.Http.BindAddress)}:{config.Http.Port}" : "disabled");
+            if (config.Http.Enabled)
+            {
+                var endpoint = NetworkEndpointResolver.Resolve(config.Http);
+                table.AddRow("HTTP listen", $"{Markup.Escape(config.Http.BindAddress)}:{config.Http.Port}");
+                table.AddRow("HTTP advertised", Markup.Escape(endpoint.Url));
+            }
+            else
+            {
+                table.AddRow("HTTP", "disabled");
+            }
+
+            using (var current = Process.GetCurrentProcess())
+            using (var system = new SystemMetricProvider())
+            {
+                _ = system.Sample(current, processIo: true);
+                Thread.Sleep(Math.Max(120, config.Monitoring.IntervalMs));
+                var sample = system.Sample(current, processIo: true);
+                table.AddRow("Telemetry host CPU", sample.HostCpuPercent is null ? "unavailable" : $"{sample.HostCpuPercent:0.0}%");
+                table.AddRow("Telemetry host RAM", sample.HostMemoryUsedBytes is null
+                    ? "unavailable"
+                    : $"{sample.HostMemoryUsedBytes / 1024d / 1024d / 1024d:0.00} / {sample.HostMemoryTotalBytes / 1024d / 1024d / 1024d:0.00} GiB");
+                table.AddRow("Telemetry process CPU", sample.ProcessCpuPercent is null ? "unavailable" : $"{sample.ProcessCpuPercent:0.0}% core");
+                table.AddRow("Telemetry process RAM", sample.ProcessWorkingSetBytes is null
+                    ? "unavailable"
+                    : $"{sample.ProcessWorkingSetBytes / 1024d / 1024d:0.0} MiB");
+                if (sample.Errors.Count > 0)
+                    table.AddRow("Telemetry errors", Markup.Escape(string.Join(" | ", sample.Errors)));
+            }
             table.AddRow("xemu control", config.XemuControl.Enabled ? "enabled" : "disabled");
 
             if (config.XemuControl.Enabled)
