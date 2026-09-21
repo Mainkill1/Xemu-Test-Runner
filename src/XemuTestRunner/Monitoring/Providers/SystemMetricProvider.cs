@@ -61,7 +61,7 @@ public sealed class SystemMetricProvider : IDisposable
         }
 
         double? pageFileUsage = null;
-        if (_pageFileUsage is not null)
+        if (OperatingSystem.IsWindows() && _pageFileUsage is not null)
         {
             try { pageFileUsage = _pageFileUsage.NextValue(); } catch { }
         }

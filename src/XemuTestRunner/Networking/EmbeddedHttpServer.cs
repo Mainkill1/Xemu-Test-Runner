@@ -140,7 +140,7 @@ public sealed partial class EmbeddedHttpServer
         if (!_control.HasActiveSession) { await WriteJsonAsync(stream, 409, "Conflict", new { error = "No active xemu." }, keepAlive, ct); return true; }
         string path;
         try { Activity.Mark("screenshot", null); path = await _control.CaptureScreenshotAsync(GetQueryValue(request.Query, "name"), ct); }
-        catch (Exception e) when (e is IOException or TimeoutException or InvalidOperationException or SocketException)
+        catch (Exception e) when (e is IOException or InvalidDataException or TimeoutException or InvalidOperationException or SocketException)
         { await WriteJsonAsync(stream, 503, "Service Unavailable", new { error = e.Message }, false, ct); return false; }
         await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, _options.TransferBufferBytes, FileOptions.Asynchronous);
         await WriteHeadersAsync(stream, 200, "OK", new Dictionary<string, string>

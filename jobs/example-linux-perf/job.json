@@ -1,0 +1,28 @@
+{
+  "Id": "linux-perf-example",
+  "TargetOs": "linux",
+  "Executable": "xemu.AppImage",
+  "Arguments": ["-config_path", "xemu.toml"],
+  "WorkingDirectory": ".",
+  "RequiredFiles": ["xemu.toml"],
+  "TimeoutSeconds": 60,
+  "Tags": ["example", "linux", "perf"],
+  "Diagnostics": [
+    {
+      "Id": "cpu-window",
+      "Type": "perf",
+      "DurationMs": 10000,
+      "PauseBefore": true,
+      "ResumeDuring": true,
+      "PauseAfter": true,
+      "Frequency": 499,
+      "CallGraph": "dwarf",
+      "OutputName": "xemu-cpu-window"
+    }
+  ],
+  "Plan": [
+    {"Type": "wait", "DelayMs": 3000},
+    {"Type": "diagnostic", "DiagnosticId": "cpu-window"},
+    {"Type": "quit"}
+  ]
+}

@@ -49,6 +49,7 @@
     {"Type": "require_input"},
     {"Type": "diagnostic", "DiagnosticId": "guest-frame"},
     {"Type": "diagnostic", "DiagnosticId": "cpu-window"},
-    {"Type": "screenshot", "Name": "after-diagnostics"}
+    {"Type": "screenshot", "Name": "after-diagnostics"},
+    {"Type": "quit"}
   ]
 }

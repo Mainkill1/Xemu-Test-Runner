@@ -2,7 +2,7 @@
 
 A foreground C#/.NET 10 and Spectre.Console.Cli application for Windows/Linux xemu build testing. The console owns the queue, launched process, telemetry, test plan and embedded LAN HTTP endpoint. No ASP.NET service, separate daemon or physical Xbox is required.
 
-**Validation status:** the reliability changes have source review and offline browser-fixture checks, but have not yet been compiled or exercised with real xemu on Windows/Linux. See [validation](docs/VALIDATION.md) before relying on unattended runs.
+**Validation status:** a warning-free release build, both self-contained target publishes, and browser fixtures pass on Linux; the regression/process suite passes on Linux, native Windows, and Steam Deck. A real xemu QMP/telemetry/remote-HTTP/`perf` run also passes on Steam Deck. See [validation](docs/VALIDATION.md) for exact coverage and remaining limits.
 
 ## Build and start
 
@@ -48,12 +48,13 @@ Linux builds must retain their executable bit. Package-relative paths are used f
   "Plan": [
     { "Type": "wait", "DelayMs": 3000 },
     { "Type": "button", "Button": "Start", "DurationMs": 100 },
-    { "Type": "screenshot", "Name": "after-start" }
+    { "Type": "screenshot", "Name": "after-start" },
+    { "Type": "quit" }
   ]
 }
 ```
 
-For Linux, set `TargetOs` to `linux` and `Executable` to `xemu`. Optionally add `ExpectedExecutableSha256` with the expected 64-character hex hash. An absent expected hash still produces an actual executable hash in evidence. A plan finishing does not terminate xemu; target exit, timeout or an explicit operator stop ends the attempt. Exit code zero means **completed**, not proven Xbox correctness.
+For Linux, set `TargetOs` to `linux` and `Executable` to `xemu`. Optionally add `ExpectedExecutableSha256` with the expected 64-character hex hash. An absent expected hash still produces an actual executable hash in evidence. A plan finishing does not terminate xemu unless its final step is `quit`; target exit, timeout or an explicit operator stop also ends the attempt. Exit code zero means **completed**, not proven Xbox correctness.
 
 ## Five reliability additions
 
@@ -168,7 +169,10 @@ Plans additionally support:
 {"Type":"resume"}
 {"Type":"require_input"}
 {"Type":"diagnostic","DiagnosticId":"guest-frame"}
+{"Type":"quit"}
 ```
+
+`quit` must be the final step. Current xemu closes its QMP connection while processing a successful quit instead of returning a command reply. The runner accepts that disconnect only after the owned xemu process exits.
 
 A diagnostic has its own pause/resume policy. WPR/perf windows count unpaused runner time, so operator pauses do not silently consume the requested measurement interval.
 
@@ -195,6 +199,11 @@ These captures are explicitly diagnostic/intervened evidence. They are not clean
 ```json
 {
   "Monitoring": { "IntervalMs": 100 },
+  "XemuControl": {
+    "ScreenshotProvider": "auto",
+    "ScreenshotExecutable": "",
+    "ScreenshotArguments": []
+  },
   "Ui": { "CliRefreshMs": 250, "WebRefreshMs": 500, "LivePreviewEnabled": true, "LivePreviewIntervalMs": 750 },
   "Reliability": {
     "Preflight": { "MinimumFreeSpaceBytes": 1073741824 },
@@ -219,7 +228,21 @@ These captures are explicitly diagnostic/intervened evidence. They are not clean
 
 `/` shows cached host/process statistics, job/queue status, last outcome, sample age and intervention counts. `/control` provides near-live preview, retained screenshots, pause/resume, logical Xbox buttons and a recorder that exports `Plan` JSON. Stopping a nonempty recording saves it with the active run.
 
-The runner appends its own `-qmp tcp:127.0.0.1:<port>,server=on,wait=off`. QMP is used for status, stop/cont and PNG screendump. Availability of PNG capture depends on the xemu build and renderer; this branch still needs native verification.
+HTTP is enabled on `0.0.0.0:9368` by default so a test appliance can be inspected and controlled from another LAN machine. Use `127.0.0.1` only when remote access is intentionally disabled. The server has no authentication or TLS; restrict port 9368 to the trusted test network with the host firewall.
+
+The runner appends its own `-qmp tcp:127.0.0.1:<port>,server=on,wait=off`. QMP is used for status and stop/cont. `ScreenshotProvider: "auto"` tries QMP `screendump` first, then uses the configured external command only when xemu reports that capture command unavailable. `qmp` requires QMP capture; `external` skips the QMP attempt. External arguments are passed without a shell, must contain `{path}`, and may also use `{pid}`. A zero exit code is insufficient: the runner validates that the requested file exists and has a PNG signature.
+
+Current xemu release builds can omit QMP `screendump`. A working X11/XWayland fallback is, with the dimensions adjusted for the host:
+
+```json
+{
+  "ScreenshotProvider": "auto",
+  "ScreenshotExecutable": "/usr/bin/ffmpeg",
+  "ScreenshotArguments": ["-hide_banner", "-loglevel", "error", "-y", "-f", "x11grab", "-video_size", "1280x800", "-i", ":0", "-frames:v", "1", "{path}"]
+}
+```
+
+The runner process needs the graphical session's `DISPLAY` and `XAUTHORITY`. Compositor screenshot tools may delegate asynchronously or require a portal; verify they actually create `{path}` before adopting them. See the [Steam Deck guide](docs/STEAM_DECK.md).
 
 Xbox buttons are **not QMP send-key**. xemu reads SDL host keyboard state for its keyboard-as-controller mapping. Bind the packaged xemu config accordingly:
 
@@ -267,6 +290,6 @@ The existing `GET/HEAD/PUT/POST /api/v1/files/<path>` interface streams artifact
 dotnet run --project tests/RunnerChecks -c Release
 ```
 
-This dependency-free regression executable covers preflight, ownership, recovery decisions, watchdog sequences/cancellation, concurrent preview caching, bounded tails, large-range arithmetic, input ABI size, intervention accounting, diagnostic schema/reference validation, and tool discovery behavior. `-- --large-file` opts into an 11 GiB local file-length test; it is not a 10 GB HTTP transfer test.
+This dependency-free regression executable currently runs 20 checks covering the remote-listener default, preflight, ownership, recovery decisions, watchdog sequences/cancellation, concurrent preview caching, bounded tails, large-range arithmetic, input ABI size, intervention accounting, diagnostic schema/reference validation, tool discovery, release identity, quit ordering, and a full queued-process/QMP/HTTP/telemetry/screenshot-fallback lifecycle. `-- --large-file` opts into an 11 GiB local file-length test; it is not a 10 GB HTTP transfer test.
 
 Optional offline browser fixtures: `python scripts/check-browser.py --browser /path/to/chromium`. Requires Python Playwright; it uses no running C# server and must not be mistaken for end-to-end xemu qualification. See [validation](docs/VALIDATION.md) and [architecture](docs/ARCHITECTURE.md).

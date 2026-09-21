@@ -35,7 +35,9 @@ The same `Preflight.CheckAsync` is called by `validate` and the execution engine
 
 ## Control and watchdog
 
-The runner appends a local QMP endpoint. `XemuQmpClient` serializes command connections, performs greeting/capability negotiation and honors cancellation/timeouts. The control manager keeps the existing screenshot and pause/resume behavior.
+The runner appends a local QMP endpoint. `XemuQmpClient` serializes command connections, performs greeting/capability negotiation, returns typed command errors, and honors cancellation/timeouts. The control manager provides pause/resume and graceful quit. A QMP disconnect during quit is accepted only after the owned process exits; `quit` is constrained to the final plan position so no later action can run against a terminated target.
+
+Screenshot capture is capability-based. Auto mode tries QMP `screendump` and falls back on a configured external process only when QMP rejects the command. External arguments use `ProcessStartInfo.ArgumentList`, never a shell, and expose only `{path}` and `{pid}` substitutions. Completion requires a real output file, preventing an asynchronously delegated tool's zero exit code from becoming false evidence.
 
 `ResponsivenessWatchdog` is independent of the job timeout: startup grace, periodic query-status, a per-probe deadline and a consecutive-failure threshold. It reports `unresponsive` as a QMP observation, not a rendering/game-progress assertion. A paused VM still has a responsive control plane. Explicit runner cancellation is not a watchdog failure.
 
@@ -59,7 +61,7 @@ The foreground HTTP endpoint retains the existing Content-Length based streamed 
 
 ## Validation boundary
 
-See [VALIDATION.md](VALIDATION.md). Offline JavaScript/browser fixtures were run, but .NET compilation, the regression executable and native xemu/GPU/input qualification were not run in the authoring environment. The change is not yet a certified unattended test-box build.
+See [VALIDATION.md](VALIDATION.md). Warning-free builds, 20 regression/process checks, Windows and Linux self-contained publishing, browser fixtures, Steam Deck runner checks, a remotely probed `0.0.0.0` control endpoint, a real-xemu control smoke, and a native `perf` capture have run. Windows real-xemu control, native input, RenderDoc/WPR, fault recovery, and large network transfers remain outside the qualified boundary.
 
 
 ## Diagnostic subsystem

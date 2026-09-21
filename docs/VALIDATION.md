@@ -1,48 +1,84 @@
-# Validation record — five reliability additions
+# Validation record
 
-Date: 2026-09-21. Base: `413362cce601e587dc597f8a1aca47f7c04d5537`.
+Date: 2026-09-21. Base commit: `8882e08064f0c8cdabe6350dc4d9d7788bf6c736`.
 
-## Executed in this environment
+This record separates deterministic runner checks from native xemu qualification. A successful runner job proves orchestration and evidence retention; it does not prove that the emulated game rendered correctly or met a performance target.
 
-- JavaScript syntax checks with Node for the reconstructed home, control and evidence pages: passed.
-- Headless Chromium offline fixture checks: home statistics and intervention text, controller request generation, recorder display update, evidence links and bounded-tail rendering passed. No browser script exceptions were observed.
-- Source review of queue transitions, attempt persistence, cancellable process/QMP lifetimes, range arithmetic, JSON contracts and native input layouts.
-- `dotnet run --project tests/RunnerChecks -c Release` was attempted: **not executed**, because `dotnet` is not installed. No C# compilation or runtime test is claimed.
+## Build and regression results
 
-The browser test replaces `fetch` with fixtures and loads HTML directly. It does not execute the embedded HTTP listener, native input, QMP, xemu, GPU providers or the .NET test executable.
+The repository is pinned to .NET SDK 10.0.401. Release builds use deterministic compilation and treat warnings as errors.
 
-## Diagnostic implementation added — not executed natively here
+| Check | Environment | Result |
+| --- | --- | --- |
+| Release build | Debian Linux, .NET 10.0.401 | Pass, 0 warnings / 0 errors |
+| RunnerChecks | Debian Linux x64 | 20/20 pass |
+| RunnerChecks | Windows x64 native test host | 20/20 pass |
+| RunnerChecks | Steam Deck / SteamOS x64 | 20/20 pass |
+| Self-contained single-file publish | `linux-x64` | Pass; executable starts and reports version |
+| Self-contained single-file publish | `win-x64` | Pass; executable starts and reports version |
+| Browser fixtures | Chromium via Playwright 1.55.0 | Pass; no browser-script errors |
+| Python diagnostic helpers | Python bytecode compilation | Pass |
+| GitHub Actions workflow | `actionlint` 1.7.12 | Pass |
 
-The diagnostic layer now includes WPR+xperf, perf, RenderDoc launch/target-control/replay helpers, ProcDump/GDB bundles, QMP memory dumps, symbolization, arbitrary QMP/HMP queries, generic external-tool recipes, snapshot-at-launch, and pause/input/diagnostic plan steps.
+RunnerChecks includes one process-level integration. It copies its own executable into a queued package, launches it as a controlled QMP target, exercises the live HTTP endpoint, telemetry, stop/continue, an unsupported-QMP screenshot with external fallback, a QMP quit that disconnects without replying, result publication, and exactly-once package archival. A separate check pins the product default to HTTP enabled on `0.0.0.0:9368`; the process fixture itself uses loopback to avoid exposing a CI listener.
 
-The bundled Python scripts can be syntax-checked independently, but successful import/capture requires a real RenderDoc installation. The RenderDoc Python API surface and xemu guest-frame capture path must be exercised on the actual Windows/Linux test machines.
+That fixture reproduces current xemu's shutdown behavior, but it remains a controlled host rather than a renderer test.
 
-WPR profile names, installed Windows Performance Toolkit components, perf permissions/callgraph mode, ProcDump availability, ptrace/core limits, and symbol-file compatibility are host prerequisites rather than bundled dependencies.
+## Native Steam Deck result
 
-## Added regression checks — not executed here
+The Linux candidate was exercised against a real xemu AppImage built from source `9f756c9ba03640020017ce5bbd275f3ff06a465e`, reporting xemu 0.8.136.
 
-`tests/RunnerChecks` is a console regression executable with no external test framework. It checks executable-hash/OS preflight, exclusive leases, recovery decisions including live processes, consecutive watchdog failures and cancellation, shared preview caching and failure backoff, bounded log reads and 64-bit ranges, the Win32 INPUT ABI, in-flight transfer intervention and activity accounting.
+### Bounded control and telemetry smoke
 
-Run on both Windows and Linux:
+- xemu reached QMP readiness.
+- The final candidate retained 105 telemetry samples at a 100 ms target interval.
+- Monitoring reported zero overruns and zero dropped write samples.
+- The Linux DRM sysfs GPU provider was active.
+- Current xemu reported `CommandNotFound` for QMP `screendump`; the configured `ffmpeg` X11 fallback produced a validated 1280×800 PNG.
+- The final `quit` step completed even though xemu reset QMP without returning a reply.
+- xemu exited with code 0; the job status was `completed` and its package moved to Tested once.
+- No xemu, runner, or capture process remained afterward.
 
-```sh
-dotnet build src/XemuTestRunner/XemuTestRunner.csproj -c Release
-dotnet run --project tests/RunnerChecks -c Release
-```
+This short smoke reached xemu startup and renderer initialization. It did not qualify game correctness or frame-time performance.
 
-The default tail test uses an 8 MiB local file. `-- --large-file` explicitly creates an 11 GiB logical file; on a filesystem without sparse behavior this may require that much storage. Neither is an HTTP throughput qualification.
+### Native `perf` diagnostic
 
-## Native qualification still required
+A second real-xemu job paused the VM, attached `/usr/bin/perf`, resumed for a three-second diagnostic window at 499 Hz with DWARF call graphs, paused, produced a report, and quit.
 
-1. Run two processes against the same workspace and separately against different configs sharing Testing. The second must refuse ownership. Kill a runner during preflight, between launch/PID persistence, and after result persistence; verify hold/retry/archive behavior without duplicate xemu.
-2. Validate native Windows and Linux builds, missing DLL/shared-library behavior, declared files, read-only/unwritable results, low space and wrong hashes. No PE/ELF architecture auto-detection is implemented.
-3. Exercise real QMP availability, PNG support and renderer output; test query failure/reset, stop/cont, process exit and a real QMP-unresponsive case. A responsive QMP socket is not a game-progress oracle.
-4. Cancel a held input while stopping xemu; verify key release, foreground rejection, X11 window disappearance and process shutdown. Native Wayland remains unsupported.
-5. Open multiple consoles simultaneously, change active jobs, and fail screenshot capture. Check shared cadence, no old-run frame return and intervention records. Measure overhead with preview off versus on; no numerical overhead improvement is claimed yet.
-6. Exercise 10 GB+ upload/download/resume, two simultaneous uploads to the same file, interrupted transfers, artifact ranges and stalled clients. No real 10 GB+ network transfer was run here.
-7. Run the checked-in snapshot diagnostic example with a RenderDoc-enabled xemu: verify ExecuteAndInject returns the actual xemu PID, QMP is reachable after -loadvm/-S, Ctrl+F10 produces one guest-render .rdc, replay inventory opens it, and the VM ends paused.
-8. Run WPR and perf recipes for a known 30-second workload and verify capture duration, target PID attribution, summary outputs and teardown. Repeat with an operator pause in the middle and verify paused time is excluded.
-9. Force QMP unresponsiveness and process failure separately. Verify the watchdog labels only QMP responsiveness, and ProcDump/GDB bundles are attempted before target termination.
-10. Validate pmemsave exact byte counts/hashes, addr2line against a matching debug build, representative HMP/QMP queries, and an external recipe with spaces in package/result paths.
+| Evidence | Result |
+| --- | ---: |
+| Job status / exit | `completed` / 0 |
+| Diagnostic status | `completed` |
+| `perf.data` size | 37,746,376 bytes |
+| Samples in generated report | about 4,000 |
+| Lost samples | 0 |
+| Runner telemetry samples | 62 |
+| Telemetry overruns / dropped writes | 0 / 0 |
 
-Keep this change unqualified until actual .NET builds and native checks pass. No binaries, benchmark speedup claims, hardware-conformance verdicts or GitHub Actions runs are included.
+The result correctly records one diagnostic intervention and `comparisonStatus: operator_intervened`. This verifies PID attribution, capture finalization, report generation, and teardown. It is not an uninstrumented performance result.
+
+### Remote HTTP control plane
+
+A third real-xemu run enabled the normal HTTP endpoint at `0.0.0.0:9368`. A different LAN machine successfully queried `/api/v1/status` while the run was active and received the run ID, xemu PID, queue state, live host/process metrics, DRM GPU utilization/VRAM data, and `HttpEndpoint: http://0.0.0.0:9368`.
+
+The job completed with exit code 0 after 153 telemetry samples, with zero collector overruns and zero dropped writes. No xemu, runner, or `perf record` process remained. This proves real remote reachability on the tested network; firewall and network policy remain host responsibilities.
+
+## Browser and API scope
+
+The browser fixture reconstructs the home, control, and evidence pages with controlled `fetch` responses. It verifies statistics/intervention rendering, controller requests, recorder updates, artifact links, and bounded tail display. The process integration separately reaches the real embedded HTTP listener and waits for a non-null active run ID.
+
+Neither check is a 10 GiB transfer qualification. The optional `--large-file` RunnerChecks mode validates 64-bit local length/range handling with an 11 GiB logical file; it does not measure network throughput or interruption recovery.
+
+## Remaining qualification
+
+The following paths are implemented but were not qualified in this pass:
+
+1. Real xemu automation and screenshot fallback on Windows. The Windows process/QMP integration passed with the controlled fixture.
+2. Native controller input on Windows and X11/XWayland, including cancellation while a key is held and focus rejection.
+3. WPR/xperf, ProcDump, GDB/core, memory-dump, symbolization, and external-tool recipes against their real tools.
+4. RenderDoc launch injection, xemu F10 capture, replay inventory, and snapshot restoration against an actual game frame.
+5. A real 10 GiB+ HTTP upload/download/resume and simultaneous-writer rejection.
+6. Deliberate crash, QMP hang, low-disk, unwritable-result, missing-runtime-library, and interrupted-run recovery on native hosts.
+7. Measured overhead comparisons with monitoring, preview, and diagnostics independently enabled and disabled.
+
+Do not convert unavailable counters to zero, call a QMP response guest progress, or compare diagnostic/intervened runs with ordinary performance runs.

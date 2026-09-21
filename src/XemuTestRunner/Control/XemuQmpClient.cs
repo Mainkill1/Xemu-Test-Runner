@@ -54,9 +54,25 @@ public sealed class XemuQmpClient
             using var doc = JsonDocument.Parse(line); var root = doc.RootElement;
             if (root.TryGetProperty("event", out _)) continue;
             if (!root.TryGetProperty("id", out var id) || !id.TryGetInt32(out var value) || value != expected) continue;
-            if (root.TryGetProperty("error", out var error)) throw new InvalidOperationException("QMP command failed: " + error);
+            if (root.TryGetProperty("error", out var error))
+            {
+                var errorClass = error.TryGetProperty("class", out var classValue)
+                    ? classValue.GetString() ?? "Unknown"
+                    : "Unknown";
+                var description = error.TryGetProperty("desc", out var descValue)
+                    ? descValue.GetString() ?? error.ToString()
+                    : error.ToString();
+                throw new QmpCommandException(errorClass, description);
+            }
             if (!root.TryGetProperty("return", out var result)) throw new InvalidDataException("Malformed QMP result.");
             return result.Clone();
         }
     }
+}
+
+public sealed class QmpCommandException(string errorClass, string description)
+    : InvalidOperationException($"QMP command failed ({errorClass}): {description}")
+{
+    public string ErrorClass { get; } = errorClass;
+    public string Description { get; } = description;
 }

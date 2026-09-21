@@ -5,6 +5,7 @@ var app = new CommandApp();
 app.Configure(config =>
 {
     config.SetApplicationName("xemu-test-runner");
+    config.SetApplicationVersion(XemuTestRunner.ApplicationInfo.DisplayVersion);
     config.AddCommand<InitCommand>("init").WithDescription("Create config and workspace folders.");
     config.AddCommand<RunCommand>("run").WithDescription("Run the foreground queue, dashboard, and embedded HTTP.");
     config.AddCommand<QueueCommand>("queue").WithDescription("Show local queue state.");

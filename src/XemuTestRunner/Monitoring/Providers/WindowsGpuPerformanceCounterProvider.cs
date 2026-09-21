@@ -3,6 +3,7 @@ using XemuTestRunner.Config;
 
 namespace XemuTestRunner.Monitoring.Providers;
 
+#pragma warning disable CA1416 // Private construction is gated by the Windows check in TryCreate.
 public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
 {
     private readonly int _refreshMs;
@@ -91,3 +92,4 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
 
     public void Dispose() => DisposeCounters();
 }
+#pragma warning restore CA1416

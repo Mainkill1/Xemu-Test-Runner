@@ -6,6 +6,9 @@
     <Nullable>enable</Nullable>
     <AssemblyName>XemuTestRunner</AssemblyName>
     <RootNamespace>XemuTestRunner</RootNamespace>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <RepositoryUrl>https://github.com/Mainkill1/Xemu-Test-Runner</RepositoryUrl>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
   </PropertyGroup>
 
   <ItemGroup>
