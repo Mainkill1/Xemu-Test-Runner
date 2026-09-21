@@ -171,6 +171,7 @@ public sealed class RunnerEngine
         bool exited = false;
         bool componentStuck = false;
         IReadOnlyList<string> gpuProviders = [];
+        WorkstationStateSnapshot? workstationStart = null;
 
         TargetLaunch? launch = null;
         Process? process = null;
@@ -323,13 +324,13 @@ public sealed class RunnerEngine
                 _state.BeginJob(job.Id, runId, process.Id);
                 _activity.Attach(runId, activity);
 
-                var workstationAtStart = _state.Snapshot().Workstation;
-                if (workstationAtStart.RenderingRisk)
+                workstationStart = _state.Snapshot().Workstation;
+                if (workstationStart.RenderingRisk)
                 {
                     _activity.Mark("host_state", new
                     {
                         initial = true,
-                        workstation = workstationAtStart
+                        workstation = workstationStart
                     });
                 }
 
@@ -633,6 +634,8 @@ public sealed class RunnerEngine
             diagnostics = _diagnostics.Snapshot().Completed,
             operatorActivity = quality,
             comparisonStatus = quality.Intervened ? "operator_intervened" : "not_evaluated",
+            workstationStart,
+            workstationEnd = _state.Snapshot().Workstation,
             host = HostInfo(),
             monitoring = collector is null ? null : new
             {
