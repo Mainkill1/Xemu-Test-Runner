@@ -784,6 +784,12 @@ public sealed class RunnerEngine
                 samples = metricSummary.Samples,
                 overruns = metricSummary.Overruns,
                 droppedWriteSamples = metricSummary.DroppedWriteSamples,
+                averageCollectorDutyPercent =
+                    metricSummary.AverageCollectorDutyPercent,
+                maxCollectorDutyPercent =
+                    metricSummary.MaxCollectorDutyPercent,
+                maxCollectorDurationMs =
+                    metricSummary.MaxCollectorDurationMs,
                 gpuProviders = metricSummary.GpuProviders
             }
         });

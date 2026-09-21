@@ -10,6 +10,9 @@ public sealed record MetricRecordingSummary(
     long Samples,
     long Overruns,
     long DroppedWriteSamples,
+    double AverageCollectorDutyPercent,
+    double MaxCollectorDutyPercent,
+    double MaxCollectorDurationMs,
     IReadOnlyList<string> GpuProviders);
 
 public sealed class MetricCollector : IDisposable
@@ -146,6 +149,9 @@ public sealed class MetricCollector : IDisposable
                 0,
                 0,
                 0,
+                0,
+                0,
+                0,
                 GpuProviders);
         }
 
@@ -154,6 +160,12 @@ public sealed class MetricCollector : IDisposable
             recording.Samples,
             recording.Overruns,
             recording.DroppedWriteSamples,
+            recording.Samples == 0
+                ? 0
+                : recording.TotalCollectorDutyPercent /
+                  recording.Samples,
+            recording.MaxCollectorDutyPercent,
+            recording.MaxCollectorDurationMs,
             GpuProviders);
     }
 
@@ -281,6 +293,9 @@ public sealed class MetricCollector : IDisposable
         public long Samples { get; private set; }
         public long Overruns { get; private set; }
         public long DroppedWriteSamples { get; private set; }
+        public double TotalCollectorDutyPercent { get; private set; }
+        public double MaxCollectorDutyPercent { get; private set; }
+        public double MaxCollectorDurationMs { get; private set; }
 
         public RecordingSession(
             MonitoringOptions options,
@@ -309,6 +324,15 @@ public sealed class MetricCollector : IDisposable
                 return;
 
             Samples++;
+            TotalCollectorDutyPercent +=
+                sample.CollectorDutyPercent;
+            MaxCollectorDutyPercent = Math.Max(
+                MaxCollectorDutyPercent,
+                sample.CollectorDutyPercent);
+            MaxCollectorDurationMs = Math.Max(
+                MaxCollectorDurationMs,
+                sample.CollectorDurationMs);
+
             if (sample.Overrun)
                 Overruns++;
 
