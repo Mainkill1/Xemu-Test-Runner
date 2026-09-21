@@ -50,11 +50,13 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
 
     public GpuSample Sample(int? processId)
     {
-        if (processId is not null &&
-            (_pid != processId ||
-             Environment.TickCount64 >= _nextRefreshTick ||
-             !_engineCounters.Any(counter => counter.IsTargetProcess)))
-            Refresh(processId.Value);
+        var now = Environment.TickCount64;
+        if (_nextRefreshTick == 0 ||
+            _pid != processId ||
+            now >= _nextRefreshTick ||
+            processId is not null &&
+            !_engineCounters.Any(counter => counter.IsTargetProcess))
+            Refresh(processId);
 
         SampleEnginesIfDue();
 
@@ -130,7 +132,7 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
             : Math.Clamp(process.Values.Max(), 0, 100);
     }
 
-    private void Refresh(int pid)
+    private void Refresh(int? pid)
     {
         DisposeCounters();
         _pid = pid;
@@ -151,7 +153,7 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
                     _engineCounters.Add(new EngineCounter(
                         counter,
                         ExtractEngineKey(instance),
-                        BelongsToProcess(instance, pid)));
+                        pid is not null && BelongsToProcess(instance, pid.Value)));
                 }
                 catch
                 {
@@ -167,7 +169,7 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
             var memoryCategory = new PerformanceCounterCategory("GPU Process Memory");
             foreach (var instance in memoryCategory.GetInstanceNames())
             {
-                if (!BelongsToProcess(instance, pid))
+                if (pid is null || !BelongsToProcess(instance, pid.Value))
                     continue;
 
                 try
@@ -191,7 +193,7 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
 
         var hasProcessEngine = _engineCounters.Any(counter => counter.IsTargetProcess);
         _nextRefreshTick = Environment.TickCount64 +
-            (hasProcessEngine ? _refreshMs : 500);
+            (pid is null ? _refreshMs : hasProcessEngine ? _refreshMs : 500);
         _nextEngineSampleTick = 0;
     }
 
