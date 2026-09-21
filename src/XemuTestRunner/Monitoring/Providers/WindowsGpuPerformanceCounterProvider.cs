@@ -9,11 +9,11 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
     private readonly int _refreshMs;
     private int? _pid;
     private long _nextRefreshTick;
-    private long _nextHostSampleTick;
-    private readonly List<EngineCounter> _processEngineCounters = [];
-    private readonly List<EngineCounter> _hostEngineCounters = [];
+    private long _nextEngineSampleTick;
+    private readonly List<EngineCounter> _engineCounters = [];
     private readonly List<PerformanceCounter> _dedicatedMemoryCounters = [];
     private double? _cachedHostUtilization;
+    private double? _cachedProcessUtilization;
 
     public string Name => "Windows GPU performance counters";
 
@@ -50,54 +50,84 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
 
     public GpuSample Sample(int? processId)
     {
-        if (processId is null)
-            return SampleHostOnly();
-
-        if (_pid != processId ||
-            Environment.TickCount64 >= _nextRefreshTick ||
-            _processEngineCounters.Count == 0)
+        if (processId is not null &&
+            (_pid != processId ||
+             Environment.TickCount64 >= _nextRefreshTick ||
+             !_engineCounters.Any(counter => counter.IsTargetProcess)))
             Refresh(processId.Value);
 
-        var processUtilization = SampleGroupedMaximum(_processEngineCounters);
+        SampleEnginesIfDue();
 
         long? processVram = null;
-        try
+        if (processId is not null)
         {
-            if (_dedicatedMemoryCounters.Count > 0)
+            try
             {
-                var total = _dedicatedMemoryCounters.Sum(counter =>
+                if (_dedicatedMemoryCounters.Count > 0)
                 {
-                    var value = counter.NextValue();
-                    return double.IsFinite(value) && value > 0 ? value : 0;
-                });
-                processVram = checked((long)total);
+                    var total = _dedicatedMemoryCounters.Sum(counter =>
+                    {
+                        var value = counter.NextValue();
+                        return double.IsFinite(value) && value > 0 ? value : 0;
+                    });
+                    processVram = checked((long)total);
+                }
+            }
+            catch
+            {
+                processVram = null;
             }
         }
-        catch
-        {
-            processVram = null;
-        }
-
-        var hostUtilization = SampleHostCached();
 
         return new GpuSample(
-            UtilizationPercent: hostUtilization,
-            ProcessUtilizationPercent: processUtilization,
+            UtilizationPercent: _cachedHostUtilization,
+            ProcessUtilizationPercent: processId is null ? null : _cachedProcessUtilization,
             ProcessVramBytes: processVram);
     }
 
-    private GpuSample SampleHostOnly() =>
-        new(UtilizationPercent: SampleHostCached());
-
-    private double? SampleHostCached()
+    private void SampleEnginesIfDue()
     {
         var now = Environment.TickCount64;
-        if (now < _nextHostSampleTick)
-            return _cachedHostUtilization;
+        if (now < _nextEngineSampleTick)
+            return;
 
-        _nextHostSampleTick = now + 500;
-        _cachedHostUtilization = SampleGroupedMaximum(_hostEngineCounters);
-        return _cachedHostUtilization;
+        _nextEngineSampleTick = now + 250;
+
+        if (_engineCounters.Count == 0)
+        {
+            _cachedHostUtilization = null;
+            _cachedProcessUtilization = null;
+            return;
+        }
+
+        var host = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var process = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var binding in _engineCounters)
+        {
+            double value;
+            try { value = binding.Counter.NextValue(); }
+            catch { continue; }
+
+            if (!double.IsFinite(value) || value < 0)
+                continue;
+
+            host.TryGetValue(binding.EngineKey, out var hostCurrent);
+            host[binding.EngineKey] = hostCurrent + value;
+
+            if (binding.IsTargetProcess)
+            {
+                process.TryGetValue(binding.EngineKey, out var processCurrent);
+                process[binding.EngineKey] = processCurrent + value;
+            }
+        }
+
+        _cachedHostUtilization = host.Count == 0
+            ? null
+            : Math.Clamp(host.Values.Max(), 0, 100);
+        _cachedProcessUtilization = process.Count == 0
+            ? null
+            : Math.Clamp(process.Values.Max(), 0, 100);
     }
 
     private void Refresh(int pid)
@@ -108,9 +138,7 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
         try
         {
             var engineCategory = new PerformanceCounterCategory("GPU Engine");
-            var instances = engineCategory.GetInstanceNames();
-
-            foreach (var instance in instances)
+            foreach (var instance in engineCategory.GetInstanceNames())
             {
                 try
                 {
@@ -120,14 +148,10 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
                         instance,
                         readOnly: true);
                     _ = counter.NextValue();
-
-                    var binding = new EngineCounter(
+                    _engineCounters.Add(new EngineCounter(
                         counter,
-                        ExtractEngineKey(instance));
-
-                    _hostEngineCounters.Add(binding);
-                    if (BelongsToProcess(instance, pid))
-                        _processEngineCounters.Add(binding);
+                        ExtractEngineKey(instance),
+                        BelongsToProcess(instance, pid)));
                 }
                 catch
                 {
@@ -165,9 +189,10 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
         {
         }
 
+        var hasProcessEngine = _engineCounters.Any(counter => counter.IsTargetProcess);
         _nextRefreshTick = Environment.TickCount64 +
-            (_processEngineCounters.Count == 0 ? 500 : _refreshMs);
-        _nextHostSampleTick = 0;
+            (hasProcessEngine ? _refreshMs : 500);
+        _nextEngineSampleTick = 0;
     }
 
     private static bool BelongsToProcess(string instance, int pid) =>
@@ -179,59 +204,24 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
         return luid >= 0 ? instance[luid..] : instance;
     }
 
-    private static double? SampleGroupedMaximum(List<EngineCounter> counters)
-    {
-        if (counters.Count == 0)
-            return null;
-
-        try
-        {
-            var byEngine = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-            foreach (var binding in counters)
-            {
-                var value = binding.Counter.NextValue();
-                if (!double.IsFinite(value) || value < 0)
-                    continue;
-
-                byEngine.TryGetValue(binding.EngineKey, out var existing);
-                byEngine[binding.EngineKey] = existing + value;
-            }
-
-            return byEngine.Count == 0
-                ? null
-                : Math.Clamp(byEngine.Values.Max(), 0, 100);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
     private void DisposeCounters()
     {
-        var disposed = new HashSet<PerformanceCounter>();
-
-        foreach (var binding in _hostEngineCounters)
-        {
-            if (disposed.Add(binding.Counter))
-                binding.Counter.Dispose();
-        }
-
+        foreach (var binding in _engineCounters)
+            binding.Counter.Dispose();
         foreach (var counter in _dedicatedMemoryCounters)
-        {
-            if (disposed.Add(counter))
-                counter.Dispose();
-        }
+            counter.Dispose();
 
-        _processEngineCounters.Clear();
-        _hostEngineCounters.Clear();
+        _engineCounters.Clear();
         _dedicatedMemoryCounters.Clear();
+        _cachedHostUtilization = null;
+        _cachedProcessUtilization = null;
     }
 
     public void Dispose() => DisposeCounters();
 
     private sealed record EngineCounter(
         PerformanceCounter Counter,
-        string EngineKey);
+        string EngineKey,
+        bool IsTargetProcess);
 }
 #pragma warning restore CA1416

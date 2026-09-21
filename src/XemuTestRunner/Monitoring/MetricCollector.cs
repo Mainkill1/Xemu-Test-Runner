@@ -213,7 +213,7 @@ public sealed class MetricCollector : IDisposable
         static string L(long? value) =>
             value?.ToString(CultureInfo.InvariantCulture) ?? "";
         static string Q(string value) =>
-            '"' + value.Replace(""", """", StringComparison.Ordinal) + '"';
+            "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
 
         return string.Join(',',
             s.TimestampUtc.ToString("O", CultureInfo.InvariantCulture),

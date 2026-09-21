@@ -437,7 +437,7 @@ public sealed class RunnerEngine
         }
         catch (Exception ex)
         {
-            if (started && status is "start_failed" or "invalid_job")
+            if (started && status is ("start_failed" or "invalid_job"))
                 status = "runner_error";
             detail ??= ex.ToString();
         }
@@ -459,7 +459,7 @@ public sealed class RunnerEngine
                 var preserveTarget =
                     !exited &&
                     _config.Reliability.PreserveTargetOnRunnerError &&
-                    status is "runner_error" or "control_error";
+                    status is ("runner_error" or "control_error");
 
                 if (!preserveTarget &&
                     !exited &&
