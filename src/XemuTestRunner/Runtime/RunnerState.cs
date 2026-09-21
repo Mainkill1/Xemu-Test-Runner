@@ -1,5 +1,6 @@
 using XemuTestRunner.Monitoring;
 using XemuTestRunner.Queue;
+using XemuTestRunner.Workstation;
 
 namespace XemuTestRunner.Runtime;
 
@@ -18,10 +19,13 @@ public sealed class RunnerState
     private string? _lastJob;
     private string? _lastResult;
     private DateTimeOffset? _lastFinishedUtc;
+    private WorkstationStateSnapshot _workstation = WorkstationStateSnapshot.Unsupported;
 
     public void SetPhase(string phase) { lock (_gate) _phase = phase; }
     public void SetHttpEndpoint(string? endpoint) { lock (_gate) _httpEndpoint = endpoint; }
     public void SetQueue(QueueSnapshot queue) { lock (_gate) _queue = queue; }
+    public void SetWorkstationState(WorkstationStateSnapshot workstation) { lock (_gate) _workstation = workstation; }
+    public bool HasActiveJob { get { lock (_gate) return _currentJob is not null; } }
 
     public void BeginJob(string jobId, string runId, int processId)
     {
@@ -74,7 +78,8 @@ public sealed class RunnerState
                 _httpEndpoint,
                 _lastJob,
                 _lastResult,
-                _lastFinishedUtc);
+                _lastFinishedUtc,
+                _workstation);
         }
     }
 }
@@ -93,4 +98,5 @@ public sealed record RunnerStateSnapshot(
     string? HttpEndpoint,
     string? LastJob,
     string? LastResult,
-    DateTimeOffset? LastFinishedUtc);
+    DateTimeOffset? LastFinishedUtc,
+    WorkstationStateSnapshot Workstation);

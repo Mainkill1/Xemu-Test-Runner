@@ -7,6 +7,7 @@ using XemuTestRunner.Monitoring;
 using XemuTestRunner.Networking;
 using XemuTestRunner.Queue;
 using XemuTestRunner.Reliability;
+using XemuTestRunner.Workstation;
 
 namespace XemuTestRunner.Runtime;
 
@@ -40,6 +41,41 @@ public sealed class RunnerEngine
         _state.SetQueue(_queue.Snapshot());
 
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        var telemetryDirectory = Path.Combine(_paths.Workspace, "Telemetry");
+        Directory.CreateDirectory(telemetryDirectory);
+
+        MetricCollector? hostCollector = null;
+        Task? hostTelemetryTask = null;
+        if (_config.Monitoring.Enabled)
+        {
+            hostCollector = new MetricCollector(_config.Monitoring, _state.SetLatestMetric);
+            var hostCsv = Path.Combine(
+                telemetryDirectory,
+                $"host-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmssfff}.csv");
+            hostTelemetryTask = hostCollector.RunHostAsync(
+                hostCsv,
+                () => _state.HasActiveJob,
+                lifetime.Token);
+        }
+
+        long lastWorkstationEvent = 0;
+        using var workstationMonitor = new WorkstationStateMonitor(
+            workstation =>
+            {
+                _state.SetWorkstationState(workstation);
+
+                if (workstation.EventSequence > 0 &&
+                    workstation.EventSequence != Interlocked.Read(ref lastWorkstationEvent))
+                {
+                    Interlocked.Exchange(ref lastWorkstationEvent, workstation.EventSequence);
+                    if (_state.HasActiveJob)
+                        _activity.Mark("host_state", workstation);
+                }
+            },
+            Path.Combine(telemetryDirectory, "workstation-events.jsonl"));
+        workstationMonitor.Start();
+
         var server = new EmbeddedHttpServer(
             _config.Http,
             _config.Ui,
@@ -101,6 +137,11 @@ public sealed class RunnerEngine
             _diagnostics.Detach();
             _activity.Detach();
             _control.End();
+
+            try { if (hostTelemetryTask is not null) await hostTelemetryTask.ConfigureAwait(false); }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+            hostCollector?.Dispose();
+
             try { await serverTask.ConfigureAwait(false); }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
 
@@ -281,6 +322,16 @@ public sealed class RunnerEngine
 
                 _state.BeginJob(job.Id, runId, process.Id);
                 _activity.Attach(runId, activity);
+
+                var workstationAtStart = _state.Snapshot().Workstation;
+                if (workstationAtStart.RenderingRisk)
+                {
+                    _activity.Mark("host_state", new
+                    {
+                        initial = true,
+                        workstation = workstationAtStart
+                    });
+                }
 
                 // Start host/process telemetry as soon as the target exists. QMP,
                 // input, screenshots and diagnostics are optional control layers;

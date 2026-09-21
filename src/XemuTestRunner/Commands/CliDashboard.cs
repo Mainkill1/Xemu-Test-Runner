@@ -25,6 +25,17 @@ internal static class CliDashboard
         Row("Collector", m is null ? "-" : $"{m.CollectorDurationMs:0.###} ms{(m.Overrun ? " OVERRUN" : "")}");
         Row("Metric errors", m is null || m.Errors.Count == 0 ? "-" : string.Join(" | ", m.Errors.Take(3)));
         Row("Sample age", m is null ? "-" : $"{Math.Max(0, (DateTimeOffset.UtcNow - m.TimestampUtc).TotalMilliseconds):0} ms");
+
+        var w = s.Workstation;
+        Row("Session", !w.Supported ? "unsupported" : w.SessionLocked == true ? "LOCKED" : w.SessionLocked == false ? "unlocked" : "unknown");
+        Row("Display", w.DisplayState);
+        Row("System power", $"{w.PowerState} / {w.PowerSource}" +
+            (w.BatteryPercent is null ? "" : $" / {w.BatteryPercent}%") +
+            (w.BatterySaver == true ? " / BATTERY SAVER" : ""));
+        Row("User idle", w.UserIdleSeconds is null ? "-" : $"{w.UserIdleSeconds}s");
+        Row("Rendering risk", w.RenderingRisk ? "YES" : "no");
+        Row("Workstation event", w.LastEvent ?? "-");
+
         Row("Last job", s.LastJob); Row("Last result", s.LastResult);
         return table;
     }

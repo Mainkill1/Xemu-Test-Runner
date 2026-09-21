@@ -10,6 +10,7 @@ using XemuTestRunner.Monitoring.Providers;
 using XemuTestRunner.Networking;
 using XemuTestRunner.Queue;
 using XemuTestRunner.Reliability;
+using XemuTestRunner.Workstation;
 
 if (args.Contains("--fake-xemu", StringComparer.Ordinal))
     return await FakeXemuHost.RunAsync(args);
@@ -296,6 +297,94 @@ try
         Assert(summary.Intervened && summary.PreviewCaptures == 1 && summary.ManualInputs == 1 &&
             summary.Diagnostics == 1, "Intervention was lost.");
         return Task.CompletedTask;
+    });
+
+    await Check("workstation rendering risk flags lock display sleep and battery saver", () =>
+    {
+        Assert(new WorkstationStateSnapshot { SessionLocked = true }.RenderingRisk,
+            "Locked workstation was not marked as a rendering risk.");
+        Assert(new WorkstationStateSnapshot { DisplayState = "off" }.RenderingRisk,
+            "Display-off workstation was not marked as a rendering risk.");
+        Assert(new WorkstationStateSnapshot { PowerState = "suspending" }.RenderingRisk,
+            "Suspending workstation was not marked as a rendering risk.");
+        Assert(new WorkstationStateSnapshot { BatterySaver = true }.RenderingRisk,
+            "Battery saver was not marked as a rendering risk.");
+        Assert(!new WorkstationStateSnapshot
+        {
+            SessionLocked = false,
+            DisplayState = "on",
+            PowerState = "awake",
+            BatterySaver = false
+        }.RenderingRisk, "Normal interactive workstation was marked risky.");
+        return Task.CompletedTask;
+    });
+
+    await Check("runner publishes host telemetry while idle", async () =>
+    {
+        var fixture = Path.Combine(root, "idle-telemetry");
+        var configPath = Path.Combine(fixture, "runner.json");
+        Directory.CreateDirectory(fixture);
+
+        var config = new RunnerConfig
+        {
+            Workspace = "workspace",
+            Http = new HttpOptions { Enabled = false },
+            Monitoring = new MonitoringOptions
+            {
+                Enabled = true,
+                IntervalMs = 50,
+                FlushIntervalMs = 100,
+                BufferCapacity = 64,
+                Gpu = new GpuOptions { Enabled = false }
+            },
+            XemuControl = new XemuControlOptions { Enabled = false },
+            Reliability = new ReliabilityOptions
+            {
+                Preflight = new PreflightOptions { MinimumFreeSpaceBytes = 0 },
+                Watchdog = new WatchdogOptions { Enabled = false }
+            }
+        };
+
+        await File.WriteAllTextAsync(
+            configPath,
+            JsonSerializer.Serialize(config, ConfigLoader.JsonOptions));
+
+        var (_, paths) = ConfigLoader.Load(configPath);
+        var engine = new XemuTestRunner.Runtime.RunnerEngine(config, paths);
+        using var stop = new CancellationTokenSource();
+        var runTask = engine.RunAsync(once: false, stop.Token);
+
+        try
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            while (!deadline.IsCancellationRequested)
+            {
+                var snapshot = engine.State.Snapshot();
+                if (snapshot.CurrentJob is null &&
+                    snapshot.LatestMetric?.HostMemoryTotalBytes is > 0 &&
+                    snapshot.LatestMetric.HostCpuPercent is >= 0)
+                    break;
+
+                await Task.Delay(50, deadline.Token);
+            }
+
+            var idle = engine.State.Snapshot();
+            Assert(idle.CurrentJob is null, "Idle telemetry unexpectedly attached a target process.");
+            Assert(idle.LatestMetric?.HostMemoryTotalBytes is > 0,
+                "Idle runner did not publish host memory.");
+            Assert(idle.LatestMetric?.HostCpuPercent is >= 0,
+                "Idle runner did not publish host CPU after priming.");
+        }
+        finally
+        {
+            stop.Cancel();
+            await runTask;
+        }
+
+        Assert(Directory.Exists(Path.Combine(paths.Workspace, "Telemetry")),
+            "Lifetime telemetry directory was not created.");
+        Assert(Directory.GetFiles(Path.Combine(paths.Workspace, "Telemetry"), "host-*.csv").Length == 1,
+            "Lifetime host telemetry CSV was not retained.");
     });
 
     await Check("advertised HTTP address never reports wildcard when an override is supplied", () =>

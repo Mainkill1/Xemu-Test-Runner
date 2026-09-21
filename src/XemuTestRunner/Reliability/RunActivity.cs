@@ -10,7 +10,8 @@ public sealed record ActivitySummary(
     long Screenshots,
     long PreviewCaptures,
     long BulkTransfers,
-    long Diagnostics);
+    long Diagnostics,
+    long HostStateChanges);
 
 public sealed class RunActivity : IDisposable
 {
@@ -18,7 +19,7 @@ public sealed class RunActivity : IDisposable
     private readonly StreamWriter _writer;
     private readonly long _started = Stopwatch.GetTimestamp();
     private long _flushAt = Stopwatch.GetTimestamp();
-    private long _inputs, _pauses, _screenshots, _previews, _transfers, _diagnostics;
+    private long _inputs, _pauses, _screenshots, _previews, _transfers, _diagnostics, _hostStateChanges;
     private bool _disposed;
 
     public RunActivity(string resultsDirectory)
@@ -48,6 +49,7 @@ public sealed class RunActivity : IDisposable
                 case "preview_capture": _previews++; break;
                 case "bulk_transfer": _transfers++; break;
                 case "diagnostic": _diagnostics++; break;
+                case "host_state": _hostStateChanges++; break;
             }
 
             _writer.WriteLine(JsonSerializer.Serialize(new
@@ -72,13 +74,14 @@ public sealed class RunActivity : IDisposable
         lock (_gate)
         {
             return new(
-                _inputs + _pauses + _screenshots + _previews + _transfers + _diagnostics > 0,
+                _inputs + _pauses + _screenshots + _previews + _transfers + _diagnostics + _hostStateChanges > 0,
                 _inputs,
                 _pauses,
                 _screenshots,
                 _previews,
                 _transfers,
-                _diagnostics);
+                _diagnostics,
+                _hostStateChanges);
         }
     }
 

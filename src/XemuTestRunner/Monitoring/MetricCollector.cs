@@ -27,9 +27,22 @@ public sealed class MetricCollector : IDisposable
             InitializeGpuProviders(options.Gpu);
     }
 
-    public async Task RunAsync(
+    public Task RunAsync(
         Process process,
         string csvPath,
+        CancellationToken cancellationToken) =>
+        RunCoreAsync(() => process, csvPath, suppressSampling: null, cancellationToken);
+
+    public Task RunHostAsync(
+        string csvPath,
+        Func<bool>? suppressSampling,
+        CancellationToken cancellationToken) =>
+        RunCoreAsync(() => null, csvPath, suppressSampling, cancellationToken);
+
+    private async Task RunCoreAsync(
+        Func<Process?> processAccessor,
+        string csvPath,
+        Func<bool>? suppressSampling,
         CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(csvPath)!);
@@ -49,12 +62,18 @@ public sealed class MetricCollector : IDisposable
         {
             while (!cancellationToken.IsCancellationRequested)
             {
+                if (suppressSampling?.Invoke() == true)
+                {
+                    await Task.Delay(interval, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
                 var started = Stopwatch.GetTimestamp();
                 MetricSample sample;
 
                 try
                 {
-                    sample = Collect(process);
+                    sample = Collect(processAccessor());
                 }
                 catch (Exception ex)
                 {
@@ -97,7 +116,7 @@ public sealed class MetricCollector : IDisposable
         }
     }
 
-    private MetricSample Collect(Process process)
+    private MetricSample Collect(Process? process)
     {
         var system = _system.Sample(process, _options.ProcessIo);
         var gpu = new GpuSample();
@@ -107,7 +126,13 @@ public sealed class MetricCollector : IDisposable
         {
             try
             {
-                gpu = gpu.Merge(provider.Sample(process.HasExited ? null : process.Id));
+                int? processId = null;
+                if (process is not null)
+                {
+                    try { if (!process.HasExited) processId = process.Id; }
+                    catch (InvalidOperationException) { }
+                }
+                gpu = gpu.Merge(provider.Sample(processId));
             }
             catch (Exception ex)
             {
