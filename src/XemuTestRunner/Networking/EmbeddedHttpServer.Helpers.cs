@@ -99,6 +99,20 @@ public sealed partial class EmbeddedHttpServer
 
     private static string EscapeHeaderValue(string value) => value.Replace("\"", "'", StringComparison.Ordinal).Replace("\r", "", StringComparison.Ordinal).Replace("\n", "", StringComparison.Ordinal);
 
+    private static string? GetQueryValue(string query, string key)
+    {
+        foreach (var item in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pair = item.Split('=', 2);
+            if (!string.Equals(Uri.UnescapeDataString(pair[0]), key, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            return pair.Length == 2 ? Uri.UnescapeDataString(pair[1]) : "";
+        }
+
+        return null;
+    }
+
     private static async Task<IPAddress> ResolveBindAddressAsync(string value)
     {
         if (value == "*" || value == "0.0.0.0")

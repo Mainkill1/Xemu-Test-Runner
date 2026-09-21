@@ -28,13 +28,13 @@ public sealed class JobQueue
     public QueueSnapshot Snapshot()
     {
         lock (_gate)
-            return new QueueSnapshot(CountJobs(_paths.Pending), CountJobs(_paths.Testing), CountJobs(_paths.Tested));
+            return new QueueSnapshot(CountPackages(_paths.Pending), CountPackages(_paths.Testing), CountPackages(_paths.Tested));
     }
 
     public IReadOnlyList<string> GetTestingJobs()
     {
         lock (_gate)
-            return Directory.EnumerateFiles(_paths.Testing, "*.json").OrderBy(Path.GetFileName).ToArray();
+            return EnumeratePackages(_paths.Testing).OrderBy(Path.GetFileName).ToArray();
     }
 
     public void RecoverInterrupted()
@@ -49,22 +49,23 @@ public sealed class JobQueue
         var recoveryDirectory = Path.Combine(_paths.Results, "_recovery");
         Directory.CreateDirectory(recoveryDirectory);
 
-        foreach (var path in interrupted)
+        foreach (var package in interrupted)
         {
-            var name = Path.GetFileName(path);
+            var name = Path.GetFileName(package);
             var stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmssfff");
             var record = new
             {
                 timestampUtc = DateTimeOffset.UtcNow,
                 action = "retry",
-                job = name,
-                reason = "Job was present in Testing when the runner started. The prior run did not complete cleanly."
+                jobPackage = name,
+                reason = "Job package was present in Testing when the runner started. The prior run did not complete cleanly."
             };
+
             File.WriteAllText(
-                Path.Combine(recoveryDirectory, $"{stamp}-{Path.GetFileNameWithoutExtension(name)}.json"),
+                Path.Combine(recoveryDirectory, $"{stamp}-{name}.json"),
                 JsonSerializer.Serialize(record, ConfigLoader.JsonOptions));
 
-            File.Move(path, UniquePath(_paths.Pending, name));
+            Directory.Move(package, UniqueDirectory(_paths.Pending, name));
         }
     }
 
@@ -72,10 +73,10 @@ public sealed class JobQueue
     {
         lock (_gate)
         {
-            if (Directory.EnumerateFiles(_paths.Testing, "*.json").Any())
+            if (EnumeratePackages(_paths.Testing).Any())
                 return null;
 
-            var pending = Directory.EnumerateFiles(_paths.Pending, "*.json")
+            var pending = EnumeratePackages(_paths.Pending)
                 .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
                 .FirstOrDefault();
 
@@ -83,60 +84,44 @@ public sealed class JobQueue
                 return null;
 
             var destination = Path.Combine(_paths.Testing, Path.GetFileName(pending));
-            File.Move(pending, destination);
+            Directory.Move(pending, destination);
             return destination;
         }
     }
 
-    public string Enqueue(JobDefinition job)
-    {
-        if (string.IsNullOrWhiteSpace(job.Id))
-            job.Id = $"job-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmssfff}";
-        if (string.IsNullOrWhiteSpace(job.Executable))
-            throw new InvalidDataException("Job Executable is required.");
-
-        var safeName = string.Concat(job.Id.Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch));
-        var temporary = Path.Combine(_paths.Pending, $".enqueue-{Guid.NewGuid():N}.tmp");
-        File.WriteAllText(temporary, JsonSerializer.Serialize(job, ConfigLoader.JsonOptions));
-
-        try
-        {
-            lock (_gate)
-            {
-                var path = UniquePath(_paths.Pending, safeName + ".json");
-                File.Move(temporary, path);
-                return path;
-            }
-        }
-        finally
-        {
-            try { File.Delete(temporary); } catch { }
-        }
-    }
-
-    public string Complete(string testingPath)
+    public string Complete(string testingPackage)
     {
         lock (_gate)
         {
-            var destination = UniquePath(_paths.Tested, Path.GetFileName(testingPath));
-            File.Move(testingPath, destination);
+            var destination = UniqueDirectory(_paths.Tested, Path.GetFileName(testingPackage));
+            Directory.Move(testingPackage, destination);
             return destination;
         }
     }
 
-    private static int CountJobs(string path) => Directory.Exists(path)
-        ? Directory.EnumerateFiles(path, "*.json").Count()
-        : 0;
-
-    private static string UniquePath(string directory, string name)
+    private static IEnumerable<string> EnumeratePackages(string root)
     {
-        var path = Path.Combine(directory, name);
-        if (!File.Exists(path))
+        if (!Directory.Exists(root))
+            yield break;
+
+        foreach (var directory in Directory.EnumerateDirectories(root))
+        {
+            if (Path.GetFileName(directory).StartsWith('.', StringComparison.Ordinal))
+                continue;
+            if (File.Exists(Path.Combine(directory, "job.json")))
+                yield return directory;
+        }
+    }
+
+    private static int CountPackages(string root) => EnumeratePackages(root).Count();
+
+    private static string UniqueDirectory(string parent, string name)
+    {
+        var path = Path.Combine(parent, name);
+        if (!Directory.Exists(path))
             return path;
 
-        return Path.Combine(
-            directory,
-            $"{Path.GetFileNameWithoutExtension(name)}-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmssfff}{Path.GetExtension(name)}");
+        return Path.Combine(parent, $"{name}-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmssfff}");
     }
 }
 

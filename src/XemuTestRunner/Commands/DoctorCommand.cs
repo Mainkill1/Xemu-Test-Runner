@@ -31,6 +31,23 @@ public sealed class DoctorCommand : Command<DoctorCommandSettings>
             table.AddRow("Workspace", Markup.Escape(paths.Workspace));
             table.AddRow("Sample interval", $"{config.Monitoring.IntervalMs} ms");
             table.AddRow("HTTP", config.Http.Enabled ? $"{Markup.Escape(config.Http.BindAddress)}:{config.Http.Port}" : "disabled");
+            table.AddRow("xemu control", config.XemuControl.Enabled ? "enabled" : "disabled");
+
+            if (config.XemuControl.Enabled)
+            {
+                var qmpPort = config.XemuControl.QmpPort == 0 ? "automatic" : config.XemuControl.QmpPort.ToString();
+                table.AddRow("QMP", $"{Markup.Escape(config.XemuControl.QmpHost)}:{qmpPort}");
+
+                var inputStatus = OperatingSystem.IsWindows()
+                    ? "Windows SendInput; active xemu window required"
+                    : OperatingSystem.IsLinux()
+                        ? string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY"))
+                            ? "Linux X11/XTest unavailable: DISPLAY is not set"
+                            : "Linux X11/XTest; runtime library/window check occurs when xemu starts"
+                        : "No input provider for this OS";
+
+                table.AddRow("Controller input", Markup.Escape(inputStatus));
+            }
 
             if (config.Monitoring.Gpu.Enabled)
             {

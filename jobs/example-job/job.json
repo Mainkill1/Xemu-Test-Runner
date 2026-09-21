@@ -1,0 +1,34 @@
+{
+  "Id": "xemu-smoke-example",
+  "Executable": "xemu.exe",
+  "Arguments": [
+    "-config_path",
+    "xemu.toml"
+  ],
+  "WorkingDirectory": ".",
+  "Environment": {},
+  "TimeoutSeconds": 120,
+  "Tags": [
+    "example",
+    "smoke"
+  ],
+  "Plan": [
+    {
+      "Type": "wait",
+      "DelayMs": 3000
+    },
+    {
+      "Type": "button",
+      "Button": "Start",
+      "DurationMs": 100
+    },
+    {
+      "Type": "wait",
+      "DelayMs": 500
+    },
+    {
+      "Type": "screenshot",
+      "Name": "after-start"
+    }
+  ]
+}

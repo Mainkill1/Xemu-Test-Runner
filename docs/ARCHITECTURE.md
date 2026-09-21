@@ -2,44 +2,165 @@
 
 ## Scope
 
-Xemu Test Runner is host-side only. It does not currently contain Original Xbox code and does not assume that an Xbox is available.
+Xemu Test Runner is currently a host-side Windows/Linux application. It does not contain Original Xbox code and does not require physical Xbox hardware.
 
-The current executable is a foreground CLI application. It is not a Windows Service, systemd unit, ASP.NET application, or generic-host daemon. Running `xemu-test-runner run` owns the queue, telemetry sampler, target process, result capture, and embedded LAN HTTP endpoint for the lifetime of that foreground command.
+The runner is a foreground CLI application. It is not a Windows Service, systemd unit, ASP.NET application, or Generic Host daemon.
 
-A later hardware adapter may talk to a real Xbox over HTTP without changing the host queue or telemetry model.
+Running:
 
-## Queue state
+    xemu-test-runner run
 
-Only small JSON job descriptors move between queue directories:
+owns the queue, active xemu process, telemetry sampler, test plan, result capture, and embedded LAN HTTP endpoint for that foreground command.
+
+A later physical-Xbox adapter should plug into the control layer without changing the host queue/result model.
+
+## Queue packages
+
+A queue item is a directory, not a standalone descriptor.
+
+Minimum valid package:
+
+    <job>/
+    |-- job.json
+    `-- <configured xemu executable>
+
+Typical package:
+
+    build-123/
+    |-- job.json
+    |-- xemu.exe
+    |-- xemu.toml
+    `-- test assets...
+
+The configured executable must be inside the package. Absolute executable paths and package-relative paths that escape the package are rejected.
+
+The whole directory moves through:
 
     Pending -> Testing -> Tested
 
-The executable or ISO referenced by a job stays in place. This avoids copying large payloads and makes the queue transition an inexpensive same-filesystem rename.
+Only one valid package may occupy Testing at a time.
 
-Only one JSON job may be in `Testing` at a time. If the runner terminates unexpectedly, that file remains there. On the next start:
+This gives a queue state a strong meaning:
 
-- `InterruptedAction = retry` records a recovery event and moves the descriptor back to Pending.
-- `InterruptedAction = hold` leaves it in Testing and the queue does not start another job.
+- Pending: this exact xemu build and this exact test plan have not started.
+- Testing: this exact package is or was the active attempt.
+- Tested: this exact package was attempted and a result was recorded.
 
-A normal process failure, timeout, or non-zero exit is still a completed test attempt and therefore moves to Tested with the outcome in `result.json`.
+A normal xemu crash, timeout, non-zero exit, or plan failure is still a completed attempt and moves to Tested.
+
+### Crash recovery
+
+If the runner or host terminates unexpectedly, the active package remains in Testing.
+
+On startup:
+
+- `InterruptedAction = retry` records a recovery event and moves the whole package back to Pending.
+- `InterruptedAction = hold` leaves it in Testing for inspection.
+
+### Package staging
+
+Queue discovery ignores directories beginning with `.`.
+
+Large packages should therefore be copied as:
+
+    Pending/.incoming-build-123/
+
+and renamed only after all files have arrived:
+
+    .incoming-build-123 -> build-123
+
+When Pending, Testing, and Tested are on the same filesystem, queue transitions are directory renames rather than file copies.
+
+## Job plan
+
+`job.json` has two roles:
+
+1. Define how the package's xemu binary is started.
+2. Define optional sequential actions to perform while it runs.
+
+Current plan steps:
+
+- `wait`
+- `button`
+- `screenshot`
+
+A plan completing does not terminate xemu. The target process exits normally, times out, crashes, is stopped, or is killed because a plan action failed.
+
+## xemu control
+
+The control layer deliberately separates QMP control from Xbox controller input.
+
+### QMP
+
+For each controlled process, the runner allocates a localhost TCP port and appends:
+
+    -qmp tcp:<host>:<port>,server=on,wait=off
+
+The runner owns this endpoint. Jobs must not provide their own `-qmp` argument while xemu control is enabled.
+
+`XemuQmpClient` performs the QMP greeting/capabilities handshake and uses short-lived TCP connections for commands.
+
+Current QMP uses:
+
+- `query-status` to establish that the launched xemu process is control-ready.
+- `screendump` with PNG format for screenshots.
+
+The QMP port is recorded in the run result.
+
+### Xbox controller input
+
+xemu's keyboard-as-controller implementation reads SDL host keyboard state and maps it to Xbox `ControllerState`.
+
+This is not the same path as QEMU guest-keyboard input, so QMP `send-key` is intentionally not used for Xbox buttons.
+
+Test packages should bind xemu's keyboard input to Xbox controller port 1. The test plan works with logical names such as `A`, `Start`, and `DPadUp`; `XemuControl.ButtonKeys` maps those names to host keyboard keys.
+
+Current providers:
+
+- Windows: find the visible window owned by the active xemu PID, request foreground focus, inject scan-code key down/up with Win32 `SendInput`.
+- Linux X11/XWayland: find the X11 window by `_NET_WM_PID`, focus it, inject key down/up with XTest.
+- Native Wayland: not implemented.
+
+Input provider details are hidden behind `IXemuInputProvider` so a future xemu-specific controller RPC, virtual gamepad, Wayland provider, or physical-Xbox adapter can replace host keyboard injection without changing job plans.
+
+## Screenshot flow
+
+Screenshots are produced by xemu itself, not by desktop screen capture.
+
+Flow:
+
+    HTTP or job plan
+        -> XemuControlManager
+        -> QMP screendump(format=png)
+        -> Results/<run-id>/screenshots/<name>.png
+
+For an HTTP request, the newly created PNG is then streamed back as the response body.
+
+This means the screenshot represents the emulated display surface without xemu window borders, terminal windows, or other desktop content.
 
 ## Monitoring
 
-One sampler owns host/process telemetry. API requests never query OS or GPU counters directly.
+One sampler owns host/process telemetry. HTTP requests never query OS or GPU counters directly.
 
-At the configured `Monitoring.IntervalMs` cadence the sampler collects a snapshot, publishes the newest snapshot in memory, and tries to place it in a bounded channel. A separate writer drains that channel to `metrics.csv` and flushes at `Monitoring.FlushIntervalMs`.
+At `Monitoring.IntervalMs` the sampler collects a snapshot, publishes the newest snapshot in memory, and tries to place it into a bounded channel. A separate writer drains that channel to `metrics.csv`.
 
-The sampler is sequential. If one sample costs more than its configured interval, it is marked as an overrun and the next collection starts afterward. The runner never creates overlapping metric collection tasks to catch up.
+Collection is sequential and deliberately non-overlapping. If a sample takes longer than its configured interval:
 
-Process CPU is recorded in core-percent. Roughly 100% means one fully occupied logical processor; a multithreaded xemu process can exceed 100%.
+- the sample is marked as an overrun;
+- no second collector is started to catch up;
+- the next sample begins after the slow sample completes.
 
-Current metric sources:
+The result records sample count, overruns, and dropped CSV samples so the cost of a 100 ms cadence can be measured on each test host.
 
-- Windows: GetSystemTimes, GlobalMemoryStatusEx, GetProcessIoCounters, persistent PerformanceCounter objects for page-file percentage and process GPU counters.
-- Linux: `/proc/stat`, `/proc/meminfo`, `/proc/<pid>/io`, DRM sysfs where exposed.
+Process CPU uses core-percent. Roughly 100% means one fully occupied logical processor; a multithreaded xemu process may exceed 100%.
+
+Current sources:
+
+- Windows: GetSystemTimes, GlobalMemoryStatusEx, GetProcessIoCounters, page-file PerformanceCounter data, process GPU counters.
+- Linux: `/proc/stat`, `/proc/meminfo`, `/proc/<pid>/io`, DRM sysfs when available.
 - NVIDIA Windows/Linux: NVML loaded dynamically from the installed driver.
 
-GPU providers are optional. Missing vendor support does not prevent a test from running.
+GPU providers are optional.
 
 ## Embedded HTTP
 
@@ -51,32 +172,93 @@ Current routes:
     GET  /api/v1/status
     GET  /api/v1/metrics/latest
     GET  /api/v1/queue
-    POST /api/v1/jobs
+    GET  /api/v1/screenshot
+    POST /api/v1/input/press
     POST /api/v1/runner/stop
     GET  /api/v1/files/<path>
     HEAD /api/v1/files/<path>
     PUT  /api/v1/files/<path>
     POST /api/v1/files/<path>
 
-HTTP is intended for a trusted LAN. Authentication is intentionally absent in the first implementation. HTTPS is a planned transport upgrade.
+`POST /api/v1/jobs` does not accept a JSON-only job because that would separate the plan from the executable. The endpoint returns an explanation directing the caller to stage a complete queue package.
 
-### Large transfers
+HTTP is intended for a trusted LAN. Authentication is intentionally absent in this phase. HTTPS is a planned transport upgrade.
 
-File request bodies are streamed directly between the socket and disk using a rented buffer sized by `Http.TransferBufferBytes`. File sizes and transfer counters use 64-bit lengths.
+### Latest metrics
 
-Downloads support the standard `Range: bytes=...` header.
+`GET /api/v1/metrics/latest` reads the in-memory latest sample. It never causes another telemetry collection. API polling rate and hardware collection rate are therefore independent.
 
-Uploads support two modes:
+### On-demand screenshot
 
-1. A normal PUT/POST with Content-Length writes to `<target>.uploading` and atomically replaces the final path after all bytes arrive.
-2. A resumable PUT/POST with `Content-Range: bytes start-end/total` writes sequentially to `<target>.partial`. The requested start must equal the existing partial length. When `end + 1 == total`, the partial file becomes the final file.
+`GET /api/v1/screenshot` requires an active xemu session.
 
-Query upload progress with:
+The runner:
+
+1. asks the active xemu QMP endpoint for a PNG;
+2. retains the PNG under the current result directory;
+3. streams that exact file back with `Content-Type: image/png`.
+
+The optional query parameter `name` controls the retained screenshot base name.
+
+### On-demand button
+
+`POST /api/v1/input/press` accepts:
+
+    {
+      "Button": "A",
+      "DurationMs": 100
+    }
+
+It invokes the same logical-button mapping and input provider used by queued plan steps.
+
+## Large transfers
+
+General artifact transfer remains separate from queue semantics.
+
+File bodies are streamed directly between socket and disk through a rented buffer sized by `Http.TransferBufferBytes`. File sizes and transfer counters use 64-bit values.
+
+Downloads support:
+
+    Range: bytes=...
+
+Uploads support:
+
+1. normal PUT/POST with Content-Length, written to `<target>.uploading` and renamed when complete;
+2. resumable sequential PUT/POST with `Content-Range: bytes start-end/total`, written to `<target>.partial`.
+
+Upload status:
 
     GET /api/v1/files/<path>?upload-status=1
 
-Chunked request encoding is deliberately not implemented yet. Clients should send Content-Length.
+Chunked request encoding is deliberately not implemented. Clients should provide Content-Length.
 
-## Future real-Xbox support
+## Results
 
-The future Xbox integration should be an adapter beside the existing process runner, not a replacement for it. The host should continue to own queue state, host performance data, artifacts, and external HTTP. A hardware adapter can later add commands and state for an Xbox at a configured IP while preserving the same result model.
+Each run creates:
+
+    Results/<run-id>/
+    |-- job.json
+    |-- result.json
+    |-- stdout.log
+    |-- stderr.log
+    |-- metrics.csv
+    `-- screenshots/
+        `-- ...
+
+The result identifies the queued package, executable SHA-256, process exit state, QMP endpoint, host environment, and telemetry collection health.
+
+The queued build itself remains preserved in Tested with its original job package.
+
+## Future physical Xbox support
+
+A real-Xbox implementation should be another control adapter, not a second runner architecture.
+
+The host should continue to own:
+
+- queue state
+- performance monitoring
+- result artifacts
+- external HTTP API
+- test plans
+
+A physical-Xbox adapter can later translate the same logical operations—status, input, screenshots where possible, file movement, and test state—to the hardware transport available at that time.

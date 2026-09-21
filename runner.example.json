@@ -28,5 +28,14 @@
     "FileRoot": "Files",
     "TransferBufferBytes": 1048576,
     "MaxHeaderBytes": 65536
+  },
+  "XemuControl": {
+    "Enabled": true,
+    "QmpHost": "127.0.0.1",
+    "QmpPort": 0,
+    "ConnectTimeoutMs": 10000,
+    "ScreenshotTimeoutMs": 5000,
+    "InputProvider": "auto",
+    "DefaultButtonHoldMs": 100
   }
 }

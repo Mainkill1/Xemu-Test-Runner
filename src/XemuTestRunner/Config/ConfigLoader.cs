@@ -69,6 +69,14 @@ public static class ConfigLoader
             throw new InvalidDataException("Http.TransferBufferBytes must be at least 65536 bytes.");
         if (config.Http.MaxHeaderBytes < 4096)
             throw new InvalidDataException("Http.MaxHeaderBytes must be at least 4096 bytes.");
+        if (config.XemuControl.QmpPort is < 0 or > 65535)
+            throw new InvalidDataException("XemuControl.QmpPort must be 0 (automatic) or between 1 and 65535.");
+        if (config.XemuControl.ConnectTimeoutMs <= 0)
+            throw new InvalidDataException("XemuControl.ConnectTimeoutMs must be greater than zero.");
+        if (config.XemuControl.ScreenshotTimeoutMs <= 0)
+            throw new InvalidDataException("XemuControl.ScreenshotTimeoutMs must be greater than zero.");
+        if (config.XemuControl.DefaultButtonHoldMs <= 0)
+            throw new InvalidDataException("XemuControl.DefaultButtonHoldMs must be greater than zero.");
 
         var interrupted = config.Queue.InterruptedAction.ToLowerInvariant();
         if (interrupted is not ("retry" or "hold"))

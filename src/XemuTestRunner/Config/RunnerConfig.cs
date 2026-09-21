@@ -6,6 +6,7 @@ public sealed class RunnerConfig
     public QueueOptions Queue { get; set; } = new();
     public MonitoringOptions Monitoring { get; set; } = new();
     public HttpOptions Http { get; set; } = new();
+    public XemuControlOptions XemuControl { get; set; } = new();
 }
 
 public sealed class QueueOptions
@@ -44,6 +45,45 @@ public sealed class HttpOptions
     public string FileRoot { get; set; } = "Files";
     public int TransferBufferBytes { get; set; } = 1024 * 1024;
     public int MaxHeaderBytes { get; set; } = 64 * 1024;
+}
+
+public sealed class XemuControlOptions
+{
+    public bool Enabled { get; set; } = true;
+    public string QmpHost { get; set; } = "127.0.0.1";
+    public int QmpPort { get; set; } = 0;
+    public int ConnectTimeoutMs { get; set; } = 10000;
+    public int ScreenshotTimeoutMs { get; set; } = 5000;
+    public string InputProvider { get; set; } = "auto";
+    public int DefaultButtonHoldMs { get; set; } = 100;
+    public Dictionary<string, string> ButtonKeys { get; set; } = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["A"] = "a",
+        ["B"] = "b",
+        ["X"] = "x",
+        ["Y"] = "y",
+        ["Back"] = "backspace",
+        ["Start"] = "enter",
+        ["White"] = "1",
+        ["Black"] = "2",
+        ["LStick"] = "3",
+        ["RStick"] = "4",
+        ["Guide"] = "5",
+        ["DPadUp"] = "up",
+        ["DPadDown"] = "down",
+        ["DPadLeft"] = "left",
+        ["DPadRight"] = "right",
+        ["LStickUp"] = "e",
+        ["LStickDown"] = "d",
+        ["LStickLeft"] = "s",
+        ["LStickRight"] = "f",
+        ["LTrigger"] = "w",
+        ["RStickUp"] = "i",
+        ["RStickDown"] = "k",
+        ["RStickLeft"] = "j",
+        ["RStickRight"] = "l",
+        ["RTrigger"] = "o"
+    };
 }
 
 public sealed record RunnerPaths(
