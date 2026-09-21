@@ -1,100 +1,52 @@
+using System.Net;
+using System.Globalization;
 using System.Text;
 
 namespace XemuTestRunner.Networking;
 
-public sealed record HttpRequest(
-    string Method,
-    string Target,
-    string Path,
-    string Query,
-    Version Version,
-    IReadOnlyDictionary<string, string> Headers)
+public sealed record HttpRequest(string Method, string Target, string Path, string Query, Version Version, IReadOnlyDictionary<string, string> Headers)
 {
-    public bool KeepAlive
-    {
-        get
-        {
-            if (Headers.TryGetValue("Connection", out var connection))
-                return !connection.Equals("close", StringComparison.OrdinalIgnoreCase);
-            return Version.Major > 1 || (Version.Major == 1 && Version.Minor >= 1);
-        }
-    }
-
-    public long? ContentLength => Headers.TryGetValue("Content-Length", out var value) && long.TryParse(value, out var length)
-        ? length
-        : null;
+    public bool KeepAlive => Headers.TryGetValue("Connection", out var c) ? !c.Equals("close", StringComparison.OrdinalIgnoreCase) : Version >= HttpVersion.Version11;
+    public long? ContentLength => Headers.TryGetValue("Content-Length", out var v) ? long.Parse(v, CultureInfo.InvariantCulture) : null;
 }
-
 public static class HttpRequestReader
 {
-    public static async Task<HttpRequest?> ReadAsync(Stream stream, int maxHeaderBytes, CancellationToken cancellationToken)
+    public static async Task<HttpRequest?> ReadAsync(Stream stream, int maxHeaderBytes, CancellationToken ct)
     {
-        var consumed = 0;
-        var requestLine = await ReadLineAsync(stream, maxHeaderBytes, cancellationToken).ConfigureAwait(false);
-        if (requestLine is null)
-            return null;
-        consumed += requestLine.Length + 2;
-        if (requestLine.Length == 0)
-            return null;
-
-        var requestParts = requestLine.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
-        if (requestParts.Length != 3)
-            throw new InvalidDataException("Invalid HTTP request line.");
-
-        var method = requestParts[0].ToUpperInvariant();
-        var target = requestParts[1];
-        var version = requestParts[2] switch
-        {
-            "HTTP/1.0" => HttpVersion.Version10,
-            "HTTP/1.1" => HttpVersion.Version11,
-            _ => throw new InvalidDataException("Unsupported HTTP version.")
-        };
-
+        var line = await ReadLineAsync(stream, maxHeaderBytes, ct);
+        if (line is null) return null;
+        var used = line.Length + 2;
+        var parts = line.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 3) throw new InvalidDataException("Invalid HTTP request line.");
+        var version = parts[2] switch { "HTTP/1.1" => HttpVersion.Version11, "HTTP/1.0" => HttpVersion.Version10, _ => throw new InvalidDataException("Unsupported HTTP version.") };
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         while (true)
         {
-            var line = await ReadLineAsync(stream, maxHeaderBytes - consumed, cancellationToken).ConfigureAwait(false)
-                ?? throw new EndOfStreamException("Connection ended while reading headers.");
-            consumed += line.Length + 2;
-            if (consumed > maxHeaderBytes)
-                throw new InvalidDataException("HTTP headers exceeded configured limit.");
-            if (line.Length == 0)
-                break;
-
-            var colon = line.IndexOf(':');
-            if (colon <= 0)
-                throw new InvalidDataException("Invalid HTTP header.");
-            headers[line[..colon].Trim()] = line[(colon + 1)..].Trim();
+            line = await ReadLineAsync(stream, maxHeaderBytes - used, ct) ?? throw new EndOfStreamException(); used += line.Length + 2;
+            if (used > maxHeaderBytes) throw new InvalidDataException("Headers exceed limit.");
+            if (line.Length == 0) break;
+            var colon = line.IndexOf(':'); if (colon < 1) throw new InvalidDataException("Invalid header.");
+            if (!headers.TryAdd(line[..colon].Trim(), line[(colon + 1)..].Trim())) throw new InvalidDataException("Duplicate header.");
         }
-
-        var queryIndex = target.IndexOf('?');
-        var path = queryIndex >= 0 ? target[..queryIndex] : target;
-        var query = queryIndex >= 0 ? target[(queryIndex + 1)..] : "";
-        return new HttpRequest(method, target, path, query, version, headers);
+        if (headers.TryGetValue("Content-Length", out var length) && (!long.TryParse(length, NumberStyles.None, CultureInfo.InvariantCulture, out var n) || n < 0))
+            throw new InvalidDataException("Invalid Content-Length.");
+        var target = parts[1]; var q = target.IndexOf('?');
+        return new(parts[0].ToUpperInvariant(), target, q < 0 ? target : target[..q], q < 0 ? "" : target[(q + 1)..], version, headers);
     }
-
-    private static async Task<string?> ReadLineAsync(Stream stream, int maxBytes, CancellationToken cancellationToken)
+    private static async Task<string?> ReadLineAsync(Stream stream, int limit, CancellationToken ct)
     {
-        if (maxBytes <= 0)
-            throw new InvalidDataException("HTTP headers exceeded configured limit.");
-
-        var bytes = new List<byte>(128);
-        var one = new byte[1];
-        while (bytes.Count < maxBytes)
+        var bytes = new List<byte>(128); var one = new byte[1];
+        while (bytes.Count < limit)
         {
-            var read = await stream.ReadAsync(one.AsMemory(0, 1), cancellationToken).ConfigureAwait(false);
-            if (read == 0)
-                return bytes.Count == 0 ? null : throw new EndOfStreamException("Unexpected end of HTTP line.");
-
-            if (one[0] == (byte)'\n')
+            var n = await stream.ReadAsync(one, ct);
+            if (n == 0) return bytes.Count == 0 ? null : throw new EndOfStreamException();
+            if (one[0] == '\n')
             {
-                if (bytes.Count > 0 && bytes[^1] == (byte)'\r')
-                    bytes.RemoveAt(bytes.Count - 1);
-                return Encoding.ASCII.GetString(bytes.ToArray());
+                if (bytes.Count == 0 || bytes[^1] != '\r') throw new InvalidDataException("HTTP requires CRLF.");
+                bytes.RemoveAt(bytes.Count - 1); return Encoding.ASCII.GetString(bytes.ToArray());
             }
             bytes.Add(one[0]);
         }
-
-        throw new InvalidDataException("HTTP line exceeded configured limit.");
+        throw new InvalidDataException("HTTP headers exceed limit.");
     }
 }

@@ -127,15 +127,42 @@ public sealed class XemuControlManager : IDisposable
             last);
     }
 
-    public async Task<JsonElement> QueryStatusAsync(CancellationToken cancellationToken)
+    public XemuQmpClient CreateQmpClient()
     {
         var session = GetSession();
-        var client = new XemuQmpClient(session.QmpHost, session.QmpPort);
+        return new XemuQmpClient(session.QmpHost, session.QmpPort);
+    }
+
+    public async Task<JsonElement> QueryStatusAsync(CancellationToken cancellationToken)
+    {
+        var client = CreateQmpClient();
         return await client.ExecuteAsync(
             "query-status",
             null,
             TimeSpan.FromMilliseconds(_options.ConnectTimeoutMs),
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task RefreshPauseStateAsync(CancellationToken cancellationToken)
+    {
+        var status = await QueryStatusAsync(cancellationToken).ConfigureAwait(false);
+        var paused = status.TryGetProperty("status", out var value) &&
+            value.GetString()?.Equals("paused", StringComparison.OrdinalIgnoreCase) == true;
+
+        lock (_gate)
+        {
+            _paused = paused;
+            if (paused)
+            {
+                if (_resumeSignal.Task.IsCompleted)
+                    _resumeSignal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+            else
+            {
+                _resumeSignal.TrySetResult(true);
+                _resumeSignal = CompletedSignal();
+            }
+        }
     }
 
     public async Task PauseAsync(CancellationToken cancellationToken)
@@ -279,6 +306,28 @@ public sealed class XemuControlManager : IDisposable
         }
     }
 
+    public async Task PressHostChordAsync(
+        IReadOnlyList<string> hostKeys,
+        int holdMs,
+        CancellationToken cancellationToken)
+    {
+        var session = GetSession();
+        if (!session.Input.IsAvailable)
+            throw new InvalidOperationException($"Configured input provider '{session.Input.Name}' is unavailable.");
+        if (holdMs is < 1 or > 60000)
+            throw new InvalidDataException("Host chord hold duration must be between 1 and 60000 ms.");
+
+        await _inputGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await session.Input.PressChordAsync(hostKeys, holdMs, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _inputGate.Release();
+        }
+    }
+
     public RecordedPlanSnapshot StartRecording()
     {
         lock (_gate)
@@ -340,7 +389,10 @@ public sealed class XemuControlManager : IDisposable
     public Task DelayTestTimeAsync(int delayMs, CancellationToken cancellationToken) =>
         DelayRespectingPauseAsync(delayMs, cancellationToken);
 
-    public async Task ExecutePlanAsync(IReadOnlyList<JobStep> plan, CancellationToken cancellationToken)
+    public async Task ExecutePlanAsync(
+        IReadOnlyList<JobStep> plan,
+        CancellationToken cancellationToken,
+        Func<string, CancellationToken, Task>? diagnosticRunner = null)
     {
         if (plan.Count == 0)
             return;
@@ -350,7 +402,6 @@ public sealed class XemuControlManager : IDisposable
         foreach (var step in plan)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await WaitIfPausedAsync(cancellationToken).ConfigureAwait(false);
 
             switch (step.Type.Trim().ToLowerInvariant())
             {
@@ -377,6 +428,25 @@ public sealed class XemuControlManager : IDisposable
                         step.Name,
                         cancellationToken,
                         record: false).ConfigureAwait(false);
+                    break;
+
+                case "pause":
+                    await PauseAsync(cancellationToken).ConfigureAwait(false);
+                    break;
+
+                case "resume":
+                    await ResumeAsync(cancellationToken).ConfigureAwait(false);
+                    break;
+
+                case "require_input":
+                    if (!Snapshot().InputAvailable)
+                        throw new InvalidOperationException("Plan requires controller input but the configured input provider is unavailable.");
+                    break;
+
+                case "diagnostic":
+                    if (diagnosticRunner is null)
+                        throw new InvalidOperationException("Plan contains a diagnostic step but no diagnostic runner is attached.");
+                    await diagnosticRunner(step.DiagnosticId!, cancellationToken).ConfigureAwait(false);
                     break;
             }
         }
@@ -525,7 +595,8 @@ public sealed class XemuControlManager : IDisposable
         DelayMs = step.DelayMs,
         Button = step.Button,
         DurationMs = step.DurationMs,
-        Name = step.Name
+        Name = step.Name,
+        DiagnosticId = step.DiagnosticId
     };
 
     private static string SanitizeFileName(string value)
@@ -569,6 +640,8 @@ public sealed class XemuControlManager : IDisposable
         public string Name { get; }
         public bool IsAvailable => false;
         public Task PressAsync(string hostKey, int holdMs, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException($"Input provider '{Name}' is unavailable.");
+        public Task PressChordAsync(IReadOnlyList<string> hostKeys, int holdMs, CancellationToken cancellationToken) =>
             throw new InvalidOperationException($"Input provider '{Name}' is unavailable.");
         public void Dispose() { }
     }

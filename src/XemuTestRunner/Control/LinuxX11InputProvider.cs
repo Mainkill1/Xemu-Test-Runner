@@ -4,200 +4,129 @@ namespace XemuTestRunner.Control;
 
 public sealed class LinuxX11InputProvider : IXemuInputProvider
 {
-    private const int RevertToParent = 2;
-    private readonly int _processId;
-    private readonly IntPtr _display;
-    private IntPtr _window;
-
+    private readonly int _pid;
+    private readonly SemaphoreSlim _operation = new(1, 1);
+    private readonly CancellationTokenSource _lifetime = new();
+    private int _closed;
+    private IntPtr _display;
     public string Name => "Linux X11/XTest";
-    public bool IsAvailable => OperatingSystem.IsLinux() && _display != IntPtr.Zero;
-
+    public bool IsAvailable => _display != IntPtr.Zero;
+    // Keep the delegate rooted. A disappearing window should become an input
+    // error, not Xlib's default process-exit behavior.
+    private static readonly ErrorHandler IgnoreWindowError = (_, _) => 0;
     public LinuxX11InputProvider(int processId)
     {
-        _processId = processId;
-
-        if (!OperatingSystem.IsLinux() || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY")))
-            return;
-
+        _pid = processId;
+        if (!OperatingSystem.IsLinux() || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY"))) return;
         try
         {
+            if (XInitThreads() == 0) return;
+            XSetErrorHandler(IgnoreWindowError);
             _display = XOpenDisplay(IntPtr.Zero);
-            if (_display != IntPtr.Zero)
-                _window = FindWindowForPid(_display, _processId);
+            if (_display != IntPtr.Zero && XTestQueryExtension(_display, out _, out _, out _, out _) == 0) Dispose();
         }
-        catch (DllNotFoundException)
-        {
-            _display = IntPtr.Zero;
-            _window = IntPtr.Zero;
-        }
+        catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException) { Dispose(); }
     }
+    public Task PressAsync(string hostKey, int holdMs, CancellationToken cancellationToken) =>
+        PressChordAsync([hostKey], holdMs, cancellationToken);
 
-    public async Task PressAsync(string hostKey, int holdMs, CancellationToken cancellationToken)
+    public async Task PressChordAsync(IReadOnlyList<string> hostKeys, int holdMs, CancellationToken cancellationToken)
     {
-        if (!IsAvailable)
-            throw new InvalidOperationException("Linux X11/XTest input is unavailable. DISPLAY, libX11 and libXtst are required and the xemu window must be visible.");
-
-        if (_window == IntPtr.Zero)
-            _window = FindWindowForPid(_display, _processId);
-        if (_window == IntPtr.Zero)
-            throw new InvalidOperationException($"Could not find an X11 xemu window for process {_processId}.");
-
-        var keysymName = ToKeysymName(hostKey);
-        var keysym = XStringToKeysym(keysymName);
-        if (keysym == IntPtr.Zero)
-            throw new InvalidDataException($"Unsupported X11 host key '{hostKey}'.");
-
-        var keycode = XKeysymToKeycode(_display, keysym);
-        if (keycode == 0)
-            throw new InvalidOperationException($"X11 did not resolve a keycode for '{hostKey}'.");
-
-        XRaiseWindow(_display, _window);
-        XSetInputFocus(_display, _window, RevertToParent, UIntPtr.Zero);
-        XFlush(_display);
-
-        if (XTestFakeKeyEvent(_display, keycode, true, UIntPtr.Zero) == 0)
-            throw new InvalidOperationException("XTest failed to inject key down.");
-        XFlush(_display);
-
-        await Task.Delay(holdMs, cancellationToken).ConfigureAwait(false);
-
-        if (XTestFakeKeyEvent(_display, keycode, false, UIntPtr.Zero) == 0)
-            throw new InvalidOperationException("XTest failed to inject key up.");
-        XFlush(_display);
-    }
-
-    private static string ToKeysymName(string key) => key.Trim().ToLowerInvariant() switch
-    {
-        "enter" or "return" => "Return",
-        "backspace" => "BackSpace",
-        "up" => "Up",
-        "down" => "Down",
-        "left" => "Left",
-        "right" => "Right",
-        _ when key.Length == 1 => key,
-        _ => throw new InvalidDataException($"Unsupported X11 host key '{key}'.")
-    };
-
-    private static IntPtr FindWindowForPid(IntPtr display, int pid)
-    {
-        var root = XDefaultRootWindow(display);
-        var pidAtom = XInternAtom(display, "_NET_WM_PID", false);
-        return FindWindowRecursive(display, root, pidAtom, pid);
-    }
-
-    private static IntPtr FindWindowRecursive(IntPtr display, IntPtr window, IntPtr pidAtom, int pid)
-    {
-        if (WindowHasPid(display, window, pidAtom, pid))
-            return window;
-
-        if (XQueryTree(display, window, out _, out _, out var children, out var count) == 0 || children == IntPtr.Zero)
-            return IntPtr.Zero;
-
+        if (hostKeys.Count == 0)
+            throw new InvalidDataException("At least one host key is required.");
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
+        await _operation.WaitAsync(linked.Token);
+        var pressed = new List<uint>();
         try
         {
-            for (uint i = 0; i < count; i++)
+            cancellationToken = linked.Token;
+            if (!IsAvailable) throw new InvalidOperationException("X11 input requires DISPLAY, libX11 and libXtst. Native Wayland is not supported.");
+            var window = FindWindow(XDefaultRootWindow(_display), XInternAtom(_display, "_NET_WM_PID", false), 0);
+            if (window == IntPtr.Zero) throw new InvalidOperationException("No X11 xemu window for the active PID.");
+            XRaiseWindow(_display, window); XSetInputFocus(_display, window, 2, UIntPtr.Zero); XSync(_display, false);
+            XGetInputFocus(_display, out var focused, out _);
+            if (focused != window) throw new InvalidOperationException("xemu did not receive input focus; no key was sent.");
+
+            foreach (var hostKey in hostKeys)
             {
-                var child = Marshal.ReadIntPtr(children, checked((int)i * IntPtr.Size));
-                var found = FindWindowRecursive(display, child, pidAtom, pid);
-                if (found != IntPtr.Zero)
-                    return found;
+                var name = hostKey.Trim().ToLowerInvariant() switch
+                {
+                    "enter" or "return" => "Return", "backspace" => "BackSpace",
+                    "up" => "Up", "down" => "Down", "left" => "Left", "right" => "Right",
+                    "ctrl" or "control" => "Control_L", "shift" => "Shift_L", "f10" => "F10",
+                    var s when s.Length == 1 => s,
+                    _ => throw new InvalidDataException("Unsupported X11 key: " + hostKey)
+                };
+                var keycode = (uint)XKeysymToKeycode(_display, XStringToKeysym(name));
+                if (keycode == 0) throw new InvalidOperationException("X11 cannot resolve the configured key: " + hostKey);
+                if (XTestFakeKeyEvent(_display, keycode, true, UIntPtr.Zero) == 0)
+                    throw new InvalidOperationException("XTest key down failed.");
+                pressed.Add(keycode);
+            }
+            XFlush(_display);
+            await Task.Delay(holdMs, cancellationToken);
+        }
+        finally
+        {
+            for (var i = pressed.Count - 1; i >= 0; i--)
+            {
+                try { _ = XTestFakeKeyEvent(_display, pressed[i], false, UIntPtr.Zero); } catch { }
+            }
+            try { XFlush(_display); } catch { }
+            _operation.Release();
+        }
+    }
+    private IntPtr FindWindow(IntPtr window, IntPtr pidAtom, int depth)
+    {
+        if (depth > 32) return IntPtr.Zero;
+        var status = XGetWindowProperty(_display, window, pidAtom, IntPtr.Zero, new IntPtr(1), false, new IntPtr(6),
+            out _, out var format, out var count, out _, out var property);
+        try
+        {
+            if (status == 0 && property != IntPtr.Zero && format == 32 && count != UIntPtr.Zero)
+            {
+                var pid = IntPtr.Size == 8 ? Marshal.ReadInt64(property) : Marshal.ReadInt32(property);
+                if (unchecked((int)pid) == _pid) return window;
             }
         }
-        finally
-        {
-            XFree(children);
-        }
-
-        return IntPtr.Zero;
-    }
-
-    private static bool WindowHasPid(IntPtr display, IntPtr window, IntPtr pidAtom, int expectedPid)
-    {
-        var status = XGetWindowProperty(
-            display,
-            window,
-            pidAtom,
-            IntPtr.Zero,
-            new IntPtr(1),
-            false,
-            new IntPtr(6),
-            out _,
-            out var format,
-            out var items,
-            out _,
-            out var property);
-
-        if (status != 0 || property == IntPtr.Zero || items == UIntPtr.Zero)
-            return false;
-
+        finally { if (property != IntPtr.Zero) XFree(property); }
+        if (XQueryTree(_display, window, out _, out _, out var children, out var childCount) == 0 || children == IntPtr.Zero) return IntPtr.Zero;
         try
         {
-            if (format != 32)
-                return false;
-
-            var value = IntPtr.Size == 8 ? Marshal.ReadInt64(property) : Marshal.ReadInt32(property);
-            return unchecked((int)value) == expectedPid;
+            for (uint i = 0; i < childCount; i++)
+            {
+                var found = FindWindow(Marshal.ReadIntPtr(children, checked((int)i * IntPtr.Size)), pidAtom, depth + 1);
+                if (found != IntPtr.Zero) return found;
+            }
         }
-        finally
-        {
-            XFree(property);
-        }
+        finally { XFree(children); }
+        return IntPtr.Zero;
     }
-
     public void Dispose()
     {
-        if (_display != IntPtr.Zero)
-            XCloseDisplay(_display);
+        if (Interlocked.Exchange(ref _closed, 1) != 0) return;
+        _lifetime.Cancel(); _operation.Wait();
+        try { if (_display != IntPtr.Zero) XCloseDisplay(_display); _display = IntPtr.Zero; }
+        finally { _operation.Release(); }
     }
-
-    [DllImport("libX11.so.6")]
-    private static extern IntPtr XOpenDisplay(IntPtr displayName);
-
-    [DllImport("libX11.so.6")]
-    private static extern int XCloseDisplay(IntPtr display);
-
-    [DllImport("libX11.so.6")]
-    private static extern IntPtr XDefaultRootWindow(IntPtr display);
-
-    [DllImport("libX11.so.6", CharSet = CharSet.Ansi)]
-    private static extern IntPtr XInternAtom(IntPtr display, string atomName, [MarshalAs(UnmanagedType.Bool)] bool onlyIfExists);
-
-    [DllImport("libX11.so.6")]
-    private static extern int XQueryTree(IntPtr display, IntPtr window, out IntPtr rootReturn, out IntPtr parentReturn, out IntPtr childrenReturn, out uint childCountReturn);
-
-    [DllImport("libX11.so.6")]
-    private static extern int XGetWindowProperty(
-        IntPtr display,
-        IntPtr window,
-        IntPtr property,
-        IntPtr longOffset,
-        IntPtr longLength,
-        [MarshalAs(UnmanagedType.Bool)] bool delete,
-        IntPtr requestedType,
-        out IntPtr actualTypeReturn,
-        out int actualFormatReturn,
-        out UIntPtr itemCountReturn,
-        out UIntPtr bytesAfterReturn,
-        out IntPtr propertyReturn);
-
-    [DllImport("libX11.so.6")]
-    private static extern int XFree(IntPtr data);
-
-    [DllImport("libX11.so.6", CharSet = CharSet.Ansi)]
-    private static extern IntPtr XStringToKeysym(string value);
-
-    [DllImport("libX11.so.6")]
-    private static extern byte XKeysymToKeycode(IntPtr display, IntPtr keysym);
-
-    [DllImport("libX11.so.6")]
-    private static extern int XRaiseWindow(IntPtr display, IntPtr window);
-
-    [DllImport("libX11.so.6")]
-    private static extern int XSetInputFocus(IntPtr display, IntPtr focus, int revertTo, UIntPtr time);
-
-    [DllImport("libX11.so.6")]
-    private static extern int XFlush(IntPtr display);
-
-    [DllImport("libXtst.so.6")]
-    private static extern int XTestFakeKeyEvent(IntPtr display, uint keycode, [MarshalAs(UnmanagedType.Bool)] bool isPress, UIntPtr delay);
+    private delegate int ErrorHandler(IntPtr display, IntPtr error);
+    [DllImport("libX11.so.6")] private static extern int XInitThreads();
+    [DllImport("libX11.so.6")] private static extern IntPtr XSetErrorHandler(ErrorHandler handler);
+    [DllImport("libX11.so.6")] private static extern IntPtr XOpenDisplay(IntPtr name);
+    [DllImport("libX11.so.6")] private static extern int XCloseDisplay(IntPtr display);
+    [DllImport("libX11.so.6")] private static extern IntPtr XDefaultRootWindow(IntPtr display);
+    [DllImport("libX11.so.6", CharSet = CharSet.Ansi)] private static extern IntPtr XInternAtom(IntPtr display, string name, bool onlyIfExists);
+    [DllImport("libX11.so.6")] private static extern int XQueryTree(IntPtr display, IntPtr window, out IntPtr root, out IntPtr parent, out IntPtr children, out uint count);
+    [DllImport("libX11.so.6")] private static extern int XGetWindowProperty(IntPtr display, IntPtr window, IntPtr property, IntPtr offset, IntPtr length, bool delete,
+        IntPtr requestedType, out IntPtr actualType, out int format, out UIntPtr count, out UIntPtr bytesAfter, out IntPtr value);
+    [DllImport("libX11.so.6")] private static extern int XFree(IntPtr data);
+    [DllImport("libX11.so.6", CharSet = CharSet.Ansi)] private static extern IntPtr XStringToKeysym(string name);
+    [DllImport("libX11.so.6")] private static extern byte XKeysymToKeycode(IntPtr display, IntPtr keysym);
+    [DllImport("libX11.so.6")] private static extern int XRaiseWindow(IntPtr display, IntPtr window);
+    [DllImport("libX11.so.6")] private static extern int XSetInputFocus(IntPtr display, IntPtr window, int revertTo, UIntPtr time);
+    [DllImport("libX11.so.6")] private static extern int XGetInputFocus(IntPtr display, out IntPtr focus, out int revertTo);
+    [DllImport("libX11.so.6")] private static extern int XSync(IntPtr display, bool discard);
+    [DllImport("libX11.so.6")] private static extern int XFlush(IntPtr display);
+    [DllImport("libXtst.so.6")] private static extern int XTestQueryExtension(IntPtr display, out int eventBase, out int errorBase, out int major, out int minor);
+    [DllImport("libXtst.so.6")] private static extern int XTestFakeKeyEvent(IntPtr display, uint keycode, bool down, UIntPtr delay);
 }

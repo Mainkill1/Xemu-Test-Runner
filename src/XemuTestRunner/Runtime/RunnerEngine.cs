@@ -1,11 +1,12 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
-using System.Text.Json;
 using XemuTestRunner.Config;
 using XemuTestRunner.Control;
+using XemuTestRunner.Diagnostics;
 using XemuTestRunner.Monitoring;
 using XemuTestRunner.Networking;
 using XemuTestRunner.Queue;
+using XemuTestRunner.Reliability;
 
 namespace XemuTestRunner.Runtime;
 
@@ -16,6 +17,8 @@ public sealed class RunnerEngine
     private readonly RunnerState _state = new();
     private readonly JobQueue _queue;
     private readonly XemuControlManager _control;
+    private readonly ActivityHub _activity = new();
+    private readonly DiagnosticHub _diagnostics;
 
     public RunnerState State => _state;
 
@@ -23,13 +26,16 @@ public sealed class RunnerEngine
     {
         _config = config;
         _paths = paths;
-        _queue = new JobQueue(config, paths);
-        _control = new XemuControlManager(config.XemuControl);
+        _queue = new(config, paths);
+        _control = new(config.XemuControl);
+        _diagnostics = new(config.Diagnostics, _control, _state, _activity);
     }
 
     public async Task RunAsync(bool once, CancellationToken cancellationToken)
     {
         _queue.EnsureDirectories();
+        using var owner = WorkspaceLease.Acquire(_paths.Workspace);
+        using var queueOwner = WorkspaceLease.Acquire(_paths.Testing);
         _queue.RecoverInterrupted();
         _state.SetQueue(_queue.Snapshot());
 
@@ -41,32 +47,33 @@ public sealed class RunnerEngine
             _state,
             _queue,
             _control,
-            lifetime.Cancel);
+            lifetime.Cancel)
+        {
+            Reliability = _config.Reliability,
+            Activity = _activity,
+            Diagnostics = _diagnostics
+        };
         var serverTask = server.RunAsync(lifetime.Token);
 
         try
         {
-            _state.SetPhase("idle");
-
             while (!lifetime.IsCancellationRequested)
             {
                 if (serverTask.IsFaulted)
                     await serverTask.ConfigureAwait(false);
 
-                var testing = _queue.GetTestingJobs();
-                if (testing.Count > 0)
+                if (_queue.GetTestingJobs().Count > 0)
                 {
                     _state.SetPhase("interrupted");
-                    _state.SetQueue(_queue.Snapshot());
                     if (once)
                         break;
                     await Task.Delay(_config.Queue.ScanIntervalMs, lifetime.Token).ConfigureAwait(false);
                     continue;
                 }
 
-                var claimed = _queue.TryClaimNext();
+                var package = _queue.TryClaimNext();
                 _state.SetQueue(_queue.Snapshot());
-                if (claimed is null)
+                if (package is null)
                 {
                     _state.SetPhase(once ? "finished" : "idle");
                     if (once)
@@ -75,292 +82,475 @@ public sealed class RunnerEngine
                     continue;
                 }
 
-                await ExecuteJobAsync(claimed, lifetime.Token).ConfigureAwait(false);
+                await ExecuteJobAsync(package, serverTask, lifetime.Token).ConfigureAwait(false);
                 _state.SetQueue(_queue.Snapshot());
             }
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
         {
+            _state.SetPhase("stopped");
+        }
+        catch
+        {
+            _state.SetPhase("faulted");
+            throw;
         }
         finally
         {
-            _control.End();
             lifetime.Cancel();
-            try { await serverTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
+            _diagnostics.Detach();
+            _activity.Detach();
+            _control.End();
+            try { await serverTask.ConfigureAwait(false); }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
 
             if (cancellationToken.IsCancellationRequested)
                 _state.SetPhase("stopped");
         }
     }
 
-    private async Task ExecuteJobAsync(string testingPackage, CancellationToken cancellationToken)
+    private async Task ExecuteJobAsync(string package, Task serverTask, CancellationToken ct)
     {
         var startedUtc = DateTimeOffset.UtcNow;
-        JobDefinition job;
-
-        try
-        {
-            job = JobDefinition.LoadPackage(testingPackage);
-        }
-        catch (Exception ex)
-        {
-            await FinishWithoutProcessAsync(
-                testingPackage,
-                Path.GetFileName(testingPackage),
-                "invalid_job",
-                ex.Message,
-                startedUtc).ConfigureAwait(false);
-            return;
-        }
-
-        var runId = $"{startedUtc:yyyyMMdd-HHmmssfff}-{Sanitize(job.Id)}";
+        var runId = $"{startedUtc:yyyyMMdd-HHmmssfff}-{Guid.NewGuid():N}";
         var resultDirectory = Path.Combine(_paths.Results, runId);
         Directory.CreateDirectory(resultDirectory);
-        File.Copy(Path.Combine(testingPackage, "job.json"), Path.Combine(resultDirectory, "job.json"), overwrite: true);
 
-        var executable = JobDefinition.ResolveInsidePackage(testingPackage, job.Executable);
-        var workingDirectory = string.IsNullOrWhiteSpace(job.WorkingDirectory)
-            ? testingPackage
-            : JobDefinition.ResolveInsidePackage(testingPackage, job.WorkingDirectory);
-
-        if (!Directory.Exists(workingDirectory))
-        {
-            await FinishWithoutProcessAsync(
-                testingPackage,
-                job.Id,
-                "start_failed",
-                $"Working directory does not exist: {workingDirectory}",
-                startedUtc,
-                resultDirectory,
-                runId).ConfigureAwait(false);
-            return;
-        }
-
-        if (_config.XemuControl.Enabled &&
-            job.Arguments.Any(argument => string.Equals(argument, "-qmp", StringComparison.OrdinalIgnoreCase)))
-        {
-            await FinishWithoutProcessAsync(
-                testingPackage,
-                job.Id,
-                "invalid_job",
-                "Do not supply -qmp in the job plan while XemuControl is enabled; the runner owns the QMP endpoint.",
-                startedUtc,
-                resultDirectory,
-                runId).ConfigureAwait(false);
-            return;
-        }
-
-        var executableSha256 = await ComputeSha256Async(executable, cancellationToken).ConfigureAwait(false);
-        var qmpPort = _config.XemuControl.Enabled ? _control.AllocateQmpPort() : 0;
-
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = executable,
-            WorkingDirectory = workingDirectory,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = false
-        };
-
-        foreach (var argument in job.Arguments)
-            startInfo.ArgumentList.Add(argument);
-
-        if (_config.XemuControl.Enabled)
-        {
-            startInfo.ArgumentList.Add("-qmp");
-            startInfo.ArgumentList.Add($"tcp:{_config.XemuControl.QmpHost}:{qmpPort},server=on,wait=off");
-        }
-
-        foreach (var variable in job.Environment)
-            startInfo.Environment[variable.Key] = variable.Value;
-
-        using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-
-        try
-        {
-            if (!process.Start())
-                throw new InvalidOperationException("Process.Start returned false.");
-        }
-        catch (Exception ex)
-        {
-            await FinishWithoutProcessAsync(
-                testingPackage,
-                job.Id,
-                "start_failed",
-                ex.Message,
-                startedUtc,
-                resultDirectory,
-                runId,
-                executableSha256).ConfigureAwait(false);
-            return;
-        }
-
-        _state.BeginJob(job.Id, runId, process.Id);
-
-        if (_config.XemuControl.Enabled)
-            _control.Begin(process, resultDirectory, qmpPort);
-
-        await using var stdout = new FileStream(
-            Path.Combine(resultDirectory, "stdout.log"),
-            FileMode.Create,
-            FileAccess.Write,
-            FileShare.Read,
-            256 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-
-        await using var stderr = new FileStream(
-            Path.Combine(resultDirectory, "stderr.log"),
-            FileMode.Create,
-            FileAccess.Write,
-            FileShare.Read,
-            256 * 1024,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-
-        var stdoutTask = process.StandardOutput.BaseStream.CopyToAsync(stdout, cancellationToken);
-        var stderrTask = process.StandardError.BaseStream.CopyToAsync(stderr, cancellationToken);
-
-        using var monitoringCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        MetricCollector? collector = null;
-        Task? monitorTask = null;
-
-        if (_config.Monitoring.Enabled)
-        {
-            collector = new MetricCollector(_config.Monitoring, _state.SetLatestMetric);
-            monitorTask = collector.RunAsync(
-                process,
-                Path.Combine(resultDirectory, "metrics.csv"),
-                monitoringCts.Token);
-        }
-
-        using var planCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        using var timeoutCts = new CancellationTokenSource();
-        Task? planTask = null;
-
-        if (job.Plan.Count > 0)
-        {
-            planTask = _config.XemuControl.Enabled
-                ? _control.ExecutePlanAsync(job.Plan, planCts.Token)
-                : Task.FromException(new InvalidOperationException("Job contains control plan steps but XemuControl is disabled."));
-        }
-
-        string status;
+        var attempt = new AttemptRecord { RunId = runId, Attempt = 1 };
+        JobDefinition? job = null;
+        PreflightReport? preflight = null;
+        WatchdogTrip? watchdogTrip = null;
+        DiagnosticResult? automaticBundle = null;
+        string? automaticBundleError = null;
+        string status = "invalid_job";
         string? detail = null;
+        string? failureCaptureError = null;
         int? exitCode = null;
+        bool started = false;
+        bool exited = false;
+        bool componentStuck = false;
+        IReadOnlyList<string> gpuProviders = [];
+
+        TargetLaunch? launch = null;
+        Process? process = null;
+        using var tasksCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var logsCts = new CancellationTokenSource();
+        using var activity = new RunActivity(resultDirectory);
+
+        MetricCollector? collector = null;
+        Task? monitor = null;
+        Task? plan = null;
+        Task? watchdog = null;
+        Task? stdout = null;
+        Task? stderr = null;
+        FileStream? stdoutFile = null;
+        FileStream? stderrFile = null;
+        var effectiveArguments = new List<string>();
 
         try
         {
-            var exitTask = process.WaitForExitAsync(CancellationToken.None);
-            var cancelTask = Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-            var timeoutTask = job.TimeoutSeconds > 0
-                ? _control.DelayTestTimeAsync(
-                    checked(job.TimeoutSeconds * 1000),
-                    timeoutCts.Token)
-                : Task.Delay(Timeout.InfiniteTimeSpan, timeoutCts.Token);
+            attempt.Attempt = (AttemptJournal.Read(package)?.Attempt ?? 0) + 1;
+            AttemptJournal.Write(package, attempt);
+            File.Copy(Path.Combine(package, "job.json"), Path.Combine(resultDirectory, "job.json"));
 
-            Task planWatch = planTask ?? Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
+            _state.SetPhase("preflight");
+            job = JobDefinition.LoadPackage(package);
+            preflight = await Preflight.CheckAsync(
+                job,
+                package,
+                _paths.Results,
+                _config.Reliability.Preflight,
+                ct).ConfigureAwait(false);
 
-            while (true)
+            if (job.Plan.Count > 0 && !_config.XemuControl.Enabled)
+                preflight = AddPreflightFailure(preflight, "control", "Plan actions require XemuControl.");
+
+            if (_config.XemuControl.Enabled &&
+                job.Arguments.Any(argument =>
+                    argument.Equals("-qmp", StringComparison.OrdinalIgnoreCase) ||
+                    argument.StartsWith("-qmp=", StringComparison.OrdinalIgnoreCase)))
+                preflight = AddPreflightFailure(preflight, "qmp", "The runner owns -qmp.");
+
+            if (job.SnapshotName is not null &&
+                job.Arguments.Any(argument =>
+                    argument.Equals("-loadvm", StringComparison.OrdinalIgnoreCase) ||
+                    argument.StartsWith("-loadvm=", StringComparison.OrdinalIgnoreCase)))
+                preflight = AddPreflightFailure(preflight, "snapshot", "Use SnapshotName instead of supplying -loadvm manually.");
+
+            if (job.StartPaused &&
+                job.Arguments.Any(argument => argument.Equals("-S", StringComparison.OrdinalIgnoreCase)))
+                preflight = AddPreflightFailure(preflight, "start_paused", "Use StartPaused instead of supplying -S manually.");
+
+            if (job.StartPaused && !_config.XemuControl.Enabled)
+                preflight = AddPreflightFailure(preflight, "start_paused", "StartPaused requires XemuControl so the runner can resume the VM.");
+
+            if (job.RequireInput && !_config.XemuControl.Enabled)
+                preflight = AddPreflightFailure(preflight, "input", "RequireInput requires XemuControl.");
+
+            if (job.LaunchMode.Equals("renderdoc", StringComparison.OrdinalIgnoreCase))
             {
-                var winner = await Task.WhenAny(exitTask, cancelTask, timeoutTask, planWatch).ConfigureAwait(false);
+                var renderDocPython = await _diagnostics.Tools.ProbeRenderDocPythonAsync(ct).ConfigureAwait(false);
+                if (!renderDocPython.Available)
+                    preflight = AddPreflightFailure(preflight, "renderdoc_python", renderDocPython.Detail);
+            }
 
-                if (winner == planWatch)
+            AtomicJson.Write(Path.Combine(resultDirectory, "preflight.json"), preflight);
+            if (!preflight.Passed)
+            {
+                status = "preflight_failed";
+                detail = "See preflight.json.";
+            }
+            else
+            {
+                var qmpPort = _config.XemuControl.Enabled ? _control.AllocateQmpPort() : 0;
+                effectiveArguments.AddRange(job.Arguments);
+
+                if (job.StartPaused)
+                    effectiveArguments.Add("-S");
+                if (!string.IsNullOrWhiteSpace(job.SnapshotName))
                 {
-                    try
+                    effectiveArguments.Add("-loadvm");
+                    effectiveArguments.Add(job.SnapshotName);
+                }
+                if (_config.XemuControl.Enabled)
+                {
+                    effectiveArguments.Add("-qmp");
+                    effectiveArguments.Add($"tcp:{_config.XemuControl.QmpHost}:{qmpPort},server=on,wait=off");
+                }
+
+                var executable = JobDefinition.ResolveInsidePackage(package, job.Executable);
+                var workingDirectory = JobDefinition.ResolveInsidePackage(package, job.WorkingDirectory ?? ".");
+
+                AtomicJson.Write(Path.Combine(resultDirectory, "launch.json"), new
+                {
+                    runId,
+                    attempt = attempt.Attempt,
+                    job = job.Id,
+                    launchMode = job.LaunchMode,
+                    snapshotName = job.SnapshotName,
+                    startPaused = job.StartPaused,
+                    executable = job.Executable,
+                    executableSha256 = preflight.ExecutableSha256,
+                    jobSha256 = Convert.ToHexString(
+                        SHA256.HashData(File.ReadAllBytes(
+                            Path.Combine(resultDirectory, "job.json")))).ToLowerInvariant(),
+                    arguments = effectiveArguments,
+                    workingDirectory = job.WorkingDirectory ?? ".",
+                    host = HostInfo()
+                });
+
+                attempt.Phase = "starting";
+                AttemptJournal.Write(package, attempt);
+                status = "start_failed";
+
+                launch = await TargetLaunch.StartAsync(
+                    _config.Diagnostics,
+                    job,
+                    executable,
+                    workingDirectory,
+                    effectiveArguments,
+                    resultDirectory,
+                    ct).ConfigureAwait(false);
+                process = launch.Process;
+                started = true;
+
+                if (launch.StandardOutput is not null && launch.StandardError is not null)
+                {
+                    stdoutFile = OpenLog(Path.Combine(resultDirectory, "stdout.log"));
+                    stderrFile = OpenLog(Path.Combine(resultDirectory, "stderr.log"));
+                    stdout = PumpLogAsync(launch.StandardOutput, stdoutFile, logsCts.Token);
+                    stderr = PumpLogAsync(launch.StandardError, stderrFile, logsCts.Token);
+                }
+                else
+                {
+                    await File.WriteAllTextAsync(
+                        Path.Combine(resultDirectory, "stdout.log"),
+                        "xemu was launched by the RenderDoc bridge; target stdout is not exposed by RenderDoc ExecuteAndInject." + Environment.NewLine,
+                        ct).ConfigureAwait(false);
+                    await File.WriteAllTextAsync(
+                        Path.Combine(resultDirectory, "stderr.log"),
+                        "RenderDoc bridge diagnostics are stored under diagnostics/_renderdoc-session/." + Environment.NewLine,
+                        ct).ConfigureAwait(false);
+                }
+
+                attempt.ProcessId = process.Id;
+                try { attempt.ProcessStartedUtc = process.StartTime.ToUniversalTime(); }
+                catch (InvalidOperationException) when (HasExited(process)) { }
+                attempt.Phase = HasExited(process) ? "exited" : "running";
+                AttemptJournal.Write(package, attempt);
+
+                _state.BeginJob(job.Id, runId, process.Id);
+                _activity.Attach(runId, activity);
+
+                if (_config.XemuControl.Enabled)
+                {
+                    _control.Begin(process, resultDirectory, qmpPort);
+                    await _control.WaitUntilReadyAsync(ct).ConfigureAwait(false);
+                    await _control.RefreshPauseStateAsync(ct).ConfigureAwait(false);
+                    if (job.StartPaused && !_control.Snapshot().Paused)
+                        throw new InvalidOperationException("xemu did not remain paused after StartPaused launch/snapshot restore.");
+                    _state.SetPhase(_control.Snapshot().Paused ? "paused" : "running");
+                }
+
+                if (job.RequireInput && !_control.Snapshot().InputAvailable)
+                    throw new InvalidOperationException("Job requires controller input but the configured input provider is unavailable.");
+
+                _diagnostics.Attach(
+                    runId,
+                    process,
+                    launch.RenderDoc,
+                    resultDirectory,
+                    job,
+                    tasksCts.Token);
+
+                if (_config.Monitoring.Enabled)
+                {
+                    collector = new MetricCollector(_config.Monitoring, _state.SetLatestMetric);
+                    gpuProviders = collector.GpuProviders.ToArray();
+                    monitor = collector.RunAsync(
+                        process,
+                        Path.Combine(resultDirectory, "metrics.csv"),
+                        tasksCts.Token);
+                }
+
+                if (job.Plan.Count > 0)
+                {
+                    plan = _control.ExecutePlanAsync(
+                        job.Plan,
+                        tasksCts.Token,
+                        async (id, token) =>
+                        {
+                            _ = await _diagnostics.RunByIdAsync(id, token).ConfigureAwait(false);
+                        });
+                }
+
+                Task<WatchdogTrip>? watch = null;
+                if (_config.Reliability.Watchdog.Enabled && _config.XemuControl.Enabled)
+                {
+                    watch = new ResponsivenessWatchdog(_config.Reliability.Watchdog).RunAsync(
+                        async token => { _ = await _control.QueryStatusAsync(token).ConfigureAwait(false); },
+                        tasksCts.Token);
+                    watchdog = watch;
+                }
+
+                var exitTask = process.WaitForExitAsync();
+                var cancelTask = Task.Delay(Timeout.Infinite, ct);
+                var timeoutTask = job.TimeoutSeconds > 0
+                    ? _control.DelayTestTimeAsync(checked(job.TimeoutSeconds * 1000), tasksCts.Token)
+                    : Task.Delay(Timeout.Infinite, tasksCts.Token);
+
+                var waiting = new List<Task> { exitTask, cancelTask, timeoutTask };
+                if (_config.Http.Enabled)
+                    waiting.Add(serverTask);
+                if (plan is not null)
+                    waiting.Add(plan);
+                if (monitor is not null)
+                    waiting.Add(monitor);
+                if (watch is not null)
+                    waiting.Add(watch);
+
+                while (true)
+                {
+                    var winner = await Task.WhenAny(waiting).ConfigureAwait(false);
+
+                    if (ct.IsCancellationRequested)
                     {
-                        await planWatch.ConfigureAwait(false);
-                        planWatch = Task.Delay(Timeout.InfiniteTimeSpan, CancellationToken.None);
-                        continue;
-                    }
-                    catch (Exception ex)
-                    {
-                        status = "plan_failed";
-                        detail = ex.ToString();
-                        KillProcessTree(process);
-                        await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-                        exitCode = process.ExitCode;
+                        status = "cancelled";
                         break;
                     }
-                }
 
-                if (winner == exitTask)
-                {
-                    await exitTask.ConfigureAwait(false);
-                    exitCode = process.ExitCode;
-                    status = exitCode == 0 ? "completed" : "failed";
-                    break;
-                }
+                    if (exitTask.IsCompleted)
+                    {
+                        await exitTask.ConfigureAwait(false);
+                        exited = true;
+                        exitCode = process.ExitCode;
+                        status = exitCode != 0
+                            ? "failed"
+                            : plan is not null && !plan.IsCompletedSuccessfully
+                                ? "incomplete_plan"
+                                : "completed";
+                        break;
+                    }
 
-                if (winner == timeoutTask)
-                {
-                    status = "timeout";
-                    detail = $"Process exceeded TimeoutSeconds={job.TimeoutSeconds}.";
-                    KillProcessTree(process);
-                    await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-                    exitCode = process.ExitCode;
-                    break;
-                }
+                    if (winner == plan)
+                    {
+                        try { await plan!.ConfigureAwait(false); }
+                        catch (Exception ex)
+                        {
+                            status = "plan_failed";
+                            detail = ex.ToString();
+                            break;
+                        }
+                        waiting.Remove(winner);
+                        continue;
+                    }
 
-                status = "cancelled";
-                detail = "Runner cancellation requested.";
-                KillProcessTree(process);
-                await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-                exitCode = process.ExitCode;
-                break;
+                    if (winner == timeoutTask)
+                    {
+                        status = "timeout";
+                        detail = $"Exceeded {job.TimeoutSeconds} unpaused seconds.";
+                        break;
+                    }
+
+                    if (winner == watch)
+                    {
+                        watchdogTrip = await watch!.ConfigureAwait(false);
+                        status = "unresponsive";
+                        detail = "QMP watchdog threshold reached. This is not a guest-progress verdict.";
+                        try
+                        {
+                            automaticBundle = await _diagnostics.AutoHangBundleAsync(
+                                detail,
+                                CancellationToken.None).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            automaticBundleError = ex.Message;
+                        }
+                        break;
+                    }
+
+                    await winner.ConfigureAwait(false);
+                    throw new IOException("A required runner component stopped unexpectedly.");
+                }
             }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            status = "cancelled";
         }
         catch (Exception ex)
         {
-            status = "runner_error";
+            if (started)
+                status = "runner_error";
             detail = ex.ToString();
-            KillProcessTree(process);
-            try { await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
-            try { exitCode = process.ExitCode; } catch { }
         }
         finally
         {
-            timeoutCts.Cancel();
-            planCts.Cancel();
-            if (planTask is not null)
+            tasksCts.Cancel();
+
+            if (!await _diagnostics.WaitForIdleAsync(
+                    _config.Reliability.ProcessExitTimeoutMs).ConfigureAwait(false))
             {
-                try { await planTask.ConfigureAwait(false); }
-                catch (OperationCanceledException) when (planCts.IsCancellationRequested) { }
-                catch { }
+                componentStuck = true;
+                status = "cleanup_failed";
+                detail = (detail ?? "") + " Diagnostic operation did not stop after run cancellation.";
             }
 
+            if (process is not null && started)
+            {
+                exited = HasExited(process);
+
+                if (!exited && status is not ("completed" or "cancelled" or "unresponsive"))
+                {
+                    try
+                    {
+                        automaticBundle = await _diagnostics.AutoFailureBundleAsync(
+                            status,
+                            CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        automaticBundleError = ex.Message;
+                    }
+                }
+
+                if (!exited && _config.XemuControl.Enabled &&
+                    automaticBundle is null && status is not ("cancelled" or "unresponsive"))
+                {
+                    using var screenshotDeadline = new CancellationTokenSource(
+                        _config.XemuControl.ScreenshotTimeoutMs);
+                    try
+                    {
+                        _ = await _control.CaptureScreenshotAsync(
+                            "failure",
+                            screenshotDeadline.Token,
+                            record: false).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        failureCaptureError = ex.Message;
+                    }
+                }
+
+                if (!exited)
+                    exited = await StopProcessAsync(process).ConfigureAwait(false);
+
+                if (exited)
+                {
+                    exitCode = process.ExitCode;
+                    attempt.Phase = "exited";
+                    AttemptJournal.Write(package, attempt);
+                }
+                else
+                {
+                    status = "cleanup_failed";
+                    detail = "Target process could not be confirmed stopped. Package retained in Testing.";
+                }
+            }
+
+            await SettleAsync(plan, "plan").ConfigureAwait(false);
+            await SettleAsync(watchdog, "watchdog").ConfigureAwait(false);
+            _diagnostics.Detach();
+            _activity.Detach();
             _control.End();
+            await SettleAsync(monitor, "monitor").ConfigureAwait(false);
 
-            monitoringCts.Cancel();
-            if (monitorTask is not null)
+            if (stdout is not null || stderr is not null)
             {
-                try { await monitorTask.ConfigureAwait(false); } catch (OperationCanceledException) { }
+                try
+                {
+                    await Task.WhenAll(
+                        stdout ?? Task.CompletedTask,
+                        stderr ?? Task.CompletedTask).WaitAsync(
+                            TimeSpan.FromMilliseconds(_config.Reliability.ProcessExitTimeoutMs))
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    logsCts.Cancel();
+                    detail = (detail ?? "") + " Log drain: " + ex.Message;
+                }
+                await SettleAsync(stdout, "stdout").ConfigureAwait(false);
+                await SettleAsync(stderr, "stderr").ConfigureAwait(false);
             }
 
-            try { await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false); }
-            catch (OperationCanceledException) { }
+            collector?.Dispose();
+            if (stdoutFile is not null)
+                await stdoutFile.DisposeAsync().ConfigureAwait(false);
+            if (stderrFile is not null)
+                await stderrFile.DisposeAsync().ConfigureAwait(false);
+            if (launch is not null)
+                await launch.DisposeAsync().ConfigureAwait(false);
         }
 
-        var endedUtc = DateTimeOffset.UtcNow;
-        var result = new
+        var quality = activity.Snapshot();
+        activity.Dispose();
+        AtomicJson.Write(Path.Combine(resultDirectory, "result.json"), new
         {
             runId,
-            job = job.Id,
-            jobPackage = Path.GetFileName(testingPackage),
+            job = job?.Id ?? Path.GetFileName(package),
+            jobPackage = Path.GetFileName(package),
+            attempt = attempt.Attempt,
             status,
             detail,
             startedUtc,
-            endedUtc,
-            durationMs = (endedUtc - startedUtc).TotalMilliseconds,
-            processId = process.Id,
+            endedUtc = DateTimeOffset.UtcNow,
+            durationMs = (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds,
+            processId = attempt.ProcessId,
             exitCode,
-            executable = job.Executable,
-            executableSha256,
-            arguments = job.Arguments,
-            qmp = _config.XemuControl.Enabled ? new
-            {
-                host = _config.XemuControl.QmpHost,
-                port = qmpPort
-            } : null,
+            launchMode = job?.LaunchMode,
+            snapshotName = job?.SnapshotName,
+            executable = job?.Executable,
+            executableSha256 = preflight?.ExecutableSha256,
+            arguments = effectiveArguments,
+            watchdog = watchdogTrip,
+            failureCaptureError,
+            automaticDiagnostic = automaticBundle,
+            automaticDiagnosticError = automaticBundleError,
+            diagnostics = _diagnostics.Snapshot().Completed,
+            operatorActivity = quality,
+            comparisonStatus = quality.Intervened ? "operator_intervened" : "not_evaluated",
             host = HostInfo(),
             monitoring = collector is null ? null : new
             {
@@ -368,74 +558,99 @@ public sealed class RunnerEngine
                 samples = collector.SampleCount,
                 overruns = collector.OverrunCount,
                 droppedWriteSamples = collector.DroppedWriteSamples,
-                gpuProviders = collector.GpuProviders
+                gpuProviders
             }
-        };
+        });
 
-        await File.WriteAllTextAsync(
-            Path.Combine(resultDirectory, "result.json"),
-            JsonSerializer.Serialize(result, ConfigLoader.JsonOptions),
-            CancellationToken.None).ConfigureAwait(false);
+        if ((started && !exited) || componentStuck)
+            throw new IOException(detail);
 
-        collector?.Dispose();
-        _queue.Complete(testingPackage);
-        _state.EndJob(status, job.Id);
-    }
+        attempt.Phase = "finalized";
+        AttemptJournal.Write(package, attempt);
+        _queue.Complete(package);
+        _state.EndJob(status, job?.Id ?? Path.GetFileName(package));
 
-    private async Task FinishWithoutProcessAsync(
-        string testingPackage,
-        string jobId,
-        string status,
-        string detail,
-        DateTimeOffset startedUtc,
-        string? existingResultDirectory = null,
-        string? existingRunId = null,
-        string? executableSha256 = null)
-    {
-        var runId = existingRunId ?? $"{startedUtc:yyyyMMdd-HHmmssfff}-{Sanitize(jobId)}";
-        var resultDirectory = existingResultDirectory ?? Path.Combine(_paths.Results, runId);
-        Directory.CreateDirectory(resultDirectory);
-
-        var sourceJob = Path.Combine(testingPackage, "job.json");
-        if (File.Exists(sourceJob) && !File.Exists(Path.Combine(resultDirectory, "job.json")))
-            File.Copy(sourceJob, Path.Combine(resultDirectory, "job.json"), overwrite: true);
-
-        var endedUtc = DateTimeOffset.UtcNow;
-        var result = new
+        async Task SettleAsync(Task? task, string component)
         {
-            runId,
-            job = jobId,
-            jobPackage = Path.GetFileName(testingPackage),
-            status,
-            detail,
-            startedUtc,
-            endedUtc,
-            durationMs = (endedUtc - startedUtc).TotalMilliseconds,
-            executableSha256,
-            host = HostInfo()
-        };
-
-        await File.WriteAllTextAsync(
-            Path.Combine(resultDirectory, "result.json"),
-            JsonSerializer.Serialize(result, ConfigLoader.JsonOptions)).ConfigureAwait(false);
-
-        _queue.Complete(testingPackage);
-        _state.EndJob(status, jobId);
-        _state.SetQueue(_queue.Snapshot());
+            if (task is null)
+                return;
+            try
+            {
+                await task.WaitAsync(
+                    TimeSpan.FromMilliseconds(_config.Reliability.ProcessExitTimeoutMs))
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { }
+            catch (TimeoutException ex)
+            {
+                componentStuck = true;
+                status = "cleanup_failed";
+                detail = (detail ?? "") + $" {component} did not stop: {ex.Message}";
+            }
+            catch (Exception ex)
+            {
+                detail = (detail ?? "") + $" {component}: {ex.Message}";
+                if (status == "completed")
+                    status = "runner_error";
+            }
+        }
     }
 
-    private static async Task<string> ComputeSha256Async(string path, CancellationToken cancellationToken)
+    private static PreflightReport AddPreflightFailure(
+        PreflightReport report,
+        string name,
+        string detail) =>
+        new(false, report.ExecutableSha256, [.. report.Checks, new(name, false, detail)]);
+
+    private async Task<bool> StopProcessAsync(Process process)
     {
-        await using var stream = new FileStream(
+        try
+        {
+            if (!process.HasExited)
+                process.Kill(entireProcessTree: true);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+
+        try
+        {
+            await process.WaitForExitAsync().WaitAsync(
+                TimeSpan.FromMilliseconds(_config.Reliability.ProcessExitTimeoutMs))
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is TimeoutException or InvalidOperationException) { }
+
+        return HasExited(process);
+    }
+
+    private static bool HasExited(Process process)
+    {
+        try { return process.HasExited; }
+        catch (InvalidOperationException) { return false; }
+    }
+
+    private static FileStream OpenLog(string path) =>
+        new(
             path,
-            FileMode.Open,
-            FileAccess.Read,
+            FileMode.CreateNew,
+            FileAccess.Write,
             FileShare.Read,
-            1024 * 1024,
+            65536,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
 
-        var hash = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
-        return Convert.ToHexString(hash).ToLowerInvariant();
+    private static async Task PumpLogAsync(
+        Stream source,
+        FileStream destination,
+        CancellationToken ct)
+    {
+        var buffer = new byte[65536];
+        while (true)
+        {
+            var count = await source.ReadAsync(buffer, ct).ConfigureAwait(false);
+            if (count == 0)
+                break;
+            await destination.WriteAsync(buffer.AsMemory(0, count), ct).ConfigureAwait(false);
+            await destination.FlushAsync(ct).ConfigureAwait(false);
+        }
     }
 
     private static object HostInfo() => new
@@ -447,23 +662,4 @@ public sealed class RunnerEngine
         processorCount = Environment.ProcessorCount,
         dotnet = Environment.Version.ToString()
     };
-
-    private static void KillProcessTree(Process process)
-    {
-        try
-        {
-            if (!process.HasExited)
-                process.Kill(entireProcessTree: true);
-        }
-        catch
-        {
-        }
-    }
-
-    private static string Sanitize(string value)
-    {
-        var invalid = Path.GetInvalidFileNameChars();
-        var cleaned = string.Concat(value.Select(ch => invalid.Contains(ch) || char.IsWhiteSpace(ch) ? '-' : ch));
-        return cleaned.Length > 80 ? cleaned[..80] : cleaned;
-    }
 }

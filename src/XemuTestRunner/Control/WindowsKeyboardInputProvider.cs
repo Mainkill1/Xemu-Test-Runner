@@ -4,161 +4,94 @@ namespace XemuTestRunner.Control;
 
 public sealed class WindowsKeyboardInputProvider : IXemuInputProvider
 {
-    private readonly int _processId;
+    private readonly int _pid;
+    private readonly SemaphoreSlim _operation = new(1, 1);
+    private readonly CancellationTokenSource _lifetime = new();
+    private int _closed;
     public string Name => "Windows SendInput";
     public bool IsAvailable => OperatingSystem.IsWindows();
+    public WindowsKeyboardInputProvider(int processId) => _pid = processId;
+    public Task PressAsync(string hostKey, int holdMs, CancellationToken cancellationToken) =>
+        PressChordAsync([hostKey], holdMs, cancellationToken);
 
-    public WindowsKeyboardInputProvider(int processId) => _processId = processId;
-
-    public async Task PressAsync(string hostKey, int holdMs, CancellationToken cancellationToken)
+    public async Task PressChordAsync(IReadOnlyList<string> hostKeys, int holdMs, CancellationToken cancellationToken)
     {
-        if (!IsAvailable)
-            throw new PlatformNotSupportedException("Windows SendInput is only available on Windows.");
-
-        var key = ResolveKey(hostKey);
-        var window = FindMainWindow(_processId);
-        if (window == IntPtr.Zero)
-            throw new InvalidOperationException($"Could not find a visible xemu window for process {_processId}.");
-
-        ShowWindow(window, 9);
-        _ = SetForegroundWindow(window);
-        await Task.Delay(25, cancellationToken).ConfigureAwait(false);
-
-        SendKey(key, keyDown: true);
-        await Task.Delay(holdMs, cancellationToken).ConfigureAwait(false);
-        SendKey(key, keyDown: false);
-    }
-
-    private static void SendKey(KeySpec key, bool keyDown)
-    {
-        var flags = KeyEventF.Scancode;
-        if (key.Extended)
-            flags |= KeyEventF.ExtendedKey;
-        if (!keyDown)
-            flags |= KeyEventF.KeyUp;
-
-        var input = new Input
+        if (hostKeys.Count == 0)
+            throw new InvalidDataException("At least one host key is required.");
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
+        await _operation.WaitAsync(linked.Token);
+        var pressed = new List<Key>();
+        try
         {
-            Type = 1,
-            Union = new InputUnion
+            cancellationToken = linked.Token;
+            if (!IsAvailable) throw new PlatformNotSupportedException();
+            var keys = hostKeys.Select(Resolve).ToArray();
+            IntPtr window = IntPtr.Zero;
+            EnumWindows((h, unused) =>
             {
-                Keyboard = new KeyboardInput
-                {
-                    VirtualKey = 0,
-                    ScanCode = key.ScanCode,
-                    Flags = flags,
-                    Time = 0,
-                    ExtraInfo = UIntPtr.Zero
-                }
+                GetWindowThreadProcessId(h, out var owner);
+                if (owner == _pid && IsWindowVisible(h)) { window = h; return false; }
+                return true;
+            }, IntPtr.Zero);
+            if (window == IntPtr.Zero) throw new InvalidOperationException("No visible xemu window for the active PID.");
+            ShowWindow(window, 9); SetForegroundWindow(window);
+            await Task.Delay(25, cancellationToken);
+            GetWindowThreadProcessId(GetForegroundWindow(), out var focusedPid);
+            if (focusedPid != _pid) throw new InvalidOperationException("Windows did not grant xemu foreground focus; input was not sent.");
+            foreach (var key in keys)
+            {
+                Send(key, true);
+                pressed.Add(key);
             }
-        };
-
+            await Task.Delay(holdMs, cancellationToken);
+        }
+        finally
+        {
+            for (var i = pressed.Count - 1; i >= 0; i--)
+            {
+                try { Send(pressed[i], false); } catch { }
+            }
+            _operation.Release();
+        }
+    }
+    private static void Send(Key key, bool down)
+    {
+        var input = new Input { Type = 1, Union = new InputUnion { Keyboard = new KeyboardInput
+        { ScanCode = key.ScanCode, Flags = 8u | (key.Extended ? 1u : 0u) | (down ? 0u : 2u) } } };
         if (SendInput(1, [input], Marshal.SizeOf<Input>()) != 1)
-            throw new InvalidOperationException($"SendInput failed with Win32 error {Marshal.GetLastWin32Error()}.");
+            throw new InvalidOperationException($"SendInput failed: {Marshal.GetLastWin32Error()}.");
     }
-
-    private static IntPtr FindMainWindow(int processId)
+    private static Key Resolve(string key) => key.Trim().ToLowerInvariant() switch
     {
-        IntPtr found = IntPtr.Zero;
-        EnumWindows((window, _) =>
-        {
-            _ = GetWindowThreadProcessId(window, out var pid);
-            if (pid == processId && IsWindowVisible(window))
-            {
-                found = window;
-                return false;
-            }
-            return true;
-        }, IntPtr.Zero);
-        return found;
-    }
-
-    private static KeySpec ResolveKey(string key) => key.Trim().ToLowerInvariant() switch
-    {
-        "a" => new(0x1E),
-        "b" => new(0x30),
-        "x" => new(0x2D),
-        "y" => new(0x15),
-        "e" => new(0x12),
-        "s" => new(0x1F),
-        "f" => new(0x21),
-        "d" => new(0x20),
-        "w" => new(0x11),
-        "i" => new(0x17),
-        "j" => new(0x24),
-        "l" => new(0x26),
-        "k" => new(0x25),
-        "o" => new(0x18),
-        "1" => new(0x02),
-        "2" => new(0x03),
-        "3" => new(0x04),
-        "4" => new(0x05),
-        "5" => new(0x06),
-        "enter" or "return" => new(0x1C),
-        "backspace" => new(0x0E),
-        "up" => new(0x48, true),
-        "down" => new(0x50, true),
-        "left" => new(0x4B, true),
-        "right" => new(0x4D, true),
-        _ => throw new InvalidDataException($"Unsupported Windows host key '{key}'.")
+        "a" => new(0x1e), "b" => new(0x30), "x" => new(0x2d), "y" => new(0x15),
+        "e" => new(0x12), "s" => new(0x1f), "f" => new(0x21), "d" => new(0x20), "w" => new(0x11),
+        "i" => new(0x17), "j" => new(0x24), "l" => new(0x26), "k" => new(0x25), "o" => new(0x18),
+        "1" => new(2), "2" => new(3), "3" => new(4), "4" => new(5), "5" => new(6),
+        "enter" or "return" => new(0x1c), "backspace" => new(0x0e),
+        "ctrl" or "control" => new(0x1d), "shift" => new(0x2a), "f10" => new(0x44),
+        "up" => new(0x48, true), "down" => new(0x50, true), "left" => new(0x4b, true), "right" => new(0x4d, true),
+        _ => throw new InvalidDataException("Unsupported host key: " + key)
     };
-
-    public void Dispose() { }
-
-    private readonly record struct KeySpec(ushort ScanCode, bool Extended = false);
-
-    [Flags]
-    private enum KeyEventF : uint
+    public void Dispose()
     {
-        ExtendedKey = 0x0001,
-        KeyUp = 0x0002,
-        Scancode = 0x0008
+        if (Interlocked.Exchange(ref _closed, 1) != 0) return;
+        _lifetime.Cancel(); _operation.Wait(); _operation.Release();
     }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct Input
-    {
-        public uint Type;
-        public InputUnion Union;
-    }
-
-    [StructLayout(LayoutKind.Explicit)]
-    private struct InputUnion
-    {
-        [FieldOffset(0)] public KeyboardInput Keyboard;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct KeyboardInput
-    {
-        public ushort VirtualKey;
-        public ushort ScanCode;
-        public KeyEventF Flags;
-        public uint Time;
-        public UIntPtr ExtraInfo;
-    }
-
-    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern uint SendInput(uint inputCount, [In] Input[] inputs, int size);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int processId);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsWindowVisible(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool ShowWindow(IntPtr hWnd, int command);
+    private readonly record struct Key(ushort ScanCode, bool Extended = false);
+    [StructLayout(LayoutKind.Sequential)] private struct Input { public uint Type; public InputUnion Union; }
+    // INPUT's union is sized by MOUSEINPUT, even when only keyboard input is used.
+    [StructLayout(LayoutKind.Explicit)] private struct InputUnion
+    { [FieldOffset(0)] public KeyboardInput Keyboard; [FieldOffset(0)] public MouseInput Mouse; }
+    [StructLayout(LayoutKind.Sequential)] private struct KeyboardInput
+    { public ushort VirtualKey, ScanCode; public uint Flags, Time; public UIntPtr ExtraInfo; }
+    [StructLayout(LayoutKind.Sequential)] private struct MouseInput
+    { public int X, Y; public uint MouseData, Flags, Time; public UIntPtr ExtraInfo; }
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr parameter);
+    [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint count, [In] Input[] inputs, int size);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out int pid);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr window, int command);
 }

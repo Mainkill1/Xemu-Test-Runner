@@ -1,0 +1,54 @@
+{
+  "Id": "snapshot-renderdoc-example",
+  "TargetOs": "windows",
+  "Executable": "xemu.exe",
+  "LaunchMode": "renderdoc",
+  "SnapshotName": "replace-with-snapshot-name",
+  "StartPaused": true,
+  "RequireInput": true,
+  "Arguments": ["-config_path", "xemu.toml"],
+  "WorkingDirectory": ".",
+  "RequiredFiles": ["xemu.toml"],
+  "TimeoutSeconds": 180,
+  "Tags": ["example", "diagnostic", "renderdoc"],
+  "Diagnostics": [
+    {
+      "Id": "guest-frame",
+      "Type": "renderdoc",
+      "Frames": 1,
+      "TracePgraph": true,
+      "RenderDocTrigger": "xemu-hotkey",
+      "AnalyzeCapture": true,
+      "PauseBefore": true,
+      "ResumeDuring": true,
+      "PauseAfter": true,
+      "OutputName": "guest-frame"
+    },
+    {
+      "Id": "cpu-window",
+      "Type": "wpr",
+      "DurationMs": 30000,
+      "Profile": "GeneralProfile+GPU",
+      "PauseBefore": true,
+      "ResumeDuring": true,
+      "PauseAfter": true,
+      "OutputName": "cpu-window"
+    },
+    {
+      "Id": "menu-memory",
+      "Type": "memory_dump",
+      "Address": 58523648,
+      "Size": 65536,
+      "PauseBefore": true,
+      "ResumeDuring": false,
+      "PauseAfter": true,
+      "OutputName": "menu-memory"
+    }
+  ],
+  "Plan": [
+    {"Type": "require_input"},
+    {"Type": "diagnostic", "DiagnosticId": "guest-frame"},
+    {"Type": "diagnostic", "DiagnosticId": "cpu-window"},
+    {"Type": "screenshot", "Name": "after-diagnostics"}
+  ]
+}

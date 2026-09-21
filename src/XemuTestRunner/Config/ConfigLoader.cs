@@ -6,86 +6,70 @@ public static class ConfigLoader
 {
     public static readonly JsonSerializerOptions JsonOptions = new()
     {
-        PropertyNameCaseInsensitive = true,
-        ReadCommentHandling = JsonCommentHandling.Skip,
-        AllowTrailingCommas = true,
-        WriteIndented = true
+        PropertyNameCaseInsensitive = true, ReadCommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true, WriteIndented = true
     };
-
     public static (RunnerConfig Config, RunnerPaths Paths) Load(string path)
     {
-        var configFile = Path.GetFullPath(path);
-        if (!File.Exists(configFile))
-            throw new FileNotFoundException($"Runner config not found: {configFile}");
-
-        var config = JsonSerializer.Deserialize<RunnerConfig>(File.ReadAllText(configFile), JsonOptions)
-            ?? throw new InvalidDataException("Runner config was empty or invalid.");
-
+        var full = Path.GetFullPath(path);
+        var config = JsonSerializer.Deserialize<RunnerConfig>(File.ReadAllText(full), JsonOptions)
+            ?? throw new InvalidDataException("Empty runner config.");
         Validate(config);
-        return (config, ResolvePaths(config, configFile));
+        var paths = ResolvePaths(config, full);
+        var states = new[] { paths.Pending, paths.Testing, paths.Tested, paths.Results };
+        var cmp = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        for (var i = 0; i < states.Length; i++)
+            for (var j = 0; j < states.Length; j++)
+                if (i != j && (states[i].Equals(states[j], cmp) || states[i].StartsWith(states[j].TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, cmp)))
+                    throw new InvalidDataException("Queue state and result directories must be distinct and not nested.");
+        return (config, paths);
     }
-
     public static void WriteExample(string path, bool overwrite)
     {
-        var fullPath = Path.GetFullPath(path);
-        if (File.Exists(fullPath) && !overwrite)
-            throw new IOException($"Config already exists: {fullPath}");
-
-        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
-        File.WriteAllText(fullPath, JsonSerializer.Serialize(new RunnerConfig(), JsonOptions));
+        var full = Path.GetFullPath(path);
+        if (File.Exists(full) && !overwrite) throw new IOException("Config already exists: " + full);
+        Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+        File.WriteAllText(full, JsonSerializer.Serialize(new RunnerConfig(), JsonOptions));
     }
-
     public static RunnerPaths ResolvePaths(RunnerConfig config, string configFile)
     {
-        var baseDirectory = Path.GetDirectoryName(Path.GetFullPath(configFile))!;
-        var workspace = Resolve(baseDirectory, config.Workspace);
-
-        return new RunnerPaths(
-            Path.GetFullPath(configFile),
-            workspace,
-            Resolve(workspace, config.Queue.Pending),
-            Resolve(workspace, config.Queue.Testing),
-            Resolve(workspace, config.Queue.Tested),
-            Resolve(workspace, config.Queue.Results),
-            Resolve(workspace, config.Http.FileRoot));
+        var full = Path.GetFullPath(configFile);
+        var workspace = Resolve(Path.GetDirectoryName(full)!, config.Workspace);
+        return new(full, workspace, Resolve(workspace, config.Queue.Pending), Resolve(workspace, config.Queue.Testing),
+            Resolve(workspace, config.Queue.Tested), Resolve(workspace, config.Queue.Results), Resolve(workspace, config.Http.FileRoot));
     }
-
-    private static string Resolve(string root, string value) =>
-        Path.GetFullPath(Path.IsPathRooted(value) ? value : Path.Combine(root, value));
-
-    private static void Validate(RunnerConfig config)
+    private static string Resolve(string root, string value) => Path.GetFullPath(Path.IsPathRooted(value) ? value : Path.Combine(root, value));
+    private static void Validate(RunnerConfig c)
     {
-        if (config.Monitoring.IntervalMs <= 0)
-            throw new InvalidDataException("Monitoring.IntervalMs must be greater than zero.");
-        if (config.Monitoring.FlushIntervalMs <= 0)
-            throw new InvalidDataException("Monitoring.FlushIntervalMs must be greater than zero.");
-        if (config.Monitoring.BufferCapacity < 16)
-            throw new InvalidDataException("Monitoring.BufferCapacity must be at least 16.");
-        if (config.Queue.ScanIntervalMs <= 0)
-            throw new InvalidDataException("Queue.ScanIntervalMs must be greater than zero.");
-        if (config.Http.Port is < 1 or > 65535)
-            throw new InvalidDataException("Http.Port must be between 1 and 65535.");
-        if (config.Http.TransferBufferBytes < 64 * 1024)
-            throw new InvalidDataException("Http.TransferBufferBytes must be at least 65536 bytes.");
-        if (config.Http.MaxHeaderBytes < 4096)
-            throw new InvalidDataException("Http.MaxHeaderBytes must be at least 4096 bytes.");
-        if (config.XemuControl.QmpPort is < 0 or > 65535)
-            throw new InvalidDataException("XemuControl.QmpPort must be 0 (automatic) or between 1 and 65535.");
-        if (config.XemuControl.ConnectTimeoutMs <= 0)
-            throw new InvalidDataException("XemuControl.ConnectTimeoutMs must be greater than zero.");
-        if (config.XemuControl.ScreenshotTimeoutMs <= 0)
-            throw new InvalidDataException("XemuControl.ScreenshotTimeoutMs must be greater than zero.");
-        if (config.XemuControl.DefaultButtonHoldMs <= 0)
-            throw new InvalidDataException("XemuControl.DefaultButtonHoldMs must be greater than zero.");
-        if (config.Ui.CliRefreshMs <= 0)
-            throw new InvalidDataException("Ui.CliRefreshMs must be greater than zero.");
-        if (config.Ui.WebRefreshMs <= 0)
-            throw new InvalidDataException("Ui.WebRefreshMs must be greater than zero.");
-        if (config.Ui.LivePreviewIntervalMs < 250)
-            throw new InvalidDataException("Ui.LivePreviewIntervalMs must be at least 250 ms.");
-
-        var interrupted = config.Queue.InterruptedAction.ToLowerInvariant();
-        if (interrupted is not ("retry" or "hold"))
-            throw new InvalidDataException("Queue.InterruptedAction must be 'retry' or 'hold'.");
+        if (c.Queue is null || c.Monitoring is null || c.Http is null || c.XemuControl is null || c.Ui is null || c.Reliability is null ||
+            c.Diagnostics is null || c.Monitoring.Gpu is null || c.Reliability.Preflight is null ||
+            c.Reliability.Watchdog is null || c.XemuControl.ButtonKeys is null)
+            throw new InvalidDataException("Configuration sections cannot be null.");
+        if (c.Monitoring.IntervalMs <= 0 || c.Monitoring.FlushIntervalMs <= 0 || c.Monitoring.BufferCapacity < 16 || c.Queue.ScanIntervalMs <= 0)
+            throw new InvalidDataException("Sampling/flush/queue intervals must be positive; buffer capacity must be at least 16.");
+        if (c.Http.Port is < 1 or > 65535 || c.Http.TransferBufferBytes is < 65536 or > 16777216 || c.Http.MaxHeaderBytes is < 4096 or > 1048576)
+            throw new InvalidDataException("Invalid HTTP port or buffer/header size.");
+        if (c.XemuControl.QmpPort is < 0 or > 65535 || c.XemuControl.ConnectTimeoutMs <= 0 || c.XemuControl.ScreenshotTimeoutMs <= 0 ||
+            c.XemuControl.DefaultButtonHoldMs is < 1 or > 60000)
+            throw new InvalidDataException("Invalid xemu control port, timeout, or button duration.");
+        if (c.Ui.CliRefreshMs <= 0 || c.Ui.WebRefreshMs <= 0 || c.Ui.LivePreviewIntervalMs < 250)
+            throw new InvalidDataException("UI refresh intervals must be positive; preview interval must be at least 250 ms.");
+        if (c.Queue.InterruptedAction?.ToLowerInvariant() is not ("retry" or "hold")) throw new InvalidDataException("InterruptedAction must be retry or hold.");
+        var r = c.Reliability; var w = r.Watchdog;
+        if (r.MaxInterruptedRetries is < 0 or > 100 || r.ProcessExitTimeoutMs <= 0 || r.Preflight.MinimumFreeSpaceBytes < 0 ||
+            r.EvidenceListLimit is < 1 or > 200 || r.MaxPreviewBytes is < 1024 or > 67108864 || w.StartupGraceMs < 0 ||
+            w.IntervalMs < 100 || w.RequestTimeoutMs < 100 || w.FailureThreshold is < 1 or > 100)
+            throw new InvalidDataException("Invalid reliability limits or watchdog intervals.");
+        if (c.Diagnostics.ToolTimeoutMs < 100 || c.Diagnostics.CaptureFinalizeTimeoutMs < 1000)
+            throw new InvalidDataException("Diagnostic tool timeout must be at least 100 ms and capture finalization at least 1000 ms.");
+        if (new[]
+        {
+            c.Diagnostics.WprExecutable, c.Diagnostics.XperfExecutable, c.Diagnostics.PerfExecutable,
+            c.Diagnostics.GdbExecutable, c.Diagnostics.ProcDumpExecutable, c.Diagnostics.RenderDocCommand,
+            c.Diagnostics.PythonExecutable, c.Diagnostics.Addr2LineExecutable
+        }.Any(string.IsNullOrWhiteSpace))
+            throw new InvalidDataException("Diagnostic executable settings cannot be empty.");
+        // JSON deserialization may replace the original case-insensitive dictionary.
+        c.XemuControl.ButtonKeys = new(c.XemuControl.ButtonKeys, StringComparer.OrdinalIgnoreCase);
     }
 }
