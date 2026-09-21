@@ -381,10 +381,108 @@ try
             await runTask;
         }
 
-        Assert(Directory.Exists(Path.Combine(paths.Workspace, "Telemetry")),
-            "Lifetime telemetry directory was not created.");
-        Assert(Directory.GetFiles(Path.Combine(paths.Workspace, "Telemetry"), "host-*.csv").Length == 1,
-            "Lifetime host telemetry CSV was not retained.");
+        var idleCsv = Directory.Exists(paths.Workspace)
+            ? Directory.EnumerateFiles(
+                paths.Workspace,
+                "*.csv",
+                SearchOption.AllDirectories).ToArray()
+            : [];
+        Assert(
+            idleCsv.Length == 0,
+            "Idle telemetry wrote CSV data before a test started: " +
+            string.Join(", ", idleCsv));
+    });
+
+    await Check("queue holds incomplete and changing packages before claim", async () =>
+    {
+        var fixture = Path.Combine(root, "queue-stability");
+        var configPath = Path.Combine(fixture, "runner.json");
+        Directory.CreateDirectory(fixture);
+
+        var config = new RunnerConfig
+        {
+            Workspace = "workspace",
+            Queue = new QueueOptions
+            {
+                PackageStabilityMs = 100,
+                ScanIntervalMs = 25
+            },
+            Http = new HttpOptions { Enabled = false },
+            Monitoring = new MonitoringOptions { Enabled = false },
+            XemuControl = new XemuControlOptions { Enabled = false },
+            Reliability = new ReliabilityOptions
+            {
+                Preflight = new PreflightOptions
+                {
+                    MinimumFreeSpaceBytes = 0
+                },
+                Watchdog = new WatchdogOptions { Enabled = false }
+            }
+        };
+
+        await File.WriteAllTextAsync(
+            configPath,
+            JsonSerializer.Serialize(config, ConfigLoader.JsonOptions));
+
+        var (_, paths) = ConfigLoader.Load(configPath);
+        var queue = new JobQueue(config, paths);
+        queue.EnsureDirectories();
+
+        var incomplete = Path.Combine(paths.Pending, "incomplete");
+        Directory.CreateDirectory(incomplete);
+
+        var first = queue.TryClaimNext();
+        Assert(
+            first.Package is null &&
+            first.Issue?.Code == "package_incomplete",
+            "Visible package without job.json did not report package_incomplete.");
+
+        Directory.Delete(incomplete, recursive: true);
+
+        var package = Path.Combine(paths.Pending, "changing");
+        Directory.CreateDirectory(package);
+        var executable = Path.Combine(package, "xemu");
+        await File.WriteAllTextAsync(executable, "first");
+        await File.WriteAllTextAsync(
+            Path.Combine(package, "job.json"),
+            JsonSerializer.Serialize(
+                new JobDefinition
+                {
+                    Id = "changing",
+                    Executable = "xemu"
+                },
+                ConfigLoader.JsonOptions));
+
+        var stabilizing = queue.TryClaimNext();
+        Assert(
+            stabilizing.Package is null &&
+            stabilizing.Issue?.Code == "package_stabilizing",
+            "New package was claimed without a stability observation.");
+
+        await File.AppendAllTextAsync(executable, "-changed");
+        await Task.Delay(110);
+
+        var changed = queue.TryClaimNext();
+        Assert(
+            changed.Package is null &&
+            changed.Issue?.Code == "package_stabilizing",
+            "Changing executable did not reset package stability.");
+
+        await Task.Delay(110);
+        var claimed = queue.TryClaimNext();
+        Assert(
+            claimed.Package is not null &&
+            claimed.Issue is null,
+            "Stable package was not claimed after the stability window.");
+
+        await File.AppendAllTextAsync(
+            Path.Combine(claimed.Package!, "xemu"),
+            "-post-claim");
+
+        var integrity = queue.VerifyClaimedPackage(claimed.Package!);
+        Assert(
+            integrity?.Code == "package_changed_during_preflight",
+            "Post-claim package mutation was not detected before launch.");
     });
 
     await Check("advertised HTTP address never reports wildcard when an override is supplied", () =>

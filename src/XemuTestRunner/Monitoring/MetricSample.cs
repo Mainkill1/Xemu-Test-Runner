@@ -23,6 +23,7 @@ public sealed record MetricSample
     public double? GpuTemperatureC { get; init; }
     public double? GpuPowerWatts { get; init; }
     public double CollectorDurationMs { get; init; }
+    public double CollectorDutyPercent { get; init; }
     public bool Overrun { get; init; }
     public IReadOnlyList<string> Errors { get; init; } = [];
 }

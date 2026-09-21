@@ -13,10 +13,28 @@ public sealed class NvidiaNvmlProvider : IGpuMetricProvider
     private readonly NvmlGetMemoryInfo _getMemoryInfo;
     private readonly NvmlGetTemperature? _getTemperature;
     private readonly NvmlGetPowerUsage? _getPowerUsage;
+    private readonly int _sampleIntervalMs;
+    private readonly int _sensorIntervalMs;
+    private long _nextFastSampleTick;
+    private long _nextSensorSampleTick;
+    private double? _cachedUtilization;
+    private long? _cachedTotal;
+    private long? _cachedUsed;
+    private double? _cachedTemperature;
+    private double? _cachedPower;
     private bool _disposed;
     public string Name => "NVIDIA NVML";
 
-    private NvidiaNvmlProvider(IntPtr library, IntPtr device, NvmlShutdown shutdown, NvmlGetUtilization getUtilization, NvmlGetMemoryInfo getMemoryInfo, NvmlGetTemperature? getTemperature, NvmlGetPowerUsage? getPowerUsage)
+    private NvidiaNvmlProvider(
+        IntPtr library,
+        IntPtr device,
+        NvmlShutdown shutdown,
+        NvmlGetUtilization getUtilization,
+        NvmlGetMemoryInfo getMemoryInfo,
+        NvmlGetTemperature? getTemperature,
+        NvmlGetPowerUsage? getPowerUsage,
+        int sampleIntervalMs,
+        int sensorIntervalMs)
     {
         _library = library;
         _device = device;
@@ -25,6 +43,8 @@ public sealed class NvidiaNvmlProvider : IGpuMetricProvider
         _getMemoryInfo = getMemoryInfo;
         _getTemperature = getTemperature;
         _getPowerUsage = getPowerUsage;
+        _sampleIntervalMs = sampleIntervalMs;
+        _sensorIntervalMs = sensorIntervalMs;
     }
 
     public static bool TryCreate(GpuOptions options, out NvidiaNvmlProvider? provider, out string status)
@@ -61,7 +81,16 @@ public sealed class NvidiaNvmlProvider : IGpuMetricProvider
                 return false;
             }
 
-            provider = new NvidiaNvmlProvider(library, device, shutdown, getUtil, getMemory, getTemperature, getPower);
+            provider = new NvidiaNvmlProvider(
+                library,
+                device,
+                shutdown,
+                getUtil,
+                getMemory,
+                getTemperature,
+                getPower,
+                options.SampleIntervalMs,
+                options.SensorIntervalMs);
             status = $"NVML GPU index {options.DeviceIndex} available.";
             return true;
         }
@@ -75,20 +104,41 @@ public sealed class NvidiaNvmlProvider : IGpuMetricProvider
 
     public GpuSample Sample(int? processId)
     {
-        double? utilization = null;
-        long? total = null;
-        long? used = null;
-        double? temperature = null;
-        double? power = null;
-        if (_getUtilization(_device, out var util) == Success) utilization = util.Gpu;
-        if (_getMemoryInfo(_device, out var memory) == Success)
+        var now = Environment.TickCount64;
+
+        if (_nextFastSampleTick == 0 || now >= _nextFastSampleTick)
         {
-            total = checked((long)memory.Total);
-            used = checked((long)memory.Used);
+            _nextFastSampleTick = now + _sampleIntervalMs;
+
+            if (_getUtilization(_device, out var util) == Success)
+                _cachedUtilization = util.Gpu;
+
+            if (_getMemoryInfo(_device, out var memory) == Success)
+            {
+                _cachedTotal = checked((long)memory.Total);
+                _cachedUsed = checked((long)memory.Used);
+            }
         }
-        if (_getTemperature is not null && _getTemperature(_device, 0, out var temp) == Success) temperature = temp;
-        if (_getPowerUsage is not null && _getPowerUsage(_device, out var milliwatts) == Success) power = milliwatts / 1000.0;
-        return new GpuSample(UtilizationPercent: utilization, VramTotalBytes: total, VramUsedBytes: used, TemperatureC: temperature, PowerWatts: power);
+
+        if (_nextSensorSampleTick == 0 || now >= _nextSensorSampleTick)
+        {
+            _nextSensorSampleTick = now + _sensorIntervalMs;
+
+            if (_getTemperature is not null &&
+                _getTemperature(_device, 0, out var temp) == Success)
+                _cachedTemperature = temp;
+
+            if (_getPowerUsage is not null &&
+                _getPowerUsage(_device, out var milliwatts) == Success)
+                _cachedPower = milliwatts / 1000.0;
+        }
+
+        return new GpuSample(
+            UtilizationPercent: _cachedUtilization,
+            VramTotalBytes: _cachedTotal,
+            VramUsedBytes: _cachedUsed,
+            TemperatureC: _cachedTemperature,
+            PowerWatts: _cachedPower);
     }
 
     public void Dispose()

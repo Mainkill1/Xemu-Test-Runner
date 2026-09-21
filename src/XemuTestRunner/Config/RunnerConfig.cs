@@ -21,6 +21,7 @@ public sealed class QueueOptions
     public string Tested { get; set; } = "Queue/Tested";
     public string Results { get; set; } = "Results";
     public int ScanIntervalMs { get; set; } = 500;
+    public int PackageStabilityMs { get; set; } = 750;
     public string InterruptedAction { get; set; } = "retry";
 }
 public sealed class MonitoringOptions
@@ -37,6 +38,8 @@ public sealed class GpuOptions
     public bool Enabled { get; set; } = true;
     public string Provider { get; set; } = "auto";
     public int DeviceIndex { get; set; } = 0;
+    public int SampleIntervalMs { get; set; } = 250;
+    public int SensorIntervalMs { get; set; } = 1000;
     public int CounterRefreshMs { get; set; } = 5000;
 }
 public sealed class HttpOptions

@@ -16,6 +16,7 @@ public sealed class SystemMetricProvider : IDisposable
     private long _previousWriteBytes;
     private long _previousIoTimestamp;
     private bool _hasProcessIo;
+    private int? _processId;
 
     public SystemSample Sample(Process? process, bool processIo)
     {
@@ -35,8 +36,23 @@ public sealed class SystemMetricProvider : IDisposable
         double? readBps = null;
         double? writeBps = null;
 
-        if (process is not null)
+        if (process is null)
         {
+            if (_processId is not null)
+            {
+                _processId = null;
+                _hasProcessCpu = false;
+                _hasProcessIo = false;
+            }
+        }
+        else
+        {
+            if (_processId != process.Id)
+            {
+                _processId = process.Id;
+                _hasProcessCpu = false;
+                _hasProcessIo = false;
+            }
             try
             {
                 process.Refresh();

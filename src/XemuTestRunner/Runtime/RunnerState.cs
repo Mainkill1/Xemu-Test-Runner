@@ -20,10 +20,12 @@ public sealed class RunnerState
     private string? _lastResult;
     private DateTimeOffset? _lastFinishedUtc;
     private WorkstationStateSnapshot _workstation = WorkstationStateSnapshot.Unsupported;
+    private QueueIssue? _queueIssue;
 
     public void SetPhase(string phase) { lock (_gate) _phase = phase; }
     public void SetHttpEndpoint(string? endpoint) { lock (_gate) _httpEndpoint = endpoint; }
     public void SetQueue(QueueSnapshot queue) { lock (_gate) _queue = queue; }
+    public void SetQueueIssue(QueueIssue? issue) { lock (_gate) _queueIssue = issue; }
     public void SetWorkstationState(WorkstationStateSnapshot workstation) { lock (_gate) _workstation = workstation; }
     public bool HasActiveJob { get { lock (_gate) return _currentJob is not null; } }
 
@@ -79,7 +81,8 @@ public sealed class RunnerState
                 _lastJob,
                 _lastResult,
                 _lastFinishedUtc,
-                _workstation);
+                _workstation,
+                _queueIssue);
         }
     }
 }
@@ -99,4 +102,5 @@ public sealed record RunnerStateSnapshot(
     string? LastJob,
     string? LastResult,
     DateTimeOffset? LastFinishedUtc,
-    WorkstationStateSnapshot Workstation);
+    WorkstationStateSnapshot Workstation,
+    QueueIssue? QueueIssue);

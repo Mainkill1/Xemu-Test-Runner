@@ -7,18 +7,29 @@ namespace XemuTestRunner.Monitoring.Providers;
 public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
 {
     private readonly int _refreshMs;
+    private readonly int _sampleIntervalMs;
+    private readonly int _sensorIntervalMs;
     private int? _pid;
     private long _nextRefreshTick;
     private long _nextEngineSampleTick;
+    private long _nextMemorySampleTick;
     private readonly List<EngineCounter> _engineCounters = [];
     private readonly List<PerformanceCounter> _dedicatedMemoryCounters = [];
     private double? _cachedHostUtilization;
     private double? _cachedProcessUtilization;
+    private long? _cachedProcessVram;
 
     public string Name => "Windows GPU performance counters";
 
-    private WindowsGpuPerformanceCounterProvider(int refreshMs) =>
-        _refreshMs = Math.Max(250, refreshMs);
+    private WindowsGpuPerformanceCounterProvider(
+        int refreshMs,
+        int sampleIntervalMs,
+        int sensorIntervalMs)
+    {
+        _refreshMs = Math.Max(sampleIntervalMs, refreshMs);
+        _sampleIntervalMs = Math.Max(100, sampleIntervalMs);
+        _sensorIntervalMs = Math.Max(_sampleIntervalMs, sensorIntervalMs);
+    }
 
     public static bool TryCreate(
         GpuOptions options,
@@ -35,7 +46,10 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
         {
             var category = new PerformanceCounterCategory("GPU Engine");
             var instances = category.GetInstanceNames();
-            provider = new WindowsGpuPerformanceCounterProvider(options.CounterRefreshMs);
+            provider = new WindowsGpuPerformanceCounterProvider(
+                options.CounterRefreshMs,
+                options.SampleIntervalMs,
+                options.SensorIntervalMs);
             status = instances.Length == 0
                 ? "Windows GPU performance counters available, but no GPU engine instances are active yet."
                 : $"Windows GPU performance counters available ({instances.Length} active instances).";
@@ -60,9 +74,10 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
 
         SampleEnginesIfDue();
 
-        long? processVram = null;
-        if (processId is not null)
+        if (processId is not null &&
+            (_nextMemorySampleTick == 0 || now >= _nextMemorySampleTick))
         {
+            _nextMemorySampleTick = now + _sensorIntervalMs;
             try
             {
                 if (_dedicatedMemoryCounters.Count > 0)
@@ -72,19 +87,23 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
                         var value = counter.NextValue();
                         return double.IsFinite(value) && value > 0 ? value : 0;
                     });
-                    processVram = checked((long)total);
+                    _cachedProcessVram = checked((long)total);
+                }
+                else
+                {
+                    _cachedProcessVram = null;
                 }
             }
             catch
             {
-                processVram = null;
+                _cachedProcessVram = null;
             }
         }
 
         return new GpuSample(
             UtilizationPercent: _cachedHostUtilization,
             ProcessUtilizationPercent: processId is null ? null : _cachedProcessUtilization,
-            ProcessVramBytes: processVram);
+            ProcessVramBytes: processId is null ? null : _cachedProcessVram);
     }
 
     private void SampleEnginesIfDue()
@@ -93,7 +112,7 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
         if (now < _nextEngineSampleTick)
             return;
 
-        _nextEngineSampleTick = now + 250;
+        _nextEngineSampleTick = now + _sampleIntervalMs;
 
         if (_engineCounters.Count == 0)
         {
@@ -195,6 +214,7 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
         _nextRefreshTick = Environment.TickCount64 +
             (pid is null ? _refreshMs : hasProcessEngine ? _refreshMs : 500);
         _nextEngineSampleTick = 0;
+        _nextMemorySampleTick = 0;
     }
 
     private static bool BelongsToProcess(string instance, int pid) =>
@@ -217,6 +237,7 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
         _dedicatedMemoryCounters.Clear();
         _cachedHostUtilization = null;
         _cachedProcessUtilization = null;
+        _cachedProcessVram = null;
     }
 
     public void Dispose() => DisposeCounters();

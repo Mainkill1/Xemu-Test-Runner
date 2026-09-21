@@ -34,7 +34,7 @@ public sealed class WorkstationStateMonitor : IDisposable
 
     private readonly object _gate = new();
     private readonly Action<WorkstationStateSnapshot> _onState;
-    private readonly string _eventLogPath;
+    private readonly string? _eventLogPath;
     private readonly WndProc _wndProc;
     private Thread? _thread;
     private IntPtr _window;
@@ -47,7 +47,7 @@ public sealed class WorkstationStateMonitor : IDisposable
 
     public WorkstationStateMonitor(
         Action<WorkstationStateSnapshot> onState,
-        string eventLogPath)
+        string? eventLogPath = null)
     {
         _onState = onState;
         _eventLogPath = eventLogPath;
@@ -74,18 +74,21 @@ public sealed class WorkstationStateMonitor : IDisposable
             return;
         }
 
-        Directory.CreateDirectory(Path.GetDirectoryName(_eventLogPath)!);
-        _eventWriter = new StreamWriter(
-            new FileStream(
-                _eventLogPath,
-                FileMode.Append,
-                FileAccess.Write,
-                FileShare.Read,
-                16384),
-            new System.Text.UTF8Encoding(false))
+        if (!string.IsNullOrWhiteSpace(_eventLogPath))
         {
-            AutoFlush = true
-        };
+            Directory.CreateDirectory(Path.GetDirectoryName(_eventLogPath)!);
+            _eventWriter = new StreamWriter(
+                new FileStream(
+                    _eventLogPath,
+                    FileMode.Append,
+                    FileAccess.Write,
+                    FileShare.Read,
+                    16384),
+                new System.Text.UTF8Encoding(false))
+            {
+                AutoFlush = true
+            };
+        }
 
         _thread = new Thread(MessageLoop)
         {

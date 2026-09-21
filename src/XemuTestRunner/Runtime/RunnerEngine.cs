@@ -42,21 +42,14 @@ public sealed class RunnerEngine
 
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        var telemetryDirectory = Path.Combine(_paths.Workspace, "Telemetry");
-        Directory.CreateDirectory(telemetryDirectory);
-
-        MetricCollector? hostCollector = null;
-        Task? hostTelemetryTask = null;
+        MetricCollector? telemetry = null;
+        Task? telemetryTask = null;
         if (_config.Monitoring.Enabled)
         {
-            hostCollector = new MetricCollector(_config.Monitoring, _state.SetLatestMetric);
-            var hostCsv = Path.Combine(
-                telemetryDirectory,
-                $"host-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmssfff}.csv");
-            hostTelemetryTask = hostCollector.RunHostAsync(
-                hostCsv,
-                () => _state.HasActiveJob,
-                lifetime.Token);
+            telemetry = new MetricCollector(
+                _config.Monitoring,
+                _state.SetLatestMetric);
+            telemetryTask = telemetry.RunAsync(lifetime.Token);
         }
 
         long lastWorkstationEvent = 0;
@@ -66,14 +59,17 @@ public sealed class RunnerEngine
                 _state.SetWorkstationState(workstation);
 
                 if (workstation.EventSequence > 0 &&
-                    workstation.EventSequence != Interlocked.Read(ref lastWorkstationEvent))
+                    workstation.EventSequence !=
+                        Interlocked.Read(ref lastWorkstationEvent))
                 {
-                    Interlocked.Exchange(ref lastWorkstationEvent, workstation.EventSequence);
+                    Interlocked.Exchange(
+                        ref lastWorkstationEvent,
+                        workstation.EventSequence);
+
                     if (_state.HasActiveJob)
                         _activity.Mark("host_state", workstation);
                 }
-            },
-            Path.Combine(telemetryDirectory, "workstation-events.jsonl"));
+            });
         workstationMonitor.Start();
 
         var server = new EmbeddedHttpServer(
@@ -97,28 +93,82 @@ public sealed class RunnerEngine
             {
                 if (serverTask.IsFaulted)
                     await serverTask.ConfigureAwait(false);
+                if (telemetryTask?.IsFaulted == true)
+                    await telemetryTask.ConfigureAwait(false);
 
                 if (_queue.GetTestingJobs().Count > 0)
                 {
-                    _state.SetPhase("interrupted");
+                    var queueIssue = _state.Snapshot().QueueIssue;
+                    _state.SetPhase(
+                        queueIssue?.HoldsTesting == true
+                            ? "queue_blocked"
+                            : "interrupted");
+
                     if (once)
                         break;
-                    await Task.Delay(_config.Queue.ScanIntervalMs, lifetime.Token).ConfigureAwait(false);
+
+                    await Task.Delay(
+                        _config.Queue.ScanIntervalMs,
+                        lifetime.Token).ConfigureAwait(false);
                     continue;
                 }
 
-                var package = _queue.TryClaimNext();
+                var claim = _queue.TryClaimNext();
                 _state.SetQueue(_queue.Snapshot());
-                if (package is null)
+
+                if (claim.Issue is not null)
                 {
-                    _state.SetPhase(once ? "finished" : "idle");
-                    if (once)
+                    _state.SetQueueIssue(claim.Issue);
+                    _state.SetPhase(
+                        claim.Issue.Retryable
+                            ? "waiting_for_package"
+                            : "queue_blocked");
+
+                    if (once && !claim.Issue.Retryable)
                         break;
-                    await Task.Delay(_config.Queue.ScanIntervalMs, lifetime.Token).ConfigureAwait(false);
+
+                    await Task.Delay(
+                        _config.Queue.ScanIntervalMs,
+                        lifetime.Token).ConfigureAwait(false);
                     continue;
                 }
 
-                await ExecuteJobAsync(package, serverTask, lifetime.Token).ConfigureAwait(false);
+                if (claim.Package is null)
+                {
+                    _state.SetQueueIssue(null);
+                    _state.SetPhase(once ? "finished" : "idle");
+
+                    if (once)
+                        break;
+
+                    await Task.Delay(
+                        _config.Queue.ScanIntervalMs,
+                        lifetime.Token).ConfigureAwait(false);
+                    continue;
+                }
+
+                var claimIssue = _queue.VerifyClaimedPackage(claim.Package);
+                if (claimIssue is not null)
+                {
+                    _state.SetQueueIssue(claimIssue);
+                    _state.SetQueue(_queue.Snapshot());
+                    _state.SetPhase("queue_blocked");
+
+                    if (once)
+                        break;
+
+                    await Task.Delay(
+                        _config.Queue.ScanIntervalMs,
+                        lifetime.Token).ConfigureAwait(false);
+                    continue;
+                }
+
+                _state.SetQueueIssue(null);
+                await ExecuteJobAsync(
+                    claim.Package,
+                    serverTask,
+                    telemetry,
+                    lifetime.Token).ConfigureAwait(false);
                 _state.SetQueue(_queue.Snapshot());
             }
         }
@@ -138,9 +188,16 @@ public sealed class RunnerEngine
             _activity.Detach();
             _control.End();
 
-            try { if (hostTelemetryTask is not null) await hostTelemetryTask.ConfigureAwait(false); }
-            catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
-            hostCollector?.Dispose();
+            try
+            {
+                if (telemetryTask is not null)
+                    await telemetryTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (lifetime.IsCancellationRequested)
+            {
+            }
+            telemetry?.Dispose();
 
             try { await serverTask.ConfigureAwait(false); }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
@@ -150,7 +207,11 @@ public sealed class RunnerEngine
         }
     }
 
-    private async Task ExecuteJobAsync(string package, Task serverTask, CancellationToken ct)
+    private async Task ExecuteJobAsync(
+        string package,
+        Task serverTask,
+        MetricCollector? telemetry,
+        CancellationToken ct)
     {
         var startedUtc = DateTimeOffset.UtcNow;
         var runId = $"{startedUtc:yyyyMMdd-HHmmssfff}-{Guid.NewGuid():N}";
@@ -179,8 +240,10 @@ public sealed class RunnerEngine
         using var logsCts = new CancellationTokenSource();
         using var activity = new RunActivity(resultDirectory);
 
-        MetricCollector? collector = null;
-        Task? monitor = null;
+        MetricRecordingSummary? metricSummary = null;
+        bool metricRecordingStarted = false;
+        bool holdPackage = false;
+        QueueIssue? packageIssue = null;
         Task? plan = null;
         Task? watchdog = null;
         Task? stdout = null;
@@ -191,12 +254,26 @@ public sealed class RunnerEngine
 
         try
         {
-            attempt.Attempt = (AttemptJournal.Read(package)?.Attempt ?? 0) + 1;
+            attempt.Attempt =
+                (AttemptJournal.Read(package)?.Attempt ?? 0) + 1;
             AttemptJournal.Write(package, attempt);
-            File.Copy(Path.Combine(package, "job.json"), Path.Combine(resultDirectory, "job.json"));
+
+            var sourceManifest = Path.Combine(package, "job.json");
+            var resultManifest = Path.Combine(resultDirectory, "job.json");
+            try
+            {
+                File.Copy(sourceManifest, resultManifest);
+            }
+            catch (Exception ex) when (
+                ex is IOException or UnauthorizedAccessException)
+            {
+                throw new PackageMutationException(
+                    $"The claimed package changed or became unavailable before its job plan could be frozen for this run: {ex.Message}",
+                    ex);
+            }
 
             _state.SetPhase("preflight");
-            job = JobDefinition.LoadPackage(package);
+            job = JobDefinition.LoadPackage(package, resultManifest);
             preflight = await Preflight.CheckAsync(
                 job,
                 package,
@@ -236,11 +313,42 @@ public sealed class RunnerEngine
                     preflight = AddPreflightFailure(preflight, "renderdoc_python", renderDocPython.Detail);
             }
 
-            AtomicJson.Write(Path.Combine(resultDirectory, "preflight.json"), preflight);
+            AtomicJson.Write(
+                Path.Combine(resultDirectory, "preflight.json"),
+                preflight);
+
             if (!preflight.Passed)
             {
-                status = "preflight_failed";
-                detail = "See preflight.json.";
+                var packageChanged = preflight.Checks.Any(check =>
+                    !check.Passed &&
+                    check.Name is
+                        "package" or
+                        "executable" or
+                        "executable_stable" or
+                        "required_file" or
+                        "working_directory");
+
+                if (packageChanged)
+                {
+                    status = "package_changed";
+                    detail =
+                        "Package integrity changed after claim. See preflight.json. " +
+                        "The package is being held in Testing instead of being launched.";
+                    holdPackage = true;
+                    packageIssue = new QueueIssue(
+                        "package_changed_during_preflight",
+                        Path.GetFileName(package),
+                        detail,
+                        DateTimeOffset.UtcNow,
+                        Retryable: false,
+                        HoldsTesting: true);
+                    _state.SetQueueIssue(packageIssue);
+                }
+                else
+                {
+                    status = "preflight_failed";
+                    detail = "See preflight.json.";
+                }
             }
             else
             {
@@ -284,6 +392,15 @@ public sealed class RunnerEngine
                 attempt.Phase = "starting";
                 AttemptJournal.Write(package, attempt);
                 status = "start_failed";
+
+                var finalClaimIssue =
+                    _queue.VerifyClaimedPackage(package);
+                if (finalClaimIssue is not null)
+                {
+                    throw new PackageMutationException(
+                        finalClaimIssue.Message,
+                        new IOException(finalClaimIssue.Code));
+                }
 
                 launch = await TargetLaunch.StartAsync(
                     _config.Diagnostics,
@@ -334,17 +451,16 @@ public sealed class RunnerEngine
                     });
                 }
 
-                // Start host/process telemetry as soon as the target exists. QMP,
-                // input, screenshots and diagnostics are optional control layers;
-                // they must not prevent CPU/RAM/GPU evidence from being collected.
-                if (_config.Monitoring.Enabled)
+                // The lifetime collector already samples host state. Attaching
+                // the xemu process also enables per-run CSV recording; no second
+                // polling loop is created.
+                if (telemetry is not null)
                 {
-                    collector = new MetricCollector(_config.Monitoring, _state.SetLatestMetric);
-                    gpuProviders = collector.GpuProviders.ToArray();
-                    monitor = collector.RunAsync(
+                    gpuProviders = telemetry.GpuProviders.ToArray();
+                    telemetry.StartRecording(
                         process,
-                        Path.Combine(resultDirectory, "metrics.csv"),
-                        tasksCts.Token);
+                        Path.Combine(resultDirectory, "metrics.csv"));
+                    metricRecordingStarted = true;
                 }
 
                 if (_config.XemuControl.Enabled)
@@ -412,8 +528,6 @@ public sealed class RunnerEngine
                     waiting.Add(serverTask);
                 if (plan is not null)
                     waiting.Add(plan);
-                if (monitor is not null)
-                    waiting.Add(monitor);
                 if (watch is not null)
                     waiting.Add(watch);
 
@@ -486,6 +600,20 @@ public sealed class RunnerEngine
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             status = "cancelled";
+        }
+        catch (PackageMutationException ex)
+        {
+            status = "package_changed";
+            detail = ex.Message;
+            holdPackage = true;
+            packageIssue = new QueueIssue(
+                "package_changed_during_preflight",
+                Path.GetFileName(package),
+                detail,
+                DateTimeOffset.UtcNow,
+                Retryable: false,
+                HoldsTesting: true);
+            _state.SetQueueIssue(packageIssue);
         }
         catch (Exception ex)
         {
@@ -577,7 +705,21 @@ public sealed class RunnerEngine
             _diagnostics.Detach();
             _activity.Detach();
             _control.End();
-            await SettleAsync(monitor, "monitor").ConfigureAwait(false);
+
+            if (metricRecordingStarted && telemetry is not null)
+            {
+                try
+                {
+                    metricSummary =
+                        await telemetry.StopRecordingAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    status = "runner_error";
+                    detail = (detail ?? "") +
+                        " Metric recording finalization failed: " + ex.Message;
+                }
+            }
 
             if (stdout is not null || stderr is not null)
             {
@@ -598,7 +740,6 @@ public sealed class RunnerEngine
                 await SettleAsync(stderr, "stderr").ConfigureAwait(false);
             }
 
-            collector?.Dispose();
             if (stdoutFile is not null)
                 await stdoutFile.DisposeAsync().ConfigureAwait(false);
             if (stderrFile is not null)
@@ -637,22 +778,33 @@ public sealed class RunnerEngine
             workstationStart,
             workstationEnd = _state.Snapshot().Workstation,
             host = HostInfo(),
-            monitoring = collector is null ? null : new
+            monitoring = metricSummary is null ? null : new
             {
                 intervalMs = _config.Monitoring.IntervalMs,
-                samples = collector.SampleCount,
-                overruns = collector.OverrunCount,
-                droppedWriteSamples = collector.DroppedWriteSamples,
-                gpuProviders
+                samples = metricSummary.Samples,
+                overruns = metricSummary.Overruns,
+                droppedWriteSamples = metricSummary.DroppedWriteSamples,
+                gpuProviders = metricSummary.GpuProviders
             }
         });
 
         if ((started && !exited) || componentStuck)
             throw new IOException(detail);
 
+        if (holdPackage)
+        {
+            attempt.Phase = "held";
+            AttemptJournal.Write(package, attempt);
+            _state.EndJob(status, job?.Id ?? Path.GetFileName(package));
+            _state.SetQueueIssue(packageIssue);
+            _state.SetPhase("queue_blocked");
+            return;
+        }
+
         attempt.Phase = "finalized";
         AttemptJournal.Write(package, attempt);
         _queue.Complete(package);
+        _state.SetQueueIssue(null);
         _state.EndJob(status, job?.Id ?? Path.GetFileName(package));
 
         async Task SettleAsync(Task? task, string component)
@@ -735,6 +887,17 @@ public sealed class RunnerEngine
                 break;
             await destination.WriteAsync(buffer.AsMemory(0, count), ct).ConfigureAwait(false);
             await destination.FlushAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    private sealed class PackageMutationException :
+        IOException
+    {
+        public PackageMutationException(
+            string message,
+            Exception innerException)
+            : base(message, innerException)
+        {
         }
     }
 
