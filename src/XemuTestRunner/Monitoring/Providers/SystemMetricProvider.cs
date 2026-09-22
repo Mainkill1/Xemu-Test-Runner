@@ -1,364 +1,232 @@
+using System.ComponentModel;
 using System.Diagnostics;
-using System.Globalization;
-using System.Runtime.InteropServices;
+using System.Security;
 
 namespace XemuTestRunner.Monitoring.Providers;
 
-public sealed class SystemMetricProvider : IDisposable
+/// <summary>
+/// Samples inexpensive host and target-process counters. One unavailable counter
+/// must not stop the lifetime sampler or erase unrelated values.
+/// </summary>
+public sealed partial class SystemMetricProvider : IDisposable
 {
-    private ulong _previousIdle;
-    private ulong _previousTotal;
-    private bool _hasHostCpu;
+    private CpuCounters? _previousHostCpu;
+    private int? _processId;
     private TimeSpan _previousProcessCpu;
     private long _previousProcessTimestamp;
     private bool _hasProcessCpu;
-    private long _previousReadBytes;
-    private long _previousWriteBytes;
+    private IoCountersSnapshot? _previousIo;
     private long _previousIoTimestamp;
-    private bool _hasProcessIo;
-    private int? _processId;
 
     public SystemSample Sample(Process? process, bool processIo)
     {
         var errors = new List<string>();
-
         double? hostCpu = null;
-        try { hostCpu = SampleHostCpu(); }
-        catch (Exception ex) { errors.Add("host_cpu: " + ex.Message); }
-
         MemorySnapshot memory = default;
-        try { memory = SampleMemory(); }
-        catch (Exception ex) { errors.Add("memory: " + ex.Message); }
+
+        try
+        {
+            hostCpu = SampleHostCpu();
+        }
+        catch (Exception exception) when (IsCounterReadFailure(exception))
+        {
+            _previousHostCpu = null;
+            errors.Add("host_cpu: " + exception.Message);
+        }
+
+        try
+        {
+            memory = ReadHostMemory();
+        }
+        catch (Exception exception) when (IsCounterReadFailure(exception))
+        {
+            errors.Add("memory: " + exception.Message);
+        }
 
         double? processCpu = null;
         long? workingSet = null;
         long? privateBytes = null;
-        double? readBps = null;
-        double? writeBps = null;
+        double? readBytesPerSecond = null;
+        double? writeBytesPerSecond = null;
 
-        if (process is null)
+        var processAvailable = RefreshTarget(process, errors);
+        if (processAvailable && process is not null)
         {
-            if (_processId is not null)
-            {
-                _processId = null;
-                _hasProcessCpu = false;
-                _hasProcessIo = false;
-            }
-        }
-        else
-        {
-            if (_processId != process.Id)
-            {
-                _processId = process.Id;
-                _hasProcessCpu = false;
-                _hasProcessIo = false;
-            }
             try
             {
-                process.Refresh();
-                if (!process.HasExited)
-                {
-                    workingSet = process.WorkingSet64;
-                    privateBytes = process.PrivateMemorySize64;
-                }
+                workingSet = process.WorkingSet64;
+                privateBytes = process.PrivateMemorySize64;
             }
-            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+            catch (Exception exception) when (IsCounterReadFailure(exception))
             {
-                errors.Add("process_memory: " + ex.Message);
+                errors.Add("process_memory: " + exception.Message);
             }
 
-            try { processCpu = SampleProcessCpu(process); }
-            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+            try
             {
-                errors.Add("process_cpu: " + ex.Message);
+                processCpu = SampleProcessCpu(process);
+            }
+            catch (Exception exception) when (IsCounterReadFailure(exception))
+            {
+                _hasProcessCpu = false;
+                errors.Add("process_cpu: " + exception.Message);
             }
 
             if (processIo)
             {
-                try { (readBps, writeBps) = SampleProcessIo(process); }
-                catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+                try
                 {
-                    errors.Add("process_io: " + ex.Message);
+                    (readBytesPerSecond, writeBytesPerSecond) = SampleProcessIo(process);
                 }
+                catch (Exception exception) when (IsCounterReadFailure(exception))
+                {
+                    // /proc/<pid>/io can disappear or become inaccessible during
+                    // exit. Re-prime on recovery instead of inventing a zero rate.
+                    _previousIo = null;
+                    errors.Add("process_io: " + exception.Message);
+                }
+            }
+            else
+            {
+                _previousIo = null;
             }
         }
 
         return new SystemSample(
-            hostCpu,
-            processCpu,
-            memory.Total,
-            memory.Used,
-            memory.Available,
-            workingSet,
-            privateBytes,
-            memory.SwapTotal,
-            memory.SwapUsed,
-            memory.PageFileUsagePercent,
-            readBps,
-            writeBps,
-            errors);
+            hostCpu, processCpu,
+            memory.Total, memory.Used, memory.Available,
+            workingSet, privateBytes,
+            memory.SwapTotal, memory.SwapUsed, memory.PageFileUsagePercent,
+            readBytesPerSecond, writeBytesPerSecond, errors);
+    }
+
+    private bool RefreshTarget(Process? process, List<string> errors)
+    {
+        if (process is null)
+        {
+            ResetTarget(null);
+            return false;
+        }
+
+        try
+        {
+            process.Refresh();
+            if (process.HasExited)
+            {
+                ResetTarget(null);
+                return false;
+            }
+
+            if (_processId != process.Id)
+            {
+                ResetTarget(process.Id);
+            }
+
+            return true;
+        }
+        catch (Exception exception) when (IsCounterReadFailure(exception))
+        {
+            ResetTarget(null);
+            errors.Add("process: " + exception.Message);
+            return false;
+        }
+    }
+
+    private void ResetTarget(int? processId)
+    {
+        _processId = processId;
+        _hasProcessCpu = false;
+        _previousIo = null;
     }
 
     private double? SampleHostCpu()
     {
-        (ulong Idle, ulong Total)? values = OperatingSystem.IsWindows()
+        CpuCounters? current = OperatingSystem.IsWindows()
             ? ReadWindowsCpu()
-            : OperatingSystem.IsLinux()
-                ? ReadLinuxCpu()
-                : null;
+            : OperatingSystem.IsLinux() ? ReadLinuxCpu() : null;
 
-        if (values is null)
-            return null;
-
-        if (!_hasHostCpu)
+        var previous = _previousHostCpu;
+        _previousHostCpu = current;
+        if (current is null || previous is null)
         {
-            _previousIdle = values.Value.Idle;
-            _previousTotal = values.Value.Total;
-            _hasHostCpu = true;
             return null;
         }
 
-        var idleDelta = values.Value.Idle - _previousIdle;
-        var totalDelta = values.Value.Total - _previousTotal;
-        _previousIdle = values.Value.Idle;
-        _previousTotal = values.Value.Total;
+        // Counter resets and Linux iowait corrections can move a value backward.
+        // Such an interval is unknown, not an unsigned-underflow CPU spike.
+        if (current.Value.Total <= previous.Value.Total ||
+            current.Value.Idle < previous.Value.Idle)
+        {
+            return null;
+        }
 
-        return totalDelta == 0
-            ? null
-            : Math.Clamp((1.0 - (double)idleDelta / totalDelta) * 100.0, 0, 100);
+        var idleDelta = current.Value.Idle - previous.Value.Idle;
+        var totalDelta = current.Value.Total - previous.Value.Total;
+        return Math.Clamp((1.0 - (double)idleDelta / totalDelta) * 100.0, 0, 100);
     }
 
     private double? SampleProcessCpu(Process process)
     {
-        var now = Stopwatch.GetTimestamp();
-        var cpu = process.TotalProcessorTime;
+        var timestamp = Stopwatch.GetTimestamp();
+        var cpuTime = process.TotalProcessorTime;
+        var elapsedSeconds = (double)(timestamp - _previousProcessTimestamp) / Stopwatch.Frequency;
+        var cpuSeconds = (cpuTime - _previousProcessCpu).TotalSeconds;
+        var canCalculate = _hasProcessCpu && elapsedSeconds > 0 && cpuSeconds >= 0;
 
-        if (!_hasProcessCpu)
-        {
-            _previousProcessTimestamp = now;
-            _previousProcessCpu = cpu;
-            _hasProcessCpu = true;
-            return null;
-        }
+        _previousProcessTimestamp = timestamp;
+        _previousProcessCpu = cpuTime;
+        _hasProcessCpu = true;
 
-        var elapsedSeconds = (double)(now - _previousProcessTimestamp) / Stopwatch.Frequency;
-        var cpuSeconds = (cpu - _previousProcessCpu).TotalSeconds;
-        _previousProcessTimestamp = now;
-        _previousProcessCpu = cpu;
-
-        return elapsedSeconds <= 0
-            ? null
-            : Math.Max(0, cpuSeconds / elapsedSeconds * 100.0);
+        // Core percent deliberately exceeds 100 when the process uses multiple cores.
+        return canCalculate ? cpuSeconds / elapsedSeconds * 100.0 : null;
     }
 
-    private (double? ReadBps, double? WriteBps) SampleProcessIo(Process process)
+    private (double? Read, double? Write) SampleProcessIo(Process process)
     {
-        (long Read, long Write)? io = OperatingSystem.IsWindows()
+        IoCountersSnapshot? current = OperatingSystem.IsWindows()
             ? ReadWindowsProcessIo(process.Handle)
-            : OperatingSystem.IsLinux()
-                ? ReadLinuxProcessIo(process.Id)
-                : null;
+            : OperatingSystem.IsLinux() ? ReadLinuxProcessIo(process.Id) : null;
 
-        if (io is null)
-            return (null, null);
+        var timestamp = Stopwatch.GetTimestamp();
+        var previous = _previousIo;
+        var elapsedSeconds = (double)(timestamp - _previousIoTimestamp) / Stopwatch.Frequency;
+        _previousIo = current;
+        _previousIoTimestamp = timestamp;
 
-        var now = Stopwatch.GetTimestamp();
-        if (!_hasProcessIo)
+        if (current is null || previous is null || elapsedSeconds <= 0 ||
+            current.Value.Read < previous.Value.Read || current.Value.Write < previous.Value.Write)
         {
-            _previousReadBytes = io.Value.Read;
-            _previousWriteBytes = io.Value.Write;
-            _previousIoTimestamp = now;
-            _hasProcessIo = true;
             return (null, null);
         }
 
-        var elapsed = (double)(now - _previousIoTimestamp) / Stopwatch.Frequency;
-        if (elapsed <= 0)
-            return (null, null);
-
-        var read = Math.Max(0, io.Value.Read - _previousReadBytes) / elapsed;
-        var write = Math.Max(0, io.Value.Write - _previousWriteBytes) / elapsed;
-        _previousReadBytes = io.Value.Read;
-        _previousWriteBytes = io.Value.Write;
-        _previousIoTimestamp = now;
-        return (read, write);
+        return (
+            (current.Value.Read - previous.Value.Read) / elapsedSeconds,
+            (current.Value.Write - previous.Value.Write) / elapsedSeconds);
     }
 
-    private static MemorySnapshot SampleMemory()
+    private static MemorySnapshot ReadHostMemory()
     {
         if (OperatingSystem.IsWindows())
         {
-            var status = new MemoryStatusEx();
-            if (!GlobalMemoryStatusEx(status))
-                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
-
-            var total = checked((long)status.TotalPhys);
-            var available = checked((long)status.AvailPhys);
-            var commitLimit = status.TotalPageFile;
-            var commitAvailable = status.AvailPageFile;
-            var commitUsage = commitLimit == 0
-                ? null
-                : (double?)Math.Clamp(
-                    (1.0 - (double)commitAvailable / commitLimit) * 100.0,
-                    0,
-                    100);
-
-            return new(
-                total,
-                Math.Max(0, total - available),
-                available,
-                null,
-                null,
-                commitUsage);
+            return ReadWindowsMemory();
         }
 
-        if (OperatingSystem.IsLinux())
-        {
-            var values = File.ReadLines("/proc/meminfo")
-                .Select(line => line.Split(':', 2))
-                .Where(parts => parts.Length == 2)
-                .ToDictionary(
-                    parts => parts[0],
-                    parts => ParseMemInfoBytes(parts[1]),
-                    StringComparer.Ordinal);
-
-            var total = values.GetValueOrDefault("MemTotal");
-            var available = values.GetValueOrDefault("MemAvailable");
-            var swapTotal = values.GetValueOrDefault("SwapTotal");
-            var swapFree = values.GetValueOrDefault("SwapFree");
-            return new(
-                total,
-                Math.Max(0, total - available),
-                available,
-                swapTotal,
-                Math.Max(0, swapTotal - swapFree),
-                null);
-        }
-
-        return default;
+        return OperatingSystem.IsLinux() ? ReadLinuxMemory() : default;
     }
 
-    private static long ParseMemInfoBytes(string value)
-    {
-        var first = value.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
-        return long.TryParse(first, NumberStyles.Integer, CultureInfo.InvariantCulture, out var kb)
-            ? kb * 1024
-            : 0;
-    }
+    private static bool IsCounterReadFailure(Exception exception) =>
+        exception is IOException or UnauthorizedAccessException or Win32Exception or
+            InvalidOperationException or NotSupportedException or SecurityException or
+            FormatException or OverflowException;
 
-    private static (ulong Idle, ulong Total)? ReadLinuxCpu()
-    {
-        var line = File.ReadLines("/proc/stat").First();
-        var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 5 || parts[0] != "cpu")
-            return null;
-
-        ulong total = 0;
-        for (var i = 1; i < parts.Length; i++)
-            if (ulong.TryParse(parts[i], NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
-                total += value;
-
-        var idle = ulong.Parse(parts[4], CultureInfo.InvariantCulture);
-        if (parts.Length > 5 &&
-            ulong.TryParse(parts[5], NumberStyles.Integer, CultureInfo.InvariantCulture, out var ioWait))
-            idle += ioWait;
-
-        return (idle, total);
-    }
-
-    private static (ulong Idle, ulong Total)? ReadWindowsCpu()
-    {
-        if (!GetSystemTimes(out var idle, out var kernel, out var user))
-            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
-
-        var idleValue = ToUInt64(idle);
-        return (idleValue, ToUInt64(kernel) + ToUInt64(user));
-    }
-
-    private static (long Read, long Write)? ReadLinuxProcessIo(int pid)
-    {
-        long read = 0;
-        long write = 0;
-        foreach (var line in File.ReadLines($"/proc/{pid}/io"))
-        {
-            if (line.StartsWith("read_bytes:", StringComparison.Ordinal))
-                long.TryParse(line.AsSpan("read_bytes:".Length).Trim(), out read);
-            else if (line.StartsWith("write_bytes:", StringComparison.Ordinal))
-                long.TryParse(line.AsSpan("write_bytes:".Length).Trim(), out write);
-        }
-        return (read, write);
-    }
-
-    private static (long Read, long Write)? ReadWindowsProcessIo(IntPtr handle)
-    {
-        if (!GetProcessIoCounters(handle, out var counters))
-            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
-
-        return (
-            checked((long)counters.ReadTransferCount),
-            checked((long)counters.WriteTransferCount));
-    }
-
-    private static ulong ToUInt64(FileTime fileTime) =>
-        ((ulong)fileTime.High << 32) | fileTime.Low;
-
+    // Providers use short-lived reads; the interface is retained for collector ownership.
     public void Dispose() { }
 
+    private readonly record struct CpuCounters(ulong Idle, ulong Total);
+    private readonly record struct IoCountersSnapshot(long Read, long Write);
     private readonly record struct MemorySnapshot(
-        long? Total,
-        long? Used,
-        long? Available,
-        long? SwapTotal,
-        long? SwapUsed,
-        double? PageFileUsagePercent);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool GetSystemTimes(
-        out FileTime idleTime,
-        out FileTime kernelTime,
-        out FileTime userTime);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GlobalMemoryStatusEx([In, Out] MemoryStatusEx buffer);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetProcessIoCounters(
-        IntPtr processHandle,
-        out IoCounters counters);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct FileTime
-    {
-        public uint Low;
-        public uint High;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private sealed class MemoryStatusEx
-    {
-        public uint Length = (uint)Marshal.SizeOf<MemoryStatusEx>();
-        public uint MemoryLoad;
-        public ulong TotalPhys;
-        public ulong AvailPhys;
-        public ulong TotalPageFile;
-        public ulong AvailPageFile;
-        public ulong TotalVirtual;
-        public ulong AvailVirtual;
-        public ulong AvailExtendedVirtual;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct IoCounters
-    {
-        public ulong ReadOperationCount;
-        public ulong WriteOperationCount;
-        public ulong OtherOperationCount;
-        public ulong ReadTransferCount;
-        public ulong WriteTransferCount;
-        public ulong OtherTransferCount;
-    }
+        long? Total, long? Used, long? Available,
+        long? SwapTotal, long? SwapUsed, double? PageFileUsagePercent);
 }
 
 public sealed record SystemSample(

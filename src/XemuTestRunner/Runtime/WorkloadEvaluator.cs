@@ -1,15 +1,9 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 using XemuTestRunner.Queue;
 
 namespace XemuTestRunner.Runtime;
 
-public sealed record ReportedMeasurement(
-    string Name,
-    double Value,
-    string Unit,
-    string Direction,
-    string Source);
+public sealed record ReportedMeasurement(string Name, double Value, string Unit, string Direction, string Source);
 
 public sealed record WorkloadEvaluation(
     CorrectnessOutcome Correctness,
@@ -17,6 +11,7 @@ public sealed record WorkloadEvaluation(
     IReadOnlyList<AssessmentCheck> Checks,
     IReadOnlyList<ReportedMeasurement> Measurements);
 
+/// <summary>Evaluates each declared requirement independently; one unreadable artifact must not hide the others.</summary>
 public static class WorkloadEvaluator
 {
     public static async Task<WorkloadEvaluation> EvaluateAsync(
@@ -31,433 +26,155 @@ public static class WorkloadEvaluator
         var checks = new List<AssessmentCheck>();
         var measurements = new List<ReportedMeasurement>();
 
-        foreach (var definition in
-                 job.Workload.CorrectnessChecks)
+        foreach (var requirement in job.Workload.CorrectnessChecks)
         {
-            checks.Add(await EvaluateArtifactAsync(
-                definition,
-                "correctness",
-                packageDirectory,
-                resultDirectory,
-                runtime,
-                cancellationToken).ConfigureAwait(false));
+            checks.Add(await EvaluateArtifactAsync(requirement, "correctness",
+                packageDirectory, resultDirectory, runtime, cancellationToken).ConfigureAwait(false));
         }
 
-        foreach (var definition in
-                 job.Workload.EvidenceRequirements)
+        foreach (var requirement in job.Workload.EvidenceRequirements)
         {
-            checks.Add(await EvaluateArtifactAsync(
-                definition,
-                "evidence",
-                packageDirectory,
-                resultDirectory,
-                runtime,
-                cancellationToken).ConfigureAwait(false));
+            checks.Add(await EvaluateArtifactAsync(requirement, "evidence",
+                packageDirectory, resultDirectory, runtime, cancellationToken).ConfigureAwait(false));
         }
 
         if (job.Workload.MinimumMetricSamples > 0)
         {
             checks.Add(new AssessmentCheck(
-                "minimum_metric_samples",
-                metricSamples >=
-                    job.Workload.MinimumMetricSamples,
-                "evidence",
+                "minimum_metric_samples", metricSamples >= job.Workload.MinimumMetricSamples, "evidence",
                 $"Required >= {job.Workload.MinimumMetricSamples}; actual {metricSamples}."));
         }
 
-        if (job.Workload.RequirePlanCompletion &&
-            job.Plan.Count > 0)
+        if (job.Workload.RequirePlanCompletion && job.Plan.Count > 0)
         {
-            checks.Add(new AssessmentCheck(
-                "plan_completion",
-                planCompleted,
-                "evidence",
-                planCompleted
-                    ? "The declared plan completed."
-                    : "The declared plan did not complete."));
+            checks.Add(new AssessmentCheck("plan_completion", planCompleted, "evidence",
+                planCompleted ? "The declared plan completed." : "The declared plan did not complete."));
         }
 
-        foreach (var metric in
-                 job.Workload.ReportedMetrics)
+        foreach (var definition in job.Workload.ReportedMetrics)
         {
-            var measured =
-                await TryReadReportedMetricAsync(
-                    metric,
-                    packageDirectory,
-                    resultDirectory,
-                    runtime,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (measured.Measurement is not null)
-                measurements.Add(measured.Measurement);
-
-            if (metric.Required)
+            var result = await ReadMeasurementAsync(definition,
+                packageDirectory, resultDirectory, runtime, cancellationToken).ConfigureAwait(false);
+            if (result.Measurement is not null)
             {
-                checks.Add(new AssessmentCheck(
-                    "metric:" + metric.Name,
-                    measured.Measurement is not null,
-                    "evidence",
-                    measured.Detail));
+                measurements.Add(result.Measurement);
+            }
+
+            if (definition.Required)
+            {
+                checks.Add(new AssessmentCheck("metric:" + definition.Name,
+                    result.Measurement is not null, "evidence", result.Detail));
             }
         }
 
-        var correctnessChecks = checks
-            .Where(check =>
-                check.Category == "correctness")
-            .ToArray();
-        var evidenceChecks = checks
-            .Where(check =>
-                check.Category == "evidence")
-            .ToArray();
-
-        var correctness =
-            correctnessChecks.Length == 0
-                ? CorrectnessOutcome.NotEvaluated
-                : correctnessChecks.All(
-                    check => check.Passed)
-                    ? CorrectnessOutcome.Passed
-                    : CorrectnessOutcome.Failed;
-
-        var evidence =
-            evidenceChecks.Length == 0
-                ? EvidenceOutcome.NotEvaluated
-                : evidenceChecks.All(
-                    check => check.Passed)
-                    ? EvidenceOutcome.Complete
-                    : EvidenceOutcome.Incomplete;
-
-        return new WorkloadEvaluation(
-            correctness,
-            evidence,
-            checks,
-            measurements);
+        var correctnessChecks = checks.Where(check => check.Category == "correctness").ToArray();
+        var evidenceChecks = checks.Where(check => check.Category == "evidence").ToArray();
+        var correctness = GetCorrectness(correctnessChecks);
+        var evidence = GetEvidence(evidenceChecks);
+        return new WorkloadEvaluation(correctness, evidence, checks, measurements);
     }
 
-    private static async Task<AssessmentCheck>
-        EvaluateArtifactAsync(
-            ArtifactCheckDefinition definition,
-            string category,
-            string packageDirectory,
-            string resultDirectory,
-            RuntimeMaterialization? runtime,
-            CancellationToken cancellationToken)
+    private static async Task<AssessmentCheck> EvaluateArtifactAsync(
+        ArtifactCheckDefinition requirement,
+        string category,
+        string packageDirectory,
+        string resultDirectory,
+        RuntimeMaterialization? runtime,
+        CancellationToken cancellationToken)
     {
-        var name = string.IsNullOrWhiteSpace(
-            definition.Name)
-            ? definition.Path
-            : definition.Name;
-
-        string path;
+        var name = string.IsNullOrWhiteSpace(requirement.Name) ? requirement.Path : requirement.Name;
         try
         {
-            path = ResolveArtifact(
-                definition,
-                packageDirectory,
-                resultDirectory,
-                runtime);
+            var path = ArtifactInspector.ResolvePath(
+                requirement.Scope, requirement.Path, packageDirectory, resultDirectory, runtime);
+            var result = await ArtifactInspector.CheckAsync(requirement, path, cancellationToken).ConfigureAwait(false);
+            return new AssessmentCheck(name, result.Passed, category, result.Detail);
         }
-        catch (Exception ex)
+        catch (Exception exception) when (ArtifactInspector.IsArtifactFailure(exception))
         {
-            return new AssessmentCheck(
-                name,
-                false,
-                category,
-                ex.Message);
+            return new AssessmentCheck(name, false, category, exception.Message);
         }
-
-        var exists = File.Exists(path);
-        if (!exists)
-        {
-            return new AssessmentCheck(
-                name,
-                !definition.MustExist,
-                category,
-                definition.MustExist
-                    ? $"Required artifact is missing: {path}"
-                    : $"Optional artifact is absent: {path}");
-        }
-
-        var info = new FileInfo(path);
-        if (definition.MinimumBytes > 0 &&
-            info.Length < definition.MinimumBytes)
-        {
-            return new AssessmentCheck(
-                name,
-                false,
-                category,
-                $"Artifact has {info.Length} bytes; expected at least {definition.MinimumBytes}.");
-        }
-
-        if (!string.IsNullOrWhiteSpace(
-                definition.ExpectedSha256))
-        {
-            var hash = await HashAsync(
-                path,
-                cancellationToken).ConfigureAwait(false);
-
-            if (!hash.Equals(
-                    definition.ExpectedSha256,
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                return new AssessmentCheck(
-                    name,
-                    false,
-                    category,
-                    $"SHA-256 mismatch. Expected {definition.ExpectedSha256}; actual {hash}.");
-            }
-        }
-
-        if (!string.IsNullOrEmpty(
-                definition.ContainsText) ||
-            definition.EqualsText is not null)
-        {
-            if (info.Length > 16 * 1024 * 1024)
-            {
-                return new AssessmentCheck(
-                    name,
-                    false,
-                    category,
-                    "Text assertion refused because the artifact exceeds 16 MiB.");
-            }
-
-            var text = await File.ReadAllTextAsync(
-                path,
-                cancellationToken).ConfigureAwait(false);
-
-            if (!string.IsNullOrEmpty(
-                    definition.ContainsText) &&
-                !text.Contains(
-                    definition.ContainsText,
-                    StringComparison.Ordinal))
-            {
-                return new AssessmentCheck(
-                    name,
-                    false,
-                    category,
-                    $"Artifact does not contain required text '{definition.ContainsText}'.");
-            }
-
-            if (definition.EqualsText is not null &&
-                !string.Equals(
-                    text,
-                    definition.EqualsText,
-                    StringComparison.Ordinal))
-            {
-                return new AssessmentCheck(
-                    name,
-                    false,
-                    category,
-                    "Artifact text does not exactly match the declared value.");
-            }
-        }
-
-        return new AssessmentCheck(
-            name,
-            true,
-            category,
-            $"{definition.Scope}:{definition.Path} satisfied the declared requirement.");
     }
 
-    private static async Task<(
-        ReportedMeasurement? Measurement,
-        string Detail)> TryReadReportedMetricAsync(
+    private static async Task<MeasurementRead> ReadMeasurementAsync(
         ReportedMetricDefinition definition,
         string packageDirectory,
         string resultDirectory,
         RuntimeMaterialization? runtime,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(definition.Name) ||
-            string.IsNullOrWhiteSpace(definition.Path) ||
+        if (string.IsNullOrWhiteSpace(definition.Name) || string.IsNullOrWhiteSpace(definition.Path) ||
             string.IsNullOrWhiteSpace(definition.JsonProperty))
         {
-            return (
-                null,
-                "Reported metric requires Name, Path, and JsonProperty.");
+            return new(null, "Reported metric requires Name, Path, and JsonProperty.");
         }
 
-        var artifactDefinition =
-            new ArtifactCheckDefinition
-            {
-                Scope = definition.Scope,
-                Path = definition.Path
-            };
-
-        string path;
-        try
+        var direction = definition.Direction?.Trim().ToLowerInvariant();
+        if (direction is not ("higher" or "lower" or "neutral"))
         {
-            path = ResolveArtifact(
-                artifactDefinition,
-                packageDirectory,
-                resultDirectory,
-                runtime);
+            return new(null, $"Metric direction '{definition.Direction}' is invalid.");
         }
-        catch (Exception ex)
-        {
-            return (null, ex.Message);
-        }
-
-        if (!File.Exists(path))
-            return (
-                null,
-                $"Metric source is missing: {path}");
-
-        var info = new FileInfo(path);
-        if (info.Length > 16 * 1024 * 1024)
-            return (
-                null,
-                "Metric JSON exceeds 16 MiB.");
 
         try
         {
-            await using var stream = new FileStream(
-                path,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete,
-                128 * 1024,
-                FileOptions.Asynchronous |
-                FileOptions.SequentialScan);
-            using var document =
-                await JsonDocument.ParseAsync(
-                    stream,
-                    cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
-
-            var element = document.RootElement;
-            foreach (var part in definition.JsonProperty
-                         .Split(
-                             '.',
-                             StringSplitOptions.RemoveEmptyEntries |
-                             StringSplitOptions.TrimEntries))
+            var path = ArtifactInspector.ResolvePath(
+                definition.Scope, definition.Path, packageDirectory, resultDirectory, runtime);
+            using var document = await ArtifactInspector.ReadJsonAsync(path, cancellationToken).ConfigureAwait(false);
+            if (!TryReadNumber(document.RootElement, definition.JsonProperty, out var value))
             {
-                if (element.ValueKind != JsonValueKind.Object ||
-                    !element.TryGetProperty(
-                        part,
-                        out element))
-                {
-                    return (
-                        null,
-                        $"JSON property '{definition.JsonProperty}' was not found in {definition.Path}.");
-                }
+                return new(null, $"JSON property '{definition.JsonProperty}' is missing or is not a finite number in {definition.Path}.");
             }
 
-            if (!element.TryGetDouble(out var value) ||
-                !double.IsFinite(value))
-            {
-                return (
-                    null,
-                    $"JSON property '{definition.JsonProperty}' is not a finite number.");
-            }
-
-            var direction =
-                definition.Direction.Trim().ToLowerInvariant();
-            if (direction is not
-                ("higher" or "lower" or "neutral"))
-            {
-                return (
-                    null,
-                    $"Metric direction '{definition.Direction}' is invalid.");
-            }
-
-            return (
-                new ReportedMeasurement(
-                    definition.Name,
-                    value,
-                    definition.Unit,
-                    direction,
-                    $"{definition.Scope}:{definition.Path}#{definition.JsonProperty}"),
+            return new(new ReportedMeasurement(definition.Name, value, definition.Unit, direction,
+                $"{definition.Scope}:{definition.Path}#{definition.JsonProperty}"),
                 "Reported metric was extracted successfully.");
         }
-        catch (Exception ex) when (
-            ex is IOException or
-            JsonException or
-            UnauthorizedAccessException)
+        catch (Exception exception) when (ArtifactInspector.IsArtifactFailure(exception))
         {
-            return (
-                null,
-                "Metric extraction failed: " + ex.Message);
+            return new(null, "Metric extraction failed: " + exception.Message);
         }
     }
 
-    private static string ResolveArtifact(
-        ArtifactCheckDefinition definition,
-        string packageDirectory,
-        string resultDirectory,
-        RuntimeMaterialization? runtime)
+    private static bool TryReadNumber(JsonElement root, string propertyPath, out double value)
     {
-        return definition.Scope
-            .Trim()
-            .ToLowerInvariant() switch
+        value = default;
+        var element = root;
+        foreach (var rawPart in propertyPath.Split('.'))
         {
-            "result" => ResolveInside(
-                resultDirectory,
-                definition.Path),
-            "package" =>
-                JobDefinition.ResolveInsidePackage(
-                    packageDirectory,
-                    definition.Path),
-            "runtime" => runtime is null
-                ? throw new InvalidDataException(
-                    "Runtime artifact requested but RuntimeState was not materialized.")
-                : RuntimeStateManager.ResolveInside(
-                    runtime.Directory,
-                    definition.Path),
-            _ => throw new InvalidDataException(
-                $"Unsupported artifact scope '{definition.Scope}'.")
-        };
+            var part = rawPart.Trim();
+            if (part.Length == 0 || element.ValueKind != JsonValueKind.Object ||
+                !element.TryGetProperty(part, out var next))
+            {
+                return false;
+            }
+
+            element = next;
+        }
+
+        // TryGetDouble still throws for non-number JSON kinds. Guard the kind first.
+        return element.ValueKind == JsonValueKind.Number &&
+            element.TryGetDouble(out value) && double.IsFinite(value);
     }
 
-    private static string ResolveInside(
-        string root,
-        string relative)
+    private static CorrectnessOutcome GetCorrectness(IReadOnlyCollection<AssessmentCheck> checks)
     {
-        if (string.IsNullOrWhiteSpace(relative) ||
-            Path.IsPathRooted(relative))
-            throw new InvalidDataException(
-                "Artifact paths must be non-empty and relative.");
+        if (checks.Count == 0)
+        {
+            return CorrectnessOutcome.NotEvaluated;
+        }
 
-        var canonicalRoot = Path.GetFullPath(root)
-            .TrimEnd(
-                Path.DirectorySeparatorChar,
-                Path.AltDirectorySeparatorChar);
-        var full = Path.GetFullPath(
-            Path.Combine(canonicalRoot, relative));
-        var comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-
-        if (!full.StartsWith(
-                canonicalRoot + Path.DirectorySeparatorChar,
-                comparison) &&
-            !string.Equals(
-                full,
-                canonicalRoot,
-                comparison))
-            throw new InvalidDataException(
-                "Artifact path escapes its declared scope.");
-
-        return full;
+        return checks.All(check => check.Passed) ? CorrectnessOutcome.Passed : CorrectnessOutcome.Failed;
     }
 
-    private static async Task<string> HashAsync(
-        string path,
-        CancellationToken cancellationToken)
+    private static EvidenceOutcome GetEvidence(IReadOnlyCollection<AssessmentCheck> checks)
     {
-        await using var stream = new FileStream(
-            path,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.ReadWrite | FileShare.Delete,
-            1024 * 1024,
-            FileOptions.Asynchronous |
-            FileOptions.SequentialScan);
+        if (checks.Count == 0)
+        {
+            return EvidenceOutcome.NotEvaluated;
+        }
 
-        return Convert.ToHexString(
-            await SHA256.HashDataAsync(
-                stream,
-                cancellationToken).ConfigureAwait(false))
-            .ToLowerInvariant();
+        return checks.All(check => check.Passed) ? EvidenceOutcome.Complete : EvidenceOutcome.Incomplete;
     }
+
+    private sealed record MeasurementRead(ReportedMeasurement? Measurement, string Detail);
 }
