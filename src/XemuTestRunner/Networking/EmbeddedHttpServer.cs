@@ -63,7 +63,7 @@ public sealed partial class EmbeddedHttpServer
             try
             {
                 await using var network = client.GetStream();
-                await using var stream = new BufferedStream(network, 65536);
+                await using var stream = new HttpDuplexStream(network, 65536);
                 while (!ct.IsCancellationRequested)
                 {
                     HttpRequest? request;
@@ -142,12 +142,12 @@ public sealed partial class EmbeddedHttpServer
                     return true;
                 case "/api/v1/preview":
                     if (!await EnsureOperationAllowedAsync(stream, "preview", keepAlive, ct))
-                        return true;
+                        return false;
                     await HandleSharedPreviewAsync(stream, keepAlive, ct);
                     return true;
                 case "/api/v1/screenshot":
                     if (!await EnsureOperationAllowedAsync(stream, "preview", keepAlive, ct))
-                        return true;
+                        return false;
                     return await HandleScreenshotAsync(stream, request, keepAlive, ct);
                 case "/api/v1/input/record": await WriteJsonAsync(stream, 200, "OK", _control.RecordingSnapshot(), keepAlive, ct); return true;
             }
@@ -158,23 +158,23 @@ public sealed partial class EmbeddedHttpServer
             {
                 case "/api/v1/input/press":
                     if (!await EnsureOperationAllowedAsync(stream, "input", keepAlive, ct))
-                        return true;
+                        return false;
                     return await HandleButtonPressAsync(stream, request, keepAlive, ct);
                 case "/api/v1/xemu/pause":
                     if (!await EnsureOperationAllowedAsync(stream, "pause", keepAlive, ct))
-                        return true;
+                        return false;
                     Activity.Mark("pause", null);
                     await HandlePauseAsync(stream, request, keepAlive, ct);
                     return true;
                 case "/api/v1/xemu/resume":
                     if (!await EnsureOperationAllowedAsync(stream, "pause", keepAlive, ct))
-                        return true;
+                        return false;
                     Activity.Mark("resume", null);
                     await HandleResumeAsync(stream, request, keepAlive, ct);
                     return true;
                 case "/api/v1/xemu/quit":
                     if (!await EnsureOperationAllowedAsync(stream, "pause", keepAlive, ct))
-                        return true;
+                        return false;
                     if (!_control.HasActiveSession)
                     {
                         await WriteApiErrorAsync(
@@ -221,7 +221,7 @@ public sealed partial class EmbeddedHttpServer
         if (request.Path.StartsWith(prefix, StringComparison.Ordinal))
         {
             if (!await EnsureOperationAllowedAsync(stream, "bulk_transfer", keepAlive, ct))
-                return true;
+                return false;
 
             var relative = request.Path[prefix.Length..];
             using var transfer = Activity.TrackTransfer(new { method = request.Method, file = relative });
@@ -274,7 +274,7 @@ public sealed partial class EmbeddedHttpServer
             policy.IsBenchmark
                 ? "Do not disturb the benchmark. If this operation is intentionally required, explicitly allow it in job.json Operations and accept the comparison-validity implications."
                 : "Change the active job operation policy only if this action is intentionally allowed.",
-            keepAlive,
+            false,
             cancellationToken,
             new
             {

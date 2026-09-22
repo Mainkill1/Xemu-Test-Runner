@@ -125,7 +125,7 @@ public sealed partial class EmbeddedHttpServer
         if (request.Method == "POST" && request.Path == "/api/v1/diagnostics/run")
         {
             if (!await EnsureOperationAllowedAsync(stream, "diagnostic", keepAlive, ct).ConfigureAwait(false))
-                return true;
+                return false;
             if (request.ContentLength is not long length || length is < 1 or > 65536)
             {
                 await WriteApiErrorAsync(
@@ -287,7 +287,7 @@ public sealed partial class EmbeddedHttpServer
                         "bulk_transfer",
                         keepAlive,
                         ct).ConfigureAwait(false))
-                    return true;
+                    return false;
 
                 var name = GetQueryValue(request.Query, "file") ?? "stdout.log";
                 var bytes = int.TryParse(GetQueryValue(request.Query, "bytes"), out var parsed) ? parsed : 32768;
@@ -301,7 +301,7 @@ public sealed partial class EmbeddedHttpServer
                         "bulk_transfer",
                         keepAlive,
                         ct).ConfigureAwait(false))
-                    return true;
+                    return false;
 
                 var path = catalog.Resolve(runId, Uri.UnescapeDataString(parts[2]));
                 // Open before sending any headers. Downloads use the actual handle length.
