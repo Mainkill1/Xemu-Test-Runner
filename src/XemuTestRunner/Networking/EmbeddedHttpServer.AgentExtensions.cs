@@ -8,6 +8,8 @@ public sealed partial class EmbeddedHttpServer
     {
         try
         {
+            var evidence = await TryFocusedEvidenceRouteAsync(stream, request, ct).ConfigureAwait(false);
+            if (evidence.HasValue) return evidence.Value;
             var library = await TryTestLibraryRouteAsync(stream, request, ct).ConfigureAwait(false);
             if (library.HasValue) return library.Value;
             var observation = await TryObservationRouteAsync(stream, request, ct).ConfigureAwait(false);
