@@ -340,7 +340,7 @@ public sealed partial class EmbeddedHttpServer
                 "Bad Request",
                 "request_body_invalid",
                 "Controller input requires a JSON body with Content-Length between 1 and 16384 bytes.",
-                "POST JSON like {"Button":"A","DurationMs":100}.",
+                "POST a JSON object with Button set to a logical Xbox button name and DurationMs set to 1..60000; for example Button=A and DurationMs=100.",
                 false,
                 ct,
                 new
@@ -402,7 +402,7 @@ public sealed partial class EmbeddedHttpServer
                 "Bad Request",
                 "request_body_invalid",
                 e.Message,
-                "POST JSON like {"Button":"A","DurationMs":100}. Button must be one of the configured logical Xbox button names.",
+                "POST a JSON object with Button set to one of the configured logical Xbox button names and DurationMs set to 1..60000.",
                 keepAlive,
                 ct).ConfigureAwait(false);
         }

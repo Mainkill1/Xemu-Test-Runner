@@ -134,7 +134,7 @@ public sealed partial class EmbeddedHttpServer
                     "Bad Request",
                     "request_body_invalid",
                     "Diagnostic request requires a JSON body with Content-Length between 1 and 65536 bytes.",
-                    "POST {"Id":"configured-recipe"} or {"Recipe":{...}}. See /api/v1/help for examples.",
+                    "POST either an Id field for a configured recipe or a Recipe object for an ad-hoc diagnostic. See /api/v1/help for examples.",
                     false,
                     ct).ConfigureAwait(false);
                 return false;
