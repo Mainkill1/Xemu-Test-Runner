@@ -33,7 +33,9 @@ Important fields: `Profile`, `DurationMs`, `OutputName`.
 
 ### perf
 
-Linux only. Attaches `perf record` to the actual xemu PID with configurable `Frequency` and `CallGraph`; resumes for `DurationMs`, pauses, stops perf with SIGINT, then generates a text report.
+Linux only. Attaches `perf record` to the actual xemu PID with configurable `Frequency`, `CallGraph`, and optional `ClockId`; resumes for `DurationMs`, pauses, stops perf with SIGINT, then generates a text report.
+
+`ClockId` is omitted by default, preserving perf's host default clock. Set `ClockId` to `1` when xemu is launched with `-jitdump` and the capture will be processed with `perf inject --jit`; Linux perf requires those JIT events and samples to use `CLOCK_MONOTONIC` (`perf record -k 1`).
 
 Host perf_event permissions and unwind support are prerequisites.
 

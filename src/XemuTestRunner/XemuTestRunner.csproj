@@ -17,6 +17,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="RunnerChecks" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Include="../../tools/*.py">
       <Link>tools/%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

@@ -34,6 +34,7 @@ public sealed class DiagnosticRecipe
     public string Profile { get; set; } = "GeneralProfile+GPU";
     public int Frequency { get; set; } = 997;
     public string CallGraph { get; set; } = "dwarf";
+    public int? ClockId { get; set; }
 
     // RenderDoc
     public int Frames { get; set; } = 1;
@@ -74,6 +75,8 @@ public sealed class DiagnosticRecipe
             throw new InvalidDataException($"Diagnostic '{Id}' DurationMs must be between 1 and 86400000.");
         if (Frequency is < 1 or > 100_000)
             throw new InvalidDataException($"Diagnostic '{Id}' Frequency must be between 1 and 100000.");
+        if (ClockId < 0)
+            throw new InvalidDataException($"Diagnostic '{Id}' ClockId cannot be negative.");
         if (Frames is < 1 or > 120)
             throw new InvalidDataException($"Diagnostic '{Id}' Frames must be between 1 and 120.");
 

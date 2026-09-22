@@ -10,3 +10,5 @@ Before staging it:
 - Confirm `xemu-test-runner tools` reports `perf` available and that the host's `perf_event_paranoid` policy permits attaching to a process owned by the same user.
 
 The diagnostic deliberately pauses and resumes xemu to define the capture window. Its result is marked `operator_intervened`; use it for attribution, not as an ordinary frame-time benchmark. For cheaper frame-pointer unwinding, build xemu with frame pointers and change `CallGraph` to `fp`.
+
+To resolve xemu's generated guest blocks, also launch xemu with `-jitdump`, set `ClockId` to `1` in the perf recipe, and run `perf inject --jit` on the resulting capture. Do not set `ClockId` for a normal perf capture; the field is opt-in.
