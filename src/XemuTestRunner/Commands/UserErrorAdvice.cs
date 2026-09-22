@@ -53,7 +53,7 @@ public static class UserErrorAdviceFactory
                 new(
                     "url_invalid",
                     prefix + exception.Message,
-                    "Use an absolute runner URL such as http://127.0.0.1:9368."),
+                    "Use an absolute runner URL such as http://runner-host:9368."),
 
             HttpRequestException =>
                 new(
