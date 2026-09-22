@@ -548,7 +548,7 @@ Current xemu release builds can omit QMP `screendump`. A working X11/XWayland fa
 }
 ```
 
-The runner process needs the graphical session's `DISPLAY` and `XAUTHORITY`. Compositor screenshot tools may delegate asynchronously or require a portal; verify they actually create `{path}` before adopting them. See the [Steam Deck guide](docs/STEAM_DECK.md).
+The runner process needs the graphical session's `DISPLAY` and `XAUTHORITY`. Compositor screenshot tools may delegate asynchronously or require a portal. After a successful external command exits, the runner waits within `ScreenshotTimeoutMs` for a complete PNG, but the provider must still publish `{path}`. See the [Steam Deck guide](docs/STEAM_DECK.md).
 
 Xbox buttons are **not QMP send-key**. xemu reads SDL host keyboard state for its keyboard-as-controller mapping. Bind the packaged xemu config accordingly:
 
