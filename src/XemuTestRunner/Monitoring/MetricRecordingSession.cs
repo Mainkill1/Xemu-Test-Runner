@@ -3,74 +3,81 @@ using XemuTestRunner.Config;
 
 namespace XemuTestRunner.Monitoring;
 
-/// <summary>Owns one recording's queue, output handle, and finalization task.</summary>
+/// <summary>
+/// Owns one run's bounded sample queue, CSV handle, and shared finalization task.
+/// Sampling never waits for disk; stopping waits for every accepted row to drain.
+/// </summary>
 internal sealed class MetricRecordingSession
 {
-    private readonly object _gate = new();
+    private readonly object _stateLock = new();
     private readonly Channel<MetricSample> _samples;
     private readonly Task _writerTask;
+
     private bool _closed;
-    private long _observed;
-    private long _written;
-    private long _overruns;
-    private long _dropped;
-    private double _totalDuty;
-    private double _maximumDuty;
-    private double _maximumDuration;
+    private long _observedSamples;
+    private long _writtenSamples;
+    private long _overrunCount;
+    private long _droppedWriteSamples;
+    private double _totalCollectorDutyPercent;
+    private double _maximumCollectorDutyPercent;
+    private double _maximumCollectorDurationMs;
 
     public MetricRecordingSession(MonitoringOptions options, string csvPath)
     {
         var path = Path.GetFullPath(csvPath);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
-        _samples = Channel.CreateBounded<MetricSample>(new BoundedChannelOptions(options.BufferCapacity)
-        {
-            SingleReader = true,
-            SingleWriter = true,
-            FullMode = BoundedChannelFullMode.Wait
-        });
+        _samples = Channel.CreateBounded<MetricSample>(
+            new BoundedChannelOptions(options.BufferCapacity)
+            {
+                SingleReader = true,
+                SingleWriter = true,
+                FullMode = BoundedChannelFullMode.Wait
+            });
 
-        // Opening is synchronous and happens before the collector attaches the
-        // process. A permission/path failure cannot leave a half-active recording.
-        var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read,
-            1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        // Open before the collector attaches the process. A path/permission
+        // failure must leave it idle, not attached to a half-created recording.
+        var file = new FileStream(
+            path,
+            FileMode.CreateNew,
+            FileAccess.Write,
+            FileShare.Read,
+            1024 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+
         _writerTask = MetricCsvWriter.WriteAsync(
-            _samples.Reader, file, options.FlushIntervalMs,
-            () => Interlocked.Increment(ref _written));
+            _samples.Reader,
+            file,
+            options.FlushIntervalMs,
+            RecordWrittenSample);
     }
 
     public Task Completion => _writerTask;
 
     public void Publish(MetricSample sample)
     {
-        lock (_gate)
+        lock (_stateLock)
         {
             if (_closed)
             {
                 return;
             }
 
-            _observed++;
-            _totalDuty += sample.CollectorDutyPercent;
-            _maximumDuty = Math.Max(_maximumDuty, sample.CollectorDutyPercent);
-            _maximumDuration = Math.Max(_maximumDuration, sample.CollectorDurationMs);
-            if (sample.Overrun)
-            {
-                _overruns++;
-            }
+            RecordObservedSample(sample);
 
-            // The sampler must never wait for disk. The writer is supervised by
-            // RunnerEngine; failed writes propagate through Completion/StopAsync.
+            // Wait mode plus TryWrite reports a full queue without blocking or
+            // silently evicting a previously accepted row. Do not use WriteAsync
+            // here: disk backpressure must not stall the hardware sampler.
             if (!_samples.Writer.TryWrite(sample))
             {
-                _dropped++;
+                _droppedWriteSamples++;
             }
         }
     }
 
     public Task StopAsync()
     {
-        lock (_gate)
+        lock (_stateLock)
         {
             if (!_closed)
             {
@@ -78,7 +85,8 @@ internal sealed class MetricRecordingSession
                 _samples.Writer.TryComplete();
             }
 
-            // Every stop caller awaits the SAME writer, including its failure.
+            // Every caller observes the same completion, including any failure.
+            // Cancelling the reader instead would discard accepted samples.
             return _writerTask;
         }
     }
@@ -87,18 +95,53 @@ internal sealed class MetricRecordingSession
     {
         if (!_writerTask.IsCompletedSuccessfully)
         {
-            throw new InvalidOperationException("Recording must finish successfully before reading its summary.");
+            throw new InvalidOperationException(
+                "Recording must finish successfully before reading its summary.");
         }
 
-        lock (_gate)
+        lock (_stateLock)
         {
+            var averageCollectorDutyPercent = _observedSamples == 0
+                ? 0
+                : _totalCollectorDutyPercent / _observedSamples;
+
             return new MetricRecordingSummary(
-                Interlocked.Read(ref _written), _overruns, _dropped,
-                _observed == 0 ? 0 : _totalDuty / _observed,
-                _maximumDuty, _maximumDuration, gpuProviders)
+                Interlocked.Read(ref _writtenSamples),
+                _overrunCount,
+                _droppedWriteSamples,
+                averageCollectorDutyPercent,
+                _maximumCollectorDutyPercent,
+                _maximumCollectorDurationMs,
+                gpuProviders)
             {
-                ObservedSamples = _observed
+                ObservedSamples = _observedSamples
             };
         }
+    }
+
+    // Called under _stateLock by the single producer. Include dropped samples
+    // in collector-cost statistics: their hardware reads still consumed time.
+    private void RecordObservedSample(MetricSample sample)
+    {
+        _observedSamples++;
+        _totalCollectorDutyPercent += sample.CollectorDutyPercent;
+        _maximumCollectorDutyPercent = Math.Max(
+            _maximumCollectorDutyPercent,
+            sample.CollectorDutyPercent);
+        _maximumCollectorDurationMs = Math.Max(
+            _maximumCollectorDurationMs,
+            sample.CollectorDurationMs);
+
+        if (sample.Overrun)
+        {
+            _overrunCount++;
+        }
+    }
+
+    private void RecordWrittenSample()
+    {
+        // The consumer runs independently. These rows are not final evidence
+        // until Completion succeeds, including the writer's final flush.
+        Interlocked.Increment(ref _writtenSamples);
     }
 }
