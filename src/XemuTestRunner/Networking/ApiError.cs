@@ -1,12 +1,14 @@
+using System.Text.Json.Serialization;
+
 namespace XemuTestRunner.Networking;
 
 public sealed record ApiErrorResponse(
-    string Error,
-    string Code,
-    string Hint,
-    int Status,
-    string Help,
-    object? Details = null);
+    [property: JsonPropertyName("error")] string Error,
+    [property: JsonPropertyName("code")] string Code,
+    [property: JsonPropertyName("hint")] string Hint,
+    [property: JsonPropertyName("status")] int Status,
+    [property: JsonPropertyName("help")] string Help,
+    [property: JsonPropertyName("details")] object? Details = null);
 
 public static class ApiHelpCatalog
 {
