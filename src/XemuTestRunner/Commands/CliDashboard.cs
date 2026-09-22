@@ -29,6 +29,9 @@ internal static class CliDashboard
             Row(
                 "Queue issue",
                 $"{state.QueueIssue.Code}: {state.QueueIssue.Message}");
+            Row(
+                "Queue help",
+                state.QueueIssue.Hint);
         }
 
         if (state.CurrentJob is not null)

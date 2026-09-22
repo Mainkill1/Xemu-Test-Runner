@@ -74,6 +74,26 @@ public static class Preflight
                 var path = JobDefinition.ResolveInsidePackage(package, relative);
                 checks.Add(new("required_file", File.Exists(path), relative));
             }
+
+            foreach (var input in job.Inputs)
+            {
+                var path = JobDefinition.ResolveInsidePackage(package, input.Path);
+                checks.Add(new(
+                    "input_file",
+                    File.Exists(path),
+                    $"{input.Role}: {input.Path}"));
+            }
+
+            foreach (var runtimeFile in job.RuntimeState.Files)
+            {
+                var path = JobDefinition.ResolveInsidePackage(
+                    package,
+                    runtimeFile.Source);
+                checks.Add(new(
+                    "runtime_seed",
+                    File.Exists(path),
+                    $"{runtimeFile.Source} -> {runtimeFile.Destination}"));
+            }
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException)
         { checks.Add(new("package", false, e.Message)); }

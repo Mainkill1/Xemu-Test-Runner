@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Text.Json;
 using XemuTestRunner.Config;
 using XemuTestRunner.Queue;
+using XemuTestRunner.Runtime;
 
 namespace XemuTestRunner.Control;
 
@@ -426,7 +427,10 @@ public sealed class XemuControlManager : IDisposable
     public async Task ExecutePlanAsync(
         IReadOnlyList<JobStep> plan,
         CancellationToken cancellationToken,
-        Func<string, CancellationToken, Task>? diagnosticRunner = null)
+        Func<string, CancellationToken, Task>? diagnosticRunner = null,
+        Action<string>? segmentStart = null,
+        Action<string>? segmentEnd = null,
+        Func<ArtifactCheckDefinition, int, int, CancellationToken, Task>? artifactWaiter = null)
     {
         if (plan.Count == 0)
             return;
@@ -485,6 +489,29 @@ public sealed class XemuControlManager : IDisposable
                     if (diagnosticRunner is null)
                         throw new InvalidOperationException("Plan contains a diagnostic step but no diagnostic runner is attached.");
                     await diagnosticRunner(step.DiagnosticId!, cancellationToken).ConfigureAwait(false);
+                    break;
+
+                case "segment_start":
+                    if (segmentStart is null)
+                        throw new InvalidOperationException("Plan contains segment_start but no measurement timeline is attached.");
+                    segmentStart(step.Name!);
+                    break;
+
+                case "segment_end":
+                    if (segmentEnd is null)
+                        throw new InvalidOperationException("Plan contains segment_end but no measurement timeline is attached.");
+                    segmentEnd(step.Name!);
+                    break;
+
+                case "wait_for_artifact":
+                    if (artifactWaiter is null || step.Condition is null)
+                        throw new InvalidOperationException(
+                            "Plan contains wait_for_artifact but no condition waiter is attached.");
+                    await artifactWaiter(
+                        step.Condition,
+                        step.TimeoutMs,
+                        step.PollIntervalMs,
+                        cancellationToken).ConfigureAwait(false);
                     break;
             }
         }
@@ -749,7 +776,10 @@ public sealed class XemuControlManager : IDisposable
         Button = step.Button,
         DurationMs = step.DurationMs,
         Name = step.Name,
-        DiagnosticId = step.DiagnosticId
+        DiagnosticId = step.DiagnosticId,
+        Condition = step.Condition,
+        TimeoutMs = step.TimeoutMs,
+        PollIntervalMs = step.PollIntervalMs
     };
 
     private static string SanitizeFileName(string value)

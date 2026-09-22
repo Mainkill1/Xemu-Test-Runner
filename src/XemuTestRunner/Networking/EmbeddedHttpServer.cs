@@ -68,12 +68,47 @@ public sealed partial class EmbeddedHttpServer
                 {
                     HttpRequest? request;
                     try { request = await HttpRequestReader.ReadAsync(stream, _options.MaxHeaderBytes, ct); }
-                    catch (InvalidDataException e) { await WriteJsonAsync(stream, 400, "Bad Request", new { error = e.Message }, false, ct); return; }
+                    catch (InvalidDataException e)
+                    {
+                        await WriteApiErrorAsync(
+                            stream,
+                            400,
+                            "Bad Request",
+                            "http_request_invalid",
+                            e.Message,
+                            "Correct the HTTP request syntax/headers and retry. See /api/v1/help for supported routes.",
+                            false,
+                            ct).ConfigureAwait(false);
+                        return;
+                    }
                     if (request is null) return;
                     if (request.Headers.ContainsKey("Transfer-Encoding"))
-                    { await WriteJsonAsync(stream, 501, "Not Implemented", new { error = "Send Content-Length; chunked request encoding is not supported." }, false, ct); return; }
-                    if ((request.Method is "GET" or "HEAD") && request.ContentLength.GetValueOrDefault() != 0)
-                    { await WriteJsonAsync(stream, 400, "Bad Request", new { error = "GET and HEAD must not include a body." }, false, ct); return; }
+                    {
+                        await WriteApiErrorAsync(
+                            stream,
+                            501,
+                            "Not Implemented",
+                            "transfer_encoding_unsupported",
+                            "Chunked request encoding is not supported.",
+                            "Send a Content-Length header and stream exactly that many bytes.",
+                            false,
+                            ct).ConfigureAwait(false);
+                        return;
+                    }
+                    if ((request.Method is "GET" or "HEAD") &&
+                        request.ContentLength.GetValueOrDefault() != 0)
+                    {
+                        await WriteApiErrorAsync(
+                            stream,
+                            400,
+                            "Bad Request",
+                            "body_not_allowed",
+                            $"{request.Method} requests must not include a body.",
+                            "Remove the request body and Content-Length, then retry.",
+                            false,
+                            ct).ConfigureAwait(false);
+                        return;
+                    }
                     if (request.Headers.TryGetValue("Expect", out var expect) && expect.Equals("100-continue", StringComparison.OrdinalIgnoreCase))
                     { await WriteAsciiAsync(stream, "HTTP/1.1 100 Continue\r\n\r\n", ct); await stream.FlushAsync(ct); }
                     if (!await RouteAsync(stream, request, request.KeepAlive, ct) || !request.KeepAlive) return;
@@ -96,6 +131,7 @@ public sealed partial class EmbeddedHttpServer
                 case "/": await WriteHtmlAsync(stream, WebPages.Home(_uiOptions.WebRefreshMs), keepAlive, ct); return true;
                 case "/control": await WriteHtmlAsync(stream, WebPages.Control(_uiOptions.WebRefreshMs, _uiOptions.LivePreviewIntervalMs, _uiOptions.LivePreviewEnabled), keepAlive, ct); return true;
                 case "/api/v1/health": await WriteJsonAsync(stream, 200, "OK", new { status = "ok", timestampUtc = DateTimeOffset.UtcNow }, keepAlive, ct); return true;
+                case "/api/v1/help": await WriteJsonAsync(stream, 200, "OK", ApiHelpCatalog.Describe(), keepAlive, ct); return true;
                 case "/api/v1/status": await WriteJsonAsync(stream, 200, "OK", _state.Snapshot(), keepAlive, ct); return true;
                 case "/api/v1/control": await WriteJsonAsync(stream, 200, "OK", _control.Snapshot(), keepAlive, ct); return true;
                 case "/api/v1/queue": await WriteJsonAsync(stream, 200, "OK", _state.Snapshot().Queue, keepAlive, ct); return true;
@@ -104,8 +140,15 @@ public sealed partial class EmbeddedHttpServer
                     if (metric is null) await WriteEmptyAsync(stream, 204, "No Content", keepAlive, ct);
                     else await WriteJsonAsync(stream, 200, "OK", metric, keepAlive, ct);
                     return true;
-                case "/api/v1/preview": await HandleSharedPreviewAsync(stream, keepAlive, ct); return true;
-                case "/api/v1/screenshot": return await HandleScreenshotAsync(stream, request, keepAlive, ct);
+                case "/api/v1/preview":
+                    if (!await EnsureOperationAllowedAsync(stream, "preview", keepAlive, ct))
+                        return true;
+                    await HandleSharedPreviewAsync(stream, keepAlive, ct);
+                    return true;
+                case "/api/v1/screenshot":
+                    if (!await EnsureOperationAllowedAsync(stream, "preview", keepAlive, ct))
+                        return true;
+                    return await HandleScreenshotAsync(stream, request, keepAlive, ct);
                 case "/api/v1/input/record": await WriteJsonAsync(stream, 200, "OK", _control.RecordingSnapshot(), keepAlive, ct); return true;
             }
         }
@@ -113,36 +156,171 @@ public sealed partial class EmbeddedHttpServer
         {
             switch (request.Path)
             {
-                case "/api/v1/input/press": return await HandleButtonPressAsync(stream, request, keepAlive, ct);
-                case "/api/v1/xemu/pause": Activity.Mark("pause", null); await HandlePauseAsync(stream, request, keepAlive, ct); return true;
-                case "/api/v1/xemu/resume": Activity.Mark("resume", null); await HandleResumeAsync(stream, request, keepAlive, ct); return true;
+                case "/api/v1/input/press":
+                    if (!await EnsureOperationAllowedAsync(stream, "input", keepAlive, ct))
+                        return true;
+                    return await HandleButtonPressAsync(stream, request, keepAlive, ct);
+                case "/api/v1/xemu/pause":
+                    if (!await EnsureOperationAllowedAsync(stream, "pause", keepAlive, ct))
+                        return true;
+                    Activity.Mark("pause", null);
+                    await HandlePauseAsync(stream, request, keepAlive, ct);
+                    return true;
+                case "/api/v1/xemu/resume":
+                    if (!await EnsureOperationAllowedAsync(stream, "pause", keepAlive, ct))
+                        return true;
+                    Activity.Mark("resume", null);
+                    await HandleResumeAsync(stream, request, keepAlive, ct);
+                    return true;
+                case "/api/v1/xemu/quit":
+                    if (!await EnsureOperationAllowedAsync(stream, "pause", keepAlive, ct))
+                        return true;
+                    if (!_control.HasActiveSession)
+                    {
+                        await WriteApiErrorAsync(
+                            stream,
+                            409,
+                            "Conflict",
+                            "target_not_active",
+                            "No active xemu target is available.",
+                            "Start a test or inspect a preserved target before requesting quit.",
+                            keepAlive,
+                            ct).ConfigureAwait(false);
+                        return true;
+                    }
+                    Activity.Mark("manual_input", new { action = "quit" });
+                    await _control.QuitAsync(ct).ConfigureAwait(false);
+                    await WriteJsonAsync(
+                        stream,
+                        202,
+                        "Accepted",
+                        new { quitting = true },
+                        keepAlive,
+                        ct).ConfigureAwait(false);
+                    return true;
                 case "/api/v1/input/record/start": await HandleRecordingActionAsync(stream, request, keepAlive, "start", ct); return true;
                 case "/api/v1/input/record/stop": await HandleRecordingActionAsync(stream, request, keepAlive, "stop", ct); return true;
                 case "/api/v1/input/record/clear": await HandleRecordingActionAsync(stream, request, keepAlive, "clear", ct); return true;
                 case "/api/v1/runner/stop":
                     await WriteJsonAsync(stream, 202, "Accepted", new { stopping = true }, false, ct); _requestStop(); return false;
                 case "/api/v1/jobs":
-                    await WriteJsonAsync(stream, 409, "Conflict", new { error = "Stage a complete directory with job.json and the candidate executable in Pending." }, false, ct); return false;
+                    await WriteApiErrorAsync(
+                        stream,
+                        409,
+                        "Conflict",
+                        "package_directory_required",
+                        "Standalone JSON job submission is not supported.",
+                        "Stage a complete package directory containing job.json, the candidate executable, and required assets under Queue/Pending. Prefer .incoming-<name> then rename when complete.",
+                        false,
+                        ct,
+                        new { expected = "Queue/Pending/<package>/job.json" }).ConfigureAwait(false);
+                    return false;
             }
         }
         const string prefix = "/api/v1/files/";
         if (request.Path.StartsWith(prefix, StringComparison.Ordinal))
         {
+            if (!await EnsureOperationAllowedAsync(stream, "bulk_transfer", keepAlive, ct))
+                return true;
+
             var relative = request.Path[prefix.Length..];
             using var transfer = Activity.TrackTransfer(new { method = request.Method, file = relative });
             // A dedicated transfer connection avoids interpreting unread bodies as a subsequent request on failure.
             if (request.Method is "GET" or "HEAD") { await HandleFileReadAsync(stream, request, relative, false, ct); return false; }
             if (request.Method is "POST" or "PUT") { await HandleFileUploadAsync(stream, request, relative, false, ct); return false; }
         }
-        await WriteJsonAsync(stream, 404, "Not Found", new { error = "Route not found." }, false, ct); return false;
+        await WriteApiErrorAsync(
+            stream,
+            404,
+            "Not Found",
+            "route_not_found",
+            $"No API route matches {request.Method} {request.Path}.",
+            "Check GET /api/v1/help for supported paths and methods.",
+            false,
+            ct,
+            new { request.Method, request.Path }).ConfigureAwait(false);
+        return false;
     }
+    private async Task<bool> EnsureOperationAllowedAsync(
+        Stream stream,
+        string operation,
+        bool keepAlive,
+        CancellationToken cancellationToken)
+    {
+        var snapshot = _state.Snapshot();
+        if (snapshot.CurrentJob is null)
+            return true;
+
+        var policy = snapshot.Operations;
+        var allowed = operation switch
+        {
+            "preview" => policy.PreviewAllowed,
+            "input" => policy.ManualInputAllowed,
+            "pause" => policy.PauseResumeAllowed,
+            "diagnostic" => policy.DiagnosticsAllowed,
+            "bulk_transfer" => policy.BulkTransfersAllowed,
+            _ => true
+        };
+
+        if (allowed)
+            return true;
+
+        await WriteApiErrorAsync(
+            stream,
+            409,
+            "Conflict",
+            "operation_blocked",
+            $"Operation '{operation}' is blocked by the active job's '{policy.Mode}' operation policy.",
+            policy.IsBenchmark
+                ? "Do not disturb the benchmark. If this operation is intentionally required, explicitly allow it in job.json Operations and accept the comparison-validity implications."
+                : "Change the active job operation policy only if this action is intentionally allowed.",
+            keepAlive,
+            cancellationToken,
+            new
+            {
+                mode = policy.Mode,
+                operation,
+                allowed = false
+            }).ConfigureAwait(false);
+
+        return false;
+    }
+
     private async Task<bool> HandleScreenshotAsync(Stream stream, HttpRequest request, bool keepAlive, CancellationToken ct)
     {
-        if (!_control.HasActiveSession) { await WriteJsonAsync(stream, 409, "Conflict", new { error = "No active xemu." }, keepAlive, ct); return true; }
+        if (!_control.HasActiveSession)
+        {
+            await WriteApiErrorAsync(
+                stream,
+                409,
+                "Conflict",
+                "target_not_active",
+                "No active xemu target is available for screenshot capture.",
+                "Start a test and wait for xemu control initialization before requesting a screenshot.",
+                keepAlive,
+                ct).ConfigureAwait(false);
+            return true;
+        }
         string path;
         try { Activity.Mark("screenshot", null); path = await _control.CaptureScreenshotAsync(GetQueryValue(request.Query, "name"), ct); }
-        catch (Exception e) when (e is IOException or InvalidDataException or TimeoutException or InvalidOperationException or SocketException)
-        { await WriteJsonAsync(stream, 503, "Service Unavailable", new { error = e.Message }, false, ct); return false; }
+        catch (Exception e) when (
+            e is IOException or
+            InvalidDataException or
+            TimeoutException or
+            InvalidOperationException or
+            SocketException)
+        {
+            await WriteApiErrorAsync(
+                stream,
+                503,
+                "Service Unavailable",
+                "screenshot_unavailable",
+                e.Message,
+                "Verify the configured screenshot provider/QMP target is available. Check /api/v1/control and the active run evidence.",
+                false,
+                ct).ConfigureAwait(false);
+            return false;
+        }
         await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, _options.TransferBufferBytes, FileOptions.Asynchronous);
         await WriteHeadersAsync(stream, 200, "OK", new Dictionary<string, string>
         {
@@ -153,22 +331,93 @@ public sealed partial class EmbeddedHttpServer
     }
     private async Task<bool> HandleButtonPressAsync(Stream stream, HttpRequest request, bool keepAlive, CancellationToken ct)
     {
-        if (request.ContentLength is not long length || length is < 1 or > 16384)
-        { await WriteJsonAsync(stream, 400, "Bad Request", new { error = "Input body requires Content-Length between 1 and 16384." }, false, ct); return false; }
+        if (request.ContentLength is not long length ||
+            length is < 1 or > 16384)
+        {
+            await WriteApiErrorAsync(
+                stream,
+                400,
+                "Bad Request",
+                "request_body_invalid",
+                "Controller input requires a JSON body with Content-Length between 1 and 16384 bytes.",
+                "POST a JSON object with Button set to a logical Xbox button name and DurationMs set to 1..60000; for example Button=A and DurationMs=100.",
+                false,
+                ct,
+                new
+                {
+                    expected = new
+                    {
+                        Button = "A",
+                        DurationMs = 100
+                    }
+                }).ConfigureAwait(false);
+            return false;
+        }
         var bytes = new byte[(int)length]; await ReadExactlyAsync(stream, bytes, ct);
-        if (!_control.HasActiveSession || _control.Snapshot().Paused)
-        { await WriteJsonAsync(stream, 409, "Conflict", new { error = "Input requires an active, unpaused xemu." }, keepAlive, ct); return true; }
+        if (!_control.HasActiveSession)
+        {
+            await WriteApiErrorAsync(
+                stream,
+                409,
+                "Conflict",
+                "target_not_active",
+                "Controller input requires an active xemu target.",
+                "Start a test and wait for xemu control initialization before sending input.",
+                keepAlive,
+                ct).ConfigureAwait(false);
+            return true;
+        }
+
+        if (_control.Snapshot().Paused)
+        {
+            await WriteApiErrorAsync(
+                stream,
+                409,
+                "Conflict",
+                "target_not_ready",
+                "Controller input cannot be sent while xemu is paused.",
+                "Resume xemu with POST /api/v1/xemu/resume, then retry the input request.",
+                keepAlive,
+                ct).ConfigureAwait(false);
+            return true;
+        }
         try
         {
             var input = JsonSerializer.Deserialize<ButtonPressRequest>(bytes, ConfigLoader.JsonOptions) ?? throw new InvalidDataException("Empty input.");
-            if (string.IsNullOrWhiteSpace(input.Button) || input.DurationMs is < 1 or > 60000) throw new InvalidDataException("Invalid button or duration.");
+            if (string.IsNullOrWhiteSpace(input.Button) ||
+                input.DurationMs is < 1 or > 60000)
+                throw new InvalidDataException(
+                    "Button is required and DurationMs must be between 1 and 60000.");
             Activity.Mark("manual_input", new { input.Button, input.DurationMs });
             await _control.PressButtonAsync(input.Button, input.DurationMs, ct);
             await WriteJsonAsync(stream, 200, "OK", new { accepted = true, button = input.Button, durationMs = input.DurationMs }, keepAlive, ct);
         }
-        catch (Exception e) when (e is JsonException or InvalidDataException)
-        { await WriteJsonAsync(stream, 400, "Bad Request", new { error = e.Message }, keepAlive, ct); }
-        catch (InvalidOperationException e) { await WriteJsonAsync(stream, 503, "Service Unavailable", new { error = e.Message }, keepAlive, ct); }
+        catch (Exception e) when (
+            e is JsonException or
+            InvalidDataException)
+        {
+            await WriteApiErrorAsync(
+                stream,
+                400,
+                "Bad Request",
+                "request_body_invalid",
+                e.Message,
+                "POST a JSON object with Button set to one of the configured logical Xbox button names and DurationMs set to 1..60000.",
+                keepAlive,
+                ct).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException e)
+        {
+            await WriteApiErrorAsync(
+                stream,
+                503,
+                "Service Unavailable",
+                "input_provider_unavailable",
+                e.Message,
+                "Check GET /api/v1/control and xemu-test-runner doctor for input-provider availability/focus requirements.",
+                keepAlive,
+                ct).ConfigureAwait(false);
+        }
         return true;
     }
     private sealed class ButtonPressRequest { public string Button { get; set; } = ""; public int? DurationMs { get; set; } }

@@ -63,6 +63,8 @@ Example result:
 }
 ```
 
+Automation exit codes are stable. A successful process launch is not enough for comparison eligibility; use `assessment.json` / `result.json.assessment` for correctness, evidence, and comparison state.
+
 Automation exit codes are stable:
 
 | Exit | Meaning |
@@ -91,6 +93,211 @@ A typical agent loop can therefore:
 5. make a code change and repeat.
 
 `--one-shot` differs from `--once`: one-shot processes at most one claimed package, while once drains the current queue before exiting.
+
+## Experiment validity model
+
+The runner separates four questions that used to be collapsed into one `status`:
+
+| Outcome | Meaning |
+| --- | --- |
+| Execution | Did the runner launch/control/finish the attempt correctly? |
+| Correctness | Did declared guest/workload assertions pass? |
+| Evidence | Are required artifacts and metric counts complete? |
+| Comparison | Is this attempt eligible for the declared experiment? |
+
+Every completed attempt writes `assessment.json` and includes the same assessment in `result.json`. Existing jobs that do not declare correctness/evidence contracts remain valid, but those dimensions stay `notEvaluated` instead of being implied by exit code.
+
+A benchmark package can declare:
+
+```json
+{
+  "Experiment": {
+    "Id": "nv2a-upload-a-b",
+    "Variant": "candidate",
+    "Reference": "baseline",
+    "VariedFactors": ["xemu-build"],
+    "ControlledFactors": ["game", "snapshot-seed", "xemu-config", "input-plan"],
+    "RequireCorrectnessPass": true,
+    "RequireCompleteEvidence": true,
+    "AllowOperatorIntervention": false,
+    "AllowDiagnostics": false
+  },
+  "Operations": {
+    "Mode": "benchmark"
+  }
+}
+```
+
+Benchmark operation policy blocks manual preview/screenshot/input/pause and bulk-transfer operations by default while the test is active. Those operations can be explicitly allowed, but the comparison contract still decides whether the resulting attempt is eligible.
+
+Aggregate eligible measurements later with:
+
+```sh
+xemu-test-runner compare --experiment nv2a-upload-a-b
+xemu-test-runner compare --experiment nv2a-upload-a-b --json
+```
+
+Ineligible attempts remain visible with exclusion reasons; they are not silently averaged into the result.
+
+## Private runtime state and input identity
+
+Mutable test state should not be shared between attempts. `RuntimeState` copies declared package seed files into:
+
+```text
+workspace/Runtime/<run-id>/
+```
+
+before launch. Job arguments/environment values may use:
+
+```text
+{runtimeDir}
+{packageDir}
+{resultDir}
+{runId}
+```
+
+Example:
+
+```json
+{
+  "RuntimeState": {
+    "Enabled": true,
+    "KeepOnFailure": true,
+    "KeepOnSuccess": false,
+    "Files": [
+      {
+        "Source": "state/seed-hdd.qcow2",
+        "Destination": "hdd.qcow2"
+      }
+    ]
+  },
+  "Inputs": [
+    {
+      "Path": "xemu.toml",
+      "Role": "emulator-config",
+      "Hash": true
+    },
+    {
+      "Path": "test.iso",
+      "Role": "workload",
+      "Hash": true
+    }
+  ]
+}
+```
+
+The runner writes `input-manifest.json` with the frozen job hash, executable hash, declared input identity, and runtime seed hashes. Runtime files are retained on failure by default and deleted after successful valid attempts unless configured otherwise.
+
+## Workload assertions and measurement segments
+
+A job may declare correctness and evidence requirements:
+
+```json
+{
+  "Workload": {
+    "MinimumMetricSamples": 100,
+    "CorrectnessChecks": [
+      {
+        "Name": "guest-result",
+        "Scope": "result",
+        "Path": "guest-results.json",
+        "ContainsText": "\"passed\":true"
+      }
+    ],
+    "EvidenceRequirements": [
+      {
+        "Name": "final-frame",
+        "Scope": "result",
+        "Path": "screenshots/final.png",
+        "MinimumBytes": 1000
+      }
+    ],
+    "ReportedMetrics": [
+      {
+        "Name": "average-frame-ms",
+        "Scope": "result",
+        "Path": "guest-results.json",
+        "JsonProperty": "timing.averageFrameMs",
+        "Unit": "ms",
+        "Direction": "lower"
+      }
+    ]
+  }
+}
+```
+
+Plan steps can mark the exact measurement interval:
+
+```json
+{"Type":"segment_start","Name":"steady-state"}
+{"Type":"wait","DelayMs":30000}
+{"Type":"segment_end","Name":"steady-state"}
+```
+
+The segment name is written to `metrics.csv` and start/end boundaries are retained in `segments.jsonl`.
+
+For readiness/progress that should not rely on fixed sleeps, use:
+
+```json
+{
+  "Type": "wait_for_artifact",
+  "TimeoutMs": 30000,
+  "PollIntervalMs": 100,
+  "Condition": {
+    "Scope": "result",
+    "Path": "guest-ready.json",
+    "ContainsText": "\"ready\":true"
+  }
+}
+```
+
+This waits for a declared host-visible artifact condition with a hard deadline.
+
+
+## Error and recovery contract
+
+Invalid API requests return JSON with a stable machine-readable code and a human correction hint while preserving the existing `error` string:
+
+```json
+{
+  "error": "Controller input cannot be sent while xemu is paused.",
+  "code": "target_not_ready",
+  "hint": "Resume xemu with POST /api/v1/xemu/resume, then retry the input request.",
+  "status": 409,
+  "help": "/api/v1/help"
+}
+```
+
+Use:
+
+```text
+GET /api/v1/help
+```
+
+to discover route purposes, request-body examples, the error shape, and common recovery actions.
+
+Queue/package problems are exposed through `QueueIssue` in `/api/v1/status` and include a `Hint` telling the operator how to recover. The CLI shows that hint as `Queue help`.
+
+For package validation:
+
+```sh
+xemu-test-runner validate workspace/Queue/Pending/build-123
+xemu-test-runner validate workspace/Queue/Pending/build-123 --json
+```
+
+The JSON form returns a stable code plus a correction hint instead of requiring an agent to parse terminal formatting.
+
+Automation failures from `run --json` include:
+
+```json
+{
+  "error": "...",
+  "errorCode": "request_invalid",
+  "errorHint": "Correct the reported field/path/value, then retry."
+}
+```
+
+Common classes include invalid request bodies, unavailable/paused targets, benchmark-policy blocks, invalid package plans, busy/incomplete packages, upload offset/hash mismatches, missing evidence, and unavailable diagnostic tools. See [docs/ERRORS.md](docs/ERRORS.md).
 
 ## A queue item contains the plan AND candidate executable
 
@@ -285,7 +492,10 @@ These captures are explicitly diagnostic/intervened evidence. They are not clean
 
 ```json
 {
-  "Queue": { "PackageStabilityMs": 750 },
+  "Queue": {
+    "PackageStabilityMs": 750,
+    "FiniteWaitTimeoutSeconds": 30
+  },
   "Monitoring": {
     "IntervalMs": 100,
     "Gpu": {
@@ -365,19 +575,21 @@ GET  /api/v1/preview
 GET  /api/v1/screenshot
 POST /api/v1/xemu/pause
 POST /api/v1/xemu/resume
+POST /api/v1/xemu/quit
 POST /api/v1/input/press
 GET  /api/v1/input/record
 POST /api/v1/input/record/start
 POST /api/v1/input/record/stop
 POST /api/v1/input/record/clear
 POST /api/v1/runner/stop
+GET  /api/v1/experiments/<experiment-id>
 ```
 
 Telemetry includes host/process CPU, RAM, swap/pagefile, I/O and available GPU/VRAM/thermal counters. Missing values are shown as unavailable, not manufactured as GPU zero. Vendor support and update frequencies vary. Host values are sampled continuously from runner startup; process values and CSV recording begin only while a test is active.
 
 ## Large file transfers
 
-The existing `GET/HEAD/PUT/POST /api/v1/files/<path>` interface streams artifacts under the configured file root with 64-bit lengths. Uploads require Content-Length; sequential resume uses Content-Range and `.partial` files. Query `?upload-status=1` for upload position. There is no application-wide 10 GB length cap, but disk space and filesystem limits still apply. A real 10 GB+ network transfer has not been validated in this environment.
+The existing `GET/HEAD/PUT/POST /api/v1/files/<path>` interface streams artifacts under the configured file root with 64-bit lengths. Uploads require Content-Length; sequential resume uses Content-Range and `.partial` files. Query `?upload-status=1` for upload position. Uploads to the same destination are serialized/rejected rather than interleaved. Send `X-Content-SHA256: <64-hex-digest>` to require whole-file SHA-256 verification before a completed upload is accepted. There is no application-wide 10 GB length cap, but disk space and filesystem limits still apply. A real 10 GB+ network transfer has not been validated in this environment.
 
 ## Tests
 
@@ -387,4 +599,4 @@ dotnet run --project tests/RunnerChecks -c Release
 
 This dependency-free regression executable covers covering the remote-listener default, preflight, ownership, recovery decisions, watchdog sequences/cancellation, concurrent preview caching, bounded tails, large-range arithmetic, input ABI size, intervention accounting, diagnostic schema/reference validation, tool discovery, release identity, quit ordering, and a full queued-process/QMP/HTTP/telemetry/screenshot-fallback lifecycle. `-- --large-file` opts into an 11 GiB local file-length test; it is not a 10 GB HTTP transfer test.
 
-Optional offline browser fixtures: `python scripts/check-browser.py --browser /path/to/chromium`. Requires Python Playwright; it uses no running C# server and must not be mistaken for end-to-end xemu qualification. See [validation](docs/VALIDATION.md) and [architecture](docs/ARCHITECTURE.md).
+Optional offline browser fixtures: `python scripts/check-browser.py --browser /path/to/chromium`. Requires Python Playwright; it uses no running C# server and must not be mistaken for end-to-end xemu qualification. See [validation](docs/VALIDATION.md), [architecture](docs/ARCHITECTURE.md), and [trustworthy experiment contracts](docs/TRUSTWORTHY-EXPERIMENTS.md).

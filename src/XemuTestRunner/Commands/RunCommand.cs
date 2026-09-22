@@ -105,7 +105,8 @@ public sealed class RunCommand : Command<RunCommandSettings>
             var snapshot = engine.State.Snapshot();
             var exitCode = DetermineExitCode(
                 snapshot,
-                cancelled: false);
+                cancelled:
+                    cancellationToken.IsCancellationRequested);
 
             WriteFinalOutput(
                 settings,
@@ -113,7 +114,9 @@ public sealed class RunCommand : Command<RunCommandSettings>
                 startedUtc,
                 DateTimeOffset.UtcNow,
                 exitCode,
-                error: null);
+                error: null,
+                errorCode: null,
+                errorHint: null);
 
             return exitCode;
         }
@@ -132,6 +135,8 @@ public sealed class RunCommand : Command<RunCommandSettings>
                 DateTimeOffset.UtcNow,
                 exitCode,
                 error: null,
+                errorCode: null,
+                errorHint: null,
                 cancelled: true);
 
             return exitCode;
@@ -139,6 +144,10 @@ public sealed class RunCommand : Command<RunCommandSettings>
         catch (Exception ex)
         {
             const int exitCode = 1;
+            var advice =
+                UserErrorAdviceFactory.From(
+                    ex,
+                    "Runner failed");
 
             if (settings.Json)
             {
@@ -148,23 +157,49 @@ public sealed class RunCommand : Command<RunCommandSettings>
                     startedUtc,
                     DateTimeOffset.UtcNow,
                     exitCode,
-                    ex.ToString());
+                    advice.Error,
+                    advice.Code,
+                    advice.Hint);
             }
             else if (
                 settings.NonInteractive ||
                 Console.IsOutputRedirected)
             {
                 Console.Error.WriteLine(
-                    "runner_error: " + ex);
+                    $"{advice.Code}: {advice.Error}");
+                Console.Error.WriteLine(
+                    "hint: " + advice.Hint);
             }
             else
             {
                 ReportInteractiveFailure(
                     ex,
-                    error => AnsiConsole.WriteException(
-                        error,
-                        ExceptionFormats.ShortenEverything),
-                    error => Console.Error.WriteLine(error));
+                    error =>
+                    {
+                        if (advice.Code == "internal_error")
+                        {
+                            AnsiConsole.WriteException(
+                                error,
+                                ExceptionFormats.ShortenEverything);
+                        }
+                        else
+                        {
+                            AnsiConsole.MarkupLine(
+                                $"[red]{Markup.Escape(advice.Code)}:[/] {Markup.Escape(advice.Error)}");
+                        }
+
+                        AnsiConsole.MarkupLine(
+                            $"[yellow]Hint:[/] {Markup.Escape(advice.Hint)}");
+                    },
+                    error =>
+                    {
+                        Console.Error.WriteLine(
+                            advice.Code == "internal_error"
+                                ? error
+                                : $"{advice.Code}: {advice.Error}");
+                        Console.Error.WriteLine(
+                            "hint: " + advice.Hint);
+                    });
             }
 
             return exitCode;
@@ -181,6 +216,12 @@ public sealed class RunCommand : Command<RunCommandSettings>
         if (snapshot.QueueIssue is not null ||
             snapshot.Phase.Equals(
                 "queue_blocked",
+                StringComparison.OrdinalIgnoreCase) ||
+            snapshot.Phase.Equals(
+                "interrupted",
+                StringComparison.OrdinalIgnoreCase) ||
+            snapshot.Phase.Equals(
+                "waiting_for_package",
                 StringComparison.OrdinalIgnoreCase))
             return 3;
 
@@ -375,6 +416,8 @@ public sealed class RunCommand : Command<RunCommandSettings>
         DateTimeOffset endedUtc,
         int exitCode,
         string? error,
+        string? errorCode,
+        string? errorHint,
         bool cancelled = false)
     {
         var evidenceDirectory =
@@ -421,7 +464,9 @@ public sealed class RunCommand : Command<RunCommandSettings>
                 snapshot?.QueueIssue,
             HttpEndpoint:
                 snapshot?.HttpEndpoint,
-            Error: error);
+            Error: error,
+            ErrorCode: errorCode,
+            ErrorHint: errorHint);
 
         if (settings.Json)
         {
@@ -464,4 +509,6 @@ public sealed record AutomationRunSummary(
     XemuTestRunner.Queue.QueueSnapshot? Queue,
     XemuTestRunner.Queue.QueueIssue? QueueIssue,
     string? HttpEndpoint,
-    string? Error);
+    string? Error,
+    string? ErrorCode,
+    string? ErrorHint);

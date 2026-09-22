@@ -20,6 +20,7 @@ public sealed class RunnerEngine
     private readonly XemuControlManager _control;
     private readonly ActivityHub _activity = new();
     private readonly DiagnosticHub _diagnostics;
+    private PreservedTarget? _preservedTarget;
 
     public RunnerState State => _state;
 
@@ -103,23 +104,40 @@ public sealed class RunnerEngine
         var serverTask = server.RunAsync(lifetime.Token);
 
         var jobsFinished = 0;
+        DateTimeOffset? finiteWaitStarted = null;
 
         try
         {
             while (!lifetime.IsCancellationRequested)
             {
+                await ReapPreservedTargetAsync().ConfigureAwait(false);
+
                 if (serverTask.IsFaulted)
                     await serverTask.ConfigureAwait(false);
                 if (telemetryTask?.IsFaulted == true)
                     await telemetryTask.ConfigureAwait(false);
 
-                if (_queue.GetTestingJobs().Count > 0)
+                var testingJobs =
+                    _queue.GetTestingJobs();
+
+                if (testingJobs.Count > 0)
                 {
-                    var queueIssue = _state.Snapshot().QueueIssue;
-                    _state.SetPhase(
-                        queueIssue?.HoldsTesting == true
-                            ? "queue_blocked"
-                            : "interrupted");
+                    var queueIssue =
+                        _state.Snapshot().QueueIssue;
+
+                    if (queueIssue is null)
+                    {
+                        queueIssue = new QueueIssue(
+                            "testing_occupied",
+                            Path.GetFileName(testingJobs[0]),
+                            "Testing contains a package owned by a previous or preserved attempt. Inspect the package/process state before requeueing it.",
+                            DateTimeOffset.UtcNow,
+                            Retryable: false,
+                            HoldsTesting: true);
+                        _state.SetQueueIssue(queueIssue);
+                    }
+
+                    _state.SetPhase("queue_blocked");
 
                     if (once)
                         break;
@@ -135,13 +153,40 @@ public sealed class RunnerEngine
 
                 if (claim.Issue is not null)
                 {
-                    _state.SetQueueIssue(claim.Issue);
+                    var issue = claim.Issue;
+
+                    if (once && issue.Retryable)
+                    {
+                        finiteWaitStarted ??=
+                            DateTimeOffset.UtcNow;
+
+                        if (_config.Queue.FiniteWaitTimeoutSeconds > 0 &&
+                            DateTimeOffset.UtcNow -
+                                finiteWaitStarted.Value >=
+                            TimeSpan.FromSeconds(
+                                _config.Queue.FiniteWaitTimeoutSeconds))
+                        {
+                            issue = new QueueIssue(
+                                "package_wait_timeout",
+                                issue.Package,
+                                $"Finite run waited {_config.Queue.FiniteWaitTimeoutSeconds} seconds for a retryable package state. Last issue: {issue.Code}: {issue.Message}",
+                                DateTimeOffset.UtcNow,
+                                Retryable: false,
+                                HoldsTesting: false);
+                        }
+                    }
+                    else
+                    {
+                        finiteWaitStarted = null;
+                    }
+
+                    _state.SetQueueIssue(issue);
                     _state.SetPhase(
-                        claim.Issue.Retryable
+                        issue.Retryable
                             ? "waiting_for_package"
                             : "queue_blocked");
 
-                    if (once && !claim.Issue.Retryable)
+                    if (once && !issue.Retryable)
                         break;
 
                     await Task.Delay(
@@ -149,6 +194,8 @@ public sealed class RunnerEngine
                         lifetime.Token).ConfigureAwait(false);
                     continue;
                 }
+
+                finiteWaitStarted = null;
 
                 if (claim.Package is null)
                 {
@@ -180,6 +227,7 @@ public sealed class RunnerEngine
                     continue;
                 }
 
+                finiteWaitStarted = null;
                 _state.SetQueueIssue(null);
                 await ExecuteJobAsync(
                     claim.Package,
@@ -211,6 +259,9 @@ public sealed class RunnerEngine
             lifetime.Cancel();
             _diagnostics.Detach();
             _activity.Detach();
+
+            await ReleasePreservedTargetHandlesAsync()
+                .ConfigureAwait(false);
             _control.End();
 
             try
@@ -256,8 +307,18 @@ public sealed class RunnerEngine
         bool started = false;
         bool exited = false;
         bool componentStuck = false;
+        bool preserveTarget = false;
         IReadOnlyList<string> gpuProviders = [];
         WorkstationStateSnapshot? workstationStart = null;
+        RuntimeMaterialization? runtimeState = null;
+        InputManifest? inputManifest = null;
+        WorkloadEvaluation workloadEvaluation = new(
+            CorrectnessOutcome.NotEvaluated,
+            EvidenceOutcome.NotEvaluated,
+            [],
+            []);
+        RunAssessment? assessment = null;
+        HostInventory? hostInventory = null;
 
         TargetLaunch? launch = null;
         Process? process = null;
@@ -271,11 +332,17 @@ public sealed class RunnerEngine
         QueueIssue? packageIssue = null;
         Task? plan = null;
         Task? watchdog = null;
+        Task? recordingWriter = null;
+        MeasurementTimeline? timeline = null;
+        bool planCompleted = false;
         Task? stdout = null;
         Task? stderr = null;
         FileStream? stdoutFile = null;
         FileStream? stderrFile = null;
         var effectiveArguments = new List<string>();
+        var launchEnvironment =
+            new Dictionary<string, string>(
+                StringComparer.Ordinal);
 
         try
         {
@@ -299,6 +366,8 @@ public sealed class RunnerEngine
 
             _state.SetPhase("preflight");
             job = JobDefinition.LoadPackage(package, resultManifest);
+            planCompleted = job.Plan.Count == 0;
+
             preflight = await Preflight.CheckAsync(
                 job,
                 package,
@@ -351,6 +420,8 @@ public sealed class RunnerEngine
                         "executable" or
                         "executable_stable" or
                         "required_file" or
+                        "input_file" or
+                        "runtime_seed" or
                         "working_directory");
 
                 if (packageChanged)
@@ -377,8 +448,86 @@ public sealed class RunnerEngine
             }
             else
             {
-                var qmpPort = _config.XemuControl.Enabled ? _control.AllocateQmpPort() : 0;
-                effectiveArguments.AddRange(job.Arguments);
+                status = "preflight_failed";
+
+                hostInventory =
+                    await HostInventoryCollector.CaptureAsync(
+                        _state.Snapshot().LatestMetric,
+                        ct).ConfigureAwait(false);
+                AtomicJson.Write(
+                    Path.Combine(
+                        resultDirectory,
+                        "host-inventory.json"),
+                    hostInventory);
+                AtomicJson.Write(
+                    Path.Combine(
+                        resultDirectory,
+                        "pre-run-environment.json"),
+                    new
+                    {
+                        capturedUtc = DateTimeOffset.UtcNow,
+                        metric =
+                            _state.Snapshot().LatestMetric,
+                        workstation =
+                            _state.Snapshot().Workstation
+                    });
+
+                runtimeState =
+                    await RuntimeStateManager.MaterializeAsync(
+                        job.RuntimeState,
+                        package,
+                        _paths.Workspace,
+                        runId,
+                        ct).ConfigureAwait(false);
+
+                inputManifest =
+                    await InputManifestBuilder.BuildAsync(
+                        job,
+                        package,
+                        resultManifest,
+                        preflight.ExecutableSha256,
+                        runtimeState,
+                        ct).ConfigureAwait(false);
+                InputManifestBuilder.Write(
+                    resultDirectory,
+                    inputManifest);
+
+                AtomicJson.Write(
+                    Path.Combine(
+                        resultDirectory,
+                        "runtime-state.json"),
+                    new
+                    {
+                        enabled = runtimeState is not null,
+                        directory = runtimeState?.Directory,
+                        files = runtimeState?.Files ?? []
+                    });
+
+                var qmpPort = _config.XemuControl.Enabled
+                    ? _control.AllocateQmpPort()
+                    : 0;
+
+                foreach (var argument in job.Arguments)
+                {
+                    effectiveArguments.Add(
+                        RuntimeStateManager.Expand(
+                            argument,
+                            package,
+                            resultDirectory,
+                            runId,
+                            runtimeState));
+                }
+
+                foreach (var variable in job.Environment)
+                {
+                    launchEnvironment[variable.Key] =
+                        RuntimeStateManager.Expand(
+                            variable.Value,
+                            package,
+                            resultDirectory,
+                            runId,
+                            runtimeState);
+                }
 
                 if (job.StartPaused)
                     effectiveArguments.Add("-S");
@@ -410,7 +559,11 @@ public sealed class RunnerEngine
                         SHA256.HashData(File.ReadAllBytes(
                             Path.Combine(resultDirectory, "job.json")))).ToLowerInvariant(),
                     arguments = effectiveArguments,
+                    environmentKeys = launchEnvironment.Keys.OrderBy(key => key).ToArray(),
                     workingDirectory = job.WorkingDirectory ?? ".",
+                    runtimeDirectory = runtimeState?.Directory,
+                    experiment = job.Experiment,
+                    operations = job.Operations,
                     host = HostInfo()
                 });
 
@@ -433,6 +586,7 @@ public sealed class RunnerEngine
                     executable,
                     workingDirectory,
                     effectiveArguments,
+                    launchEnvironment,
                     resultDirectory,
                     ct).ConfigureAwait(false);
                 process = launch.Process;
@@ -463,7 +617,11 @@ public sealed class RunnerEngine
                 attempt.Phase = HasExited(process) ? "exited" : "running";
                 AttemptJournal.Write(package, attempt);
 
-                _state.BeginJob(job.Id, runId, process.Id);
+                _state.BeginJob(
+                    job.Id,
+                    runId,
+                    process.Id,
+                    job.Operations);
                 _activity.Attach(runId, activity);
 
                 workstationStart = _state.Snapshot().Workstation;
@@ -479,13 +637,27 @@ public sealed class RunnerEngine
                 // The lifetime collector already samples host state. Attaching
                 // the xemu process also enables per-run CSV recording; no second
                 // polling loop is created.
+                if (job.Plan.Any(step =>
+                        step.Type.Equals(
+                            "segment_start",
+                            StringComparison.OrdinalIgnoreCase)))
+                {
+                    timeline =
+                        new MeasurementTimeline(resultDirectory);
+                }
+
                 if (telemetry is not null)
                 {
-                    gpuProviders = telemetry.GpuProviders.ToArray();
+                    gpuProviders =
+                        telemetry.GpuProviders.ToArray();
                     telemetry.StartRecording(
                         process,
-                        Path.Combine(resultDirectory, "metrics.csv"));
+                        Path.Combine(
+                            resultDirectory,
+                            "metrics.csv"));
                     metricRecordingStarted = true;
+                    recordingWriter =
+                        telemetry.RecordingTask;
                 }
 
                 if (_config.XemuControl.Enabled)
@@ -529,7 +701,34 @@ public sealed class RunnerEngine
                         tasksCts.Token,
                         async (id, token) =>
                         {
-                            _ = await _diagnostics.RunByIdAsync(id, token).ConfigureAwait(false);
+                            _ = await _diagnostics
+                                .RunByIdAsync(id, token)
+                                .ConfigureAwait(false);
+                        },
+                        segmentStart: name =>
+                        {
+                            timeline?.Start(name);
+                            telemetry?.SetSegment(name);
+                        },
+                        segmentEnd: name =>
+                        {
+                            timeline?.End(name);
+                            telemetry?.SetSegment(null);
+                        },
+                        artifactWaiter: async (
+                            condition,
+                            timeoutMs,
+                            pollIntervalMs,
+                            token) =>
+                        {
+                            await ArtifactConditionWaiter.WaitAsync(
+                                condition,
+                                timeoutMs,
+                                pollIntervalMs,
+                                package,
+                                resultDirectory,
+                                runtimeState,
+                                token).ConfigureAwait(false);
                         });
                 }
 
@@ -555,6 +754,8 @@ public sealed class RunnerEngine
                     waiting.Add(plan);
                 if (watch is not null)
                     waiting.Add(watch);
+                if (recordingWriter is not null)
+                    waiting.Add(recordingWriter);
 
                 while (true)
                 {
@@ -581,7 +782,11 @@ public sealed class RunnerEngine
 
                     if (winner == plan)
                     {
-                        try { await plan!.ConfigureAwait(false); }
+                        try
+                        {
+                            await plan!.ConfigureAwait(false);
+                            planCompleted = true;
+                        }
                         catch (Exception ex)
                         {
                             status = "plan_failed";
@@ -617,8 +822,31 @@ public sealed class RunnerEngine
                         break;
                     }
 
+                    if (winner == recordingWriter)
+                    {
+                        try
+                        {
+                            await recordingWriter!
+                                .ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            status = "evidence_failure";
+                            detail =
+                                "Metric evidence writer failed during the active workload: " +
+                                ex;
+                            break;
+                        }
+
+                        status = "evidence_failure";
+                        detail =
+                            "Metric evidence writer stopped before the test ended.";
+                        break;
+                    }
+
                     await winner.ConfigureAwait(false);
-                    throw new IOException("A required runner component stopped unexpectedly.");
+                    throw new IOException(
+                        "A required runner component stopped unexpectedly.");
                 }
             }
         }
@@ -661,7 +889,7 @@ public sealed class RunnerEngine
             if (process is not null && started)
             {
                 exited = HasExited(process);
-                var preserveTarget =
+                preserveTarget =
                     !exited &&
                     _config.Reliability.PreserveTargetOnRunnerError &&
                     status is ("runner_error" or "control_error");
@@ -726,10 +954,23 @@ public sealed class RunnerEngine
             }
 
             await SettleAsync(plan, "plan").ConfigureAwait(false);
+            if (plan is null ||
+                plan.IsCompletedSuccessfully ||
+                _control.QuitRequested)
+            {
+                planCompleted = true;
+            }
+
             await SettleAsync(watchdog, "watchdog").ConfigureAwait(false);
+
+            telemetry?.SetSegment(null);
+            timeline?.Dispose();
+
             _diagnostics.Detach();
             _activity.Detach();
-            _control.End();
+
+            if (!preserveTarget)
+                _control.End();
 
             if (metricRecordingStarted && telemetry is not null)
             {
@@ -740,41 +981,99 @@ public sealed class RunnerEngine
                 }
                 catch (Exception ex)
                 {
-                    status = "runner_error";
+                    if (status == "completed")
+                        status = "evidence_failure";
+
                     detail = (detail ?? "") +
-                        " Metric recording finalization failed: " + ex.Message;
+                        " Metric recording finalization failed: " +
+                        ex.Message;
                 }
             }
 
-            if (stdout is not null || stderr is not null)
+            if (!preserveTarget)
             {
-                try
+                if (stdout is not null || stderr is not null)
                 {
-                    await Task.WhenAll(
-                        stdout ?? Task.CompletedTask,
-                        stderr ?? Task.CompletedTask).WaitAsync(
-                            TimeSpan.FromMilliseconds(_config.Reliability.ProcessExitTimeoutMs))
-                        .ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    logsCts.Cancel();
-                    detail = (detail ?? "") + " Log drain: " + ex.Message;
-                }
-                await SettleAsync(stdout, "stdout").ConfigureAwait(false);
-                await SettleAsync(stderr, "stderr").ConfigureAwait(false);
-            }
+                    try
+                    {
+                        await Task.WhenAll(
+                            stdout ?? Task.CompletedTask,
+                            stderr ?? Task.CompletedTask).WaitAsync(
+                                TimeSpan.FromMilliseconds(_config.Reliability.ProcessExitTimeoutMs))
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        logsCts.Cancel();
+                        detail = (detail ?? "") +
+                            " Log drain: " + ex.Message;
+                    }
 
-            if (stdoutFile is not null)
-                await stdoutFile.DisposeAsync().ConfigureAwait(false);
-            if (stderrFile is not null)
-                await stderrFile.DisposeAsync().ConfigureAwait(false);
-            if (launch is not null)
-                await launch.DisposeAsync().ConfigureAwait(false);
+                    await SettleAsync(
+                        stdout,
+                        "stdout").ConfigureAwait(false);
+                    await SettleAsync(
+                        stderr,
+                        "stderr").ConfigureAwait(false);
+                }
+
+                if (stdoutFile is not null)
+                    await stdoutFile.DisposeAsync().ConfigureAwait(false);
+                if (stderrFile is not null)
+                    await stderrFile.DisposeAsync().ConfigureAwait(false);
+                if (launch is not null)
+                    await launch.DisposeAsync().ConfigureAwait(false);
+            }
         }
 
         var quality = activity.Snapshot();
         activity.Dispose();
+
+        if (job is not null)
+        {
+            try
+            {
+                workloadEvaluation =
+                    await WorkloadEvaluator.EvaluateAsync(
+                        job,
+                        package,
+                        resultDirectory,
+                        runtimeState,
+                        checked((int)Math.Min(
+                            int.MaxValue,
+                            metricSummary?.Samples ?? 0)),
+                        planCompleted,
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                workloadEvaluation = new WorkloadEvaluation(
+                    job.Workload.CorrectnessChecks.Count > 0
+                        ? CorrectnessOutcome.Incomplete
+                        : CorrectnessOutcome.NotEvaluated,
+                    EvidenceOutcome.Invalid,
+                    [
+                        new AssessmentCheck(
+                            "workload_evaluation",
+                            false,
+                            "evidence",
+                            ex.ToString())
+                    ],
+                    []);
+            }
+        }
+
+        assessment = RunAssessmentEvaluator.Evaluate(
+            status,
+            workloadEvaluation,
+            quality,
+            job);
+
+        AtomicJson.Write(
+            Path.Combine(resultDirectory, "assessment.json"),
+            assessment);
+
         AtomicJson.Write(Path.Combine(resultDirectory, "result.json"), new
         {
             runId,
@@ -799,7 +1098,24 @@ public sealed class RunnerEngine
             automaticDiagnosticError = automaticBundleError,
             diagnostics = _diagnostics.Snapshot().Completed,
             operatorActivity = quality,
-            comparisonStatus = quality.Intervened ? "operator_intervened" : "not_evaluated",
+            workload = workloadEvaluation,
+            assessment,
+            correctnessStatus =
+                assessment.Correctness.ToString().ToLowerInvariant(),
+            evidenceStatus =
+                assessment.Evidence.ToString().ToLowerInvariant(),
+            comparisonStatus =
+                assessment.Comparison.ToString().ToLowerInvariant(),
+            experiment = job?.Experiment,
+            operations = job?.Operations,
+            inputManifest = inputManifest is null
+                ? null
+                : "input-manifest.json",
+            runtimeDirectory = runtimeState?.Directory,
+            hostInventory =
+                hostInventory is null
+                    ? null
+                    : "host-inventory.json",
             workstationStart,
             workstationEnd = _state.Snapshot().Workstation,
             host = HostInfo(),
@@ -819,6 +1135,66 @@ public sealed class RunnerEngine
             }
         });
 
+        if (job is not null &&
+            !(started && !exited))
+        {
+            var runtimeSuccess =
+                assessment.Execution ==
+                    ExecutionOutcome.Completed &&
+                assessment.Correctness is not
+                    (CorrectnessOutcome.Failed or
+                     CorrectnessOutcome.Incomplete) &&
+                assessment.Evidence is not
+                    (EvidenceOutcome.Incomplete or
+                     EvidenceOutcome.Invalid);
+
+            RuntimeStateManager.Cleanup(
+                job.RuntimeState,
+                runtimeState,
+                runtimeSuccess);
+        }
+
+        if (preserveTarget &&
+            process is not null &&
+            launch is not null &&
+            job is not null)
+        {
+            holdPackage = true;
+            packageIssue = new QueueIssue(
+                "preserved_target",
+                Path.GetFileName(package),
+                "xemu is intentionally preserved after a runner/control failure. The runner remains available for inspection; use POST /api/v1/xemu/quit or stop xemu externally when finished.",
+                DateTimeOffset.UtcNow,
+                Retryable: false,
+                HoldsTesting: true);
+
+            attempt.Phase = "held";
+            AttemptJournal.Write(package, attempt);
+
+            _preservedTarget = new PreservedTarget(
+                launch,
+                process,
+                package,
+                attempt,
+                job.Id,
+                resultDirectory,
+                stdout,
+                stderr,
+                stdoutFile,
+                stderrFile,
+                job.RuntimeState,
+                runtimeState);
+
+            _state.EndJob(
+                status,
+                job.Id,
+                resultDirectory,
+                failed: true);
+            _state.SetQueueIssue(packageIssue);
+            _state.SetPhase("queue_blocked");
+            return;
+        }
+
         if ((started && !exited) || componentStuck)
             throw new IOException(detail);
 
@@ -829,7 +1205,16 @@ public sealed class RunnerEngine
             _state.EndJob(
                 status,
                 job?.Id ?? Path.GetFileName(package),
-                resultDirectory);
+                resultDirectory,
+                failed:
+                    assessment.Execution !=
+                        ExecutionOutcome.Completed ||
+                    assessment.Correctness is
+                        (CorrectnessOutcome.Failed or
+                         CorrectnessOutcome.Incomplete) ||
+                    assessment.Evidence is
+                        (EvidenceOutcome.Incomplete or
+                         EvidenceOutcome.Invalid));
             _state.SetQueueIssue(packageIssue);
             _state.SetPhase("queue_blocked");
             return;
@@ -840,9 +1225,18 @@ public sealed class RunnerEngine
         _queue.Complete(package);
         _state.SetQueueIssue(null);
         _state.EndJob(
-                status,
-                job?.Id ?? Path.GetFileName(package),
-                resultDirectory);
+            status,
+            job?.Id ?? Path.GetFileName(package),
+            resultDirectory,
+            failed:
+                assessment.Execution !=
+                    ExecutionOutcome.Completed ||
+                assessment.Correctness is
+                    (CorrectnessOutcome.Failed or
+                     CorrectnessOutcome.Incomplete) ||
+                assessment.Evidence is
+                    (EvidenceOutcome.Incomplete or
+                     EvidenceOutcome.Invalid));
 
         async Task SettleAsync(Task? task, string component)
         {
@@ -869,6 +1263,117 @@ public sealed class RunnerEngine
             }
         }
     }
+
+    private async Task ReapPreservedTargetAsync()
+    {
+        var held = _preservedTarget;
+        if (held is null || !HasExited(held.Process))
+            return;
+
+        _preservedTarget = null;
+        var processId = held.Process.Id;
+        var exitCode = held.Process.ExitCode;
+        _control.End();
+
+        try
+        {
+            if (held.StandardOutput is not null ||
+                held.StandardError is not null)
+            {
+                await Task.WhenAll(
+                    held.StandardOutput ?? Task.CompletedTask,
+                    held.StandardError ?? Task.CompletedTask)
+                    .WaitAsync(
+                        TimeSpan.FromMilliseconds(
+                            _config.Reliability.ProcessExitTimeoutMs))
+                    .ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+        }
+
+        if (held.StandardOutputFile is not null)
+            await held.StandardOutputFile.DisposeAsync()
+                .ConfigureAwait(false);
+        if (held.StandardErrorFile is not null)
+            await held.StandardErrorFile.DisposeAsync()
+                .ConfigureAwait(false);
+
+        await held.Launch.DisposeAsync()
+            .ConfigureAwait(false);
+
+        held.Attempt.Phase = "exited";
+        AttemptJournal.Write(
+            held.Package,
+            held.Attempt);
+
+        RuntimeStateManager.Cleanup(
+            held.RuntimeDefinition,
+            held.RuntimeState,
+            success: false);
+
+        AtomicJson.Write(
+            Path.Combine(
+                held.ResultDirectory,
+                "preserved-target-exit.json"),
+            new
+            {
+                endedUtc = DateTimeOffset.UtcNow,
+                processId,
+                exitCode
+            });
+
+        _queue.Complete(held.Package);
+        _state.SetQueueIssue(null);
+        _state.SetQueue(_queue.Snapshot());
+        _state.SetPhase("idle");
+    }
+
+    private async Task ReleasePreservedTargetHandlesAsync()
+    {
+        var held = _preservedTarget;
+        if (held is null)
+            return;
+
+        _preservedTarget = null;
+
+        try
+        {
+            if (held.StandardOutputFile is not null)
+                await held.StandardOutputFile.DisposeAsync()
+                    .ConfigureAwait(false);
+            if (held.StandardErrorFile is not null)
+                await held.StandardErrorFile.DisposeAsync()
+                    .ConfigureAwait(false);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            await held.Launch.DisposeAsync()
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+        }
+    }
+
+    private sealed record PreservedTarget(
+        TargetLaunch Launch,
+        Process Process,
+        string Package,
+        AttemptRecord Attempt,
+        string JobId,
+        string ResultDirectory,
+        Task? StandardOutput,
+        Task? StandardError,
+        FileStream? StandardOutputFile,
+        FileStream? StandardErrorFile,
+        RuntimeStateDefinition RuntimeDefinition,
+        RuntimeMaterialization? RuntimeState);
 
     private static PreflightReport AddPreflightFailure(
         PreflightReport report,

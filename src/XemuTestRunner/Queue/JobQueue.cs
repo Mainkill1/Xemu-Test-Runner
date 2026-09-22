@@ -474,6 +474,12 @@ public sealed class JobQueue
         critical.AddRange(
             job.RequiredFiles.Select(relative =>
                 JobDefinition.ResolveInsidePackage(package, relative)));
+        critical.AddRange(
+            job.Inputs.Select(input =>
+                JobDefinition.ResolveInsidePackage(package, input.Path)));
+        critical.AddRange(
+            job.RuntimeState.Files.Select(runtimeFile =>
+                JobDefinition.ResolveInsidePackage(package, runtimeFile.Source)));
 
         var stamps = new List<string>(critical.Count);
         foreach (var path in critical.Distinct(
@@ -614,7 +620,42 @@ public sealed record QueueIssue(
     string Message,
     DateTimeOffset DetectedUtc,
     bool Retryable,
-    bool HoldsTesting);
+    bool HoldsTesting)
+{
+    public string Hint => Code switch
+    {
+        "package_stabilizing" =>
+            "Wait for the package to remain unchanged. Prefer staging under .incoming-<name> and rename into Pending only when complete.",
+        "package_incomplete" =>
+            "Finish copying job.json, the candidate executable, Inputs, RuntimeState seeds, and RequiredFiles. Prefer .incoming-* staging.",
+        "package_busy" =>
+            "Finish/stop the copy, rename, scanner, editor, or other process holding the package files, then retry.",
+        "package_moved" =>
+            "Verify the package still exists under Pending and was not renamed or removed while the runner was claiming it.",
+        "package_access_denied" =>
+            "Correct filesystem permissions/ownership so the runner can read and atomically move the package.",
+        "package_invalid" =>
+            "Run 'xemu-test-runner validate <package> -c runner.json' and correct the reported job.json field or path.",
+        "package_claim_conflict" =>
+            "Inspect Queue/Testing for the same package name. Do not overwrite an owned Testing package.",
+        "package_changed_during_claim" or
+        "package_changed_during_preflight" =>
+            "Do not modify a package after it becomes visible/claimed. Inspect the held Testing package, rebuild/stage a fresh package, then requeue it.",
+        "package_claim_missing" or
+        "package_claim_invalid" =>
+            "Treat the Testing package as held. Inspect .runner-claim.json/.runner-claim-error.json before manually requeueing.",
+        "testing_occupied" =>
+            "Inspect the package/process recorded in Testing and resolve or finalize that attempt before starting another.",
+        "preserved_target" =>
+            "Inspect the preserved xemu target. Use POST /api/v1/xemu/quit or stop xemu externally when finished; do not manually move its Testing package.",
+        "package_wait_timeout" =>
+            "Finish staging the package or remove/fix the blocked Pending entry, then run the finite request again.",
+        _ =>
+            Retryable
+                ? "Correct the temporary queue condition and retry."
+                : "Inspect the package evidence/claim files before modifying queue state."
+    };
+}
 
 public sealed record QueueClaimResult(
     string? Package,

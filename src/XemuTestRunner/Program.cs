@@ -13,6 +13,7 @@ app.Configure(config =>
     config.AddCommand<DoctorCommand>("doctor").WithDescription("Check platform and provider availability.");
     config.AddCommand<ToolsCommand>("tools").WithDescription("Show deep diagnostic tool readiness.");
     config.AddCommand<ValidateCommand>("validate").WithDescription("Check a packaged build before launching it.");
+    config.AddCommand<CompareCommand>("compare").WithDescription("Aggregate eligible measurements for an experiment.");
 });
 using var shutdown = new CancellationTokenSource();
 ConsoleCancelEventHandler handler = (_, e) => { e.Cancel = true; shutdown.Cancel(); };

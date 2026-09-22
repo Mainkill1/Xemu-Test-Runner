@@ -24,6 +24,7 @@ public sealed class RunnerState
     private int _jobsFinished;
     private int _failedJobs;
     private string? _lastResultDirectory;
+    private OperationPolicyDefinition _operations = new();
 
     public void SetPhase(string phase) { lock (_gate) _phase = phase; }
     public void SetHttpEndpoint(string? endpoint) { lock (_gate) _httpEndpoint = endpoint; }
@@ -32,7 +33,11 @@ public sealed class RunnerState
     public void SetWorkstationState(WorkstationStateSnapshot workstation) { lock (_gate) _workstation = workstation; }
     public bool HasActiveJob { get { lock (_gate) return _currentJob is not null; } }
 
-    public void BeginJob(string jobId, string runId, int processId)
+    public void BeginJob(
+        string jobId,
+        string runId,
+        int processId,
+        OperationPolicyDefinition? operations = null)
     {
         lock (_gate)
         {
@@ -42,6 +47,7 @@ public sealed class RunnerState
             _processId = processId;
             _jobStartedUtc = DateTimeOffset.UtcNow;
             _latestMetric = null;
+            _operations = operations ?? new OperationPolicyDefinition();
         }
     }
 
@@ -50,7 +56,8 @@ public sealed class RunnerState
     public void EndJob(
         string result,
         string? jobId = null,
-        string? resultDirectory = null)
+        string? resultDirectory = null,
+        bool? failed = null)
     {
         lock (_gate)
         {
@@ -59,9 +66,13 @@ public sealed class RunnerState
             _lastFinishedUtc = DateTimeOffset.UtcNow;
             _lastResultDirectory = resultDirectory;
             _jobsFinished++;
-            if (!result.Equals(
+            var countsAsFailure =
+                failed ??
+                !result.Equals(
                     "completed",
-                    StringComparison.OrdinalIgnoreCase))
+                    StringComparison.OrdinalIgnoreCase);
+
+            if (countsAsFailure)
                 _failedJobs++;
             _phase = "idle";
             _currentJob = null;
@@ -69,6 +80,7 @@ public sealed class RunnerState
             _processId = null;
             _jobStartedUtc = null;
             _latestMetric = null;
+            _operations = new OperationPolicyDefinition();
         }
     }
 
@@ -97,7 +109,8 @@ public sealed class RunnerState
                 _queueIssue,
                 _jobsFinished,
                 _failedJobs,
-                _lastResultDirectory);
+                _lastResultDirectory,
+                _operations);
         }
     }
 }
@@ -121,4 +134,5 @@ public sealed record RunnerStateSnapshot(
     QueueIssue? QueueIssue,
     int JobsFinished,
     int FailedJobs,
-    string? LastResultDirectory);
+    string? LastResultDirectory,
+    OperationPolicyDefinition Operations);

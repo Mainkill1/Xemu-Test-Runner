@@ -69,17 +69,38 @@ try
         using var again = WorkspaceLease.Acquire(workspace);
         return Task.CompletedTask;
     });
-    await Check("ambiguous attempt is held, finalized attempt is archived", () =>
+    await Check("recovery requires released ownership before archiving durable results", () =>
     {
-        Assert(AttemptJournal.RecoveryDecision(null, false, 2) == RecoveryAction.Hold, "Missing identity must not be retried.");
-        var a = new AttemptRecord { Attempt = 1, Phase = "starting" };
-        Assert(AttemptJournal.RecoveryDecision(a, false, 2) == RecoveryAction.Hold, "Launch/PID-write gap must be held.");
-        Assert(AttemptJournal.RecoveryDecision(a, true, 2) == RecoveryAction.Archive, "Durable result must not be replayed.");
-        a.Phase = "exited"; a.Attempt = 3;
-        Assert(AttemptJournal.RecoveryDecision(a, false, 2) == RecoveryAction.Exhausted, "Retries must be bounded.");
+        Assert(AttemptJournal.RecoveryDecision(null, false, 2) == RecoveryAction.Hold,
+            "Missing identity must not be retried.");
+
+        var attempt = new AttemptRecord { Attempt = 1, Phase = "starting" };
+        Assert(AttemptJournal.RecoveryDecision(attempt, false, 2) == RecoveryAction.Hold,
+            "Launch/PID-write gap must be held.");
+        Assert(AttemptJournal.RecoveryDecision(attempt, true, 2) == RecoveryAction.Hold,
+            "A result file cannot release ambiguous launch ownership.");
+
+        attempt.Phase = "finalized";
+        Assert(AttemptJournal.RecoveryDecision(attempt, true, 2) == RecoveryAction.Archive,
+            "A finalized attempt with released ownership must archive without replay.");
+        attempt.Phase = "held";
+        Assert(AttemptJournal.RecoveryDecision(attempt, true, 2) == RecoveryAction.Hold,
+            "A durable result must not clear an explicit hold.");
+
+        attempt.Phase = "exited";
+        attempt.Attempt = 3;
+        Assert(AttemptJournal.RecoveryDecision(attempt, false, 2) == RecoveryAction.Exhausted,
+            "Retries must be bounded.");
+
         using var current = Process.GetCurrentProcess();
-        a.Phase = "running"; a.Attempt = 1; a.ProcessId = current.Id; a.ProcessStartedUtc = current.StartTime.ToUniversalTime();
-        Assert(AttemptJournal.RecoveryDecision(a, false, 2) == RecoveryAction.Hold, "Live orphan must be held, never duplicated.");
+        attempt.Phase = "running";
+        attempt.Attempt = 1;
+        attempt.ProcessId = current.Id;
+        attempt.ProcessStartedUtc = current.StartTime.ToUniversalTime();
+        Assert(AttemptJournal.RecoveryDecision(attempt, false, 2) == RecoveryAction.Hold,
+            "A live orphan must be held, never duplicated.");
+        Assert(AttemptJournal.RecoveryDecision(attempt, true, 2) == RecoveryAction.Hold,
+            "A durable result cannot release a matching live process.");
         return Task.CompletedTask;
     });
     await Check("recovery retains durable retry intent and excludes cleanup failure", () =>

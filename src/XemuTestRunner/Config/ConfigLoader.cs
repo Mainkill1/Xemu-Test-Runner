@@ -1,14 +1,26 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace XemuTestRunner.Config;
 
 public static class ConfigLoader
 {
-    public static readonly JsonSerializerOptions JsonOptions = new()
+    public static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
+
+    private static JsonSerializerOptions CreateJsonOptions()
     {
-        PropertyNameCaseInsensitive = true, ReadCommentHandling = JsonCommentHandling.Skip,
-        AllowTrailingCommas = true, WriteIndented = true
-    };
+        var options = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            ReadCommentHandling = JsonCommentHandling.Skip,
+            AllowTrailingCommas = true,
+            WriteIndented = true
+        };
+        options.Converters.Add(
+            new JsonStringEnumConverter(
+                JsonNamingPolicy.CamelCase));
+        return options;
+    }
     public static (RunnerConfig Config, RunnerPaths Paths) Load(string path)
     {
         var full = Path.GetFullPath(path);
@@ -50,9 +62,11 @@ public static class ConfigLoader
             c.Monitoring.FlushIntervalMs <= 0 ||
             c.Monitoring.BufferCapacity < 16 ||
             c.Queue.ScanIntervalMs <= 0 ||
-            c.Queue.PackageStabilityMs < 100)
+            c.Queue.PackageStabilityMs < 100 ||
+            c.Queue.FiniteWaitTimeoutSeconds < 0 ||
+            c.Queue.FiniteWaitTimeoutSeconds > 3600)
             throw new InvalidDataException(
-                "Sampling/flush/queue intervals must be positive; PackageStabilityMs must be at least 100; buffer capacity must be at least 16.");
+                "Sampling/flush/queue intervals must be positive; PackageStabilityMs must be at least 100; FiniteWaitTimeoutSeconds must be between 0 and 3600; buffer capacity must be at least 16.");
         if (c.Monitoring.Gpu.SampleIntervalMs < c.Monitoring.IntervalMs ||
             c.Monitoring.Gpu.SensorIntervalMs < c.Monitoring.Gpu.SampleIntervalMs ||
             c.Monitoring.Gpu.CounterRefreshMs < c.Monitoring.Gpu.SampleIntervalMs)

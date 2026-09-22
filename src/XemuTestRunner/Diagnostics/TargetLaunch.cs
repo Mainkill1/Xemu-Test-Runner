@@ -35,6 +35,7 @@ public sealed class TargetLaunch : IAsyncDisposable
         string executable,
         string workingDirectory,
         IReadOnlyList<string> arguments,
+        IReadOnlyDictionary<string, string> environment,
         string resultDirectory,
         CancellationToken cancellationToken)
     {
@@ -47,7 +48,7 @@ public sealed class TargetLaunch : IAsyncDisposable
                 executable,
                 workingDirectory,
                 arguments,
-                job.Environment,
+                environment,
                 Path.Combine(resultDirectory, "diagnostics", "_renderdoc-session"),
                 cancellationToken).ConfigureAwait(false);
             return new TargetLaunch(
@@ -70,7 +71,7 @@ public sealed class TargetLaunch : IAsyncDisposable
         };
         foreach (var argument in arguments)
             startInfo.ArgumentList.Add(argument);
-        foreach (var variable in job.Environment)
+        foreach (var variable in environment)
             startInfo.Environment[variable.Key] = variable.Value;
 
         var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };

@@ -22,6 +22,7 @@ public sealed class QueueOptions
     public string Results { get; set; } = "Results";
     public int ScanIntervalMs { get; set; } = 500;
     public int PackageStabilityMs { get; set; } = 750;
+    public int FiniteWaitTimeoutSeconds { get; set; } = 30;
     public string InterruptedAction { get; set; } = "retry";
 }
 public sealed class MonitoringOptions

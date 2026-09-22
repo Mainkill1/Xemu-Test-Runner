@@ -3,6 +3,7 @@ namespace XemuTestRunner.Monitoring;
 public sealed record MetricSample
 {
     public DateTimeOffset TimestampUtc { get; init; } = DateTimeOffset.UtcNow;
+    public string? MeasurementSegment { get; init; }
     public double? HostCpuPercent { get; init; }
     public double? ProcessCpuPercent { get; init; }
     public long? HostMemoryTotalBytes { get; init; }
