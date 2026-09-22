@@ -11,6 +11,7 @@ using XemuTestRunner.Monitoring.Providers;
 using XemuTestRunner.Networking;
 using XemuTestRunner.Queue;
 using XemuTestRunner.Reliability;
+using XemuTestRunner.Runtime;
 using XemuTestRunner.Workstation;
 
 if (args.Contains("--fake-xemu", StringComparer.Ordinal))
@@ -766,11 +767,12 @@ try
             Arguments = ["--fake-xemu", "--fake-runtime-ms", "15000"],
             TimeoutSeconds = 5,
             StartPaused = true,
+            Operations = new OperationPolicyDefinition { Mode = "benchmark", AllowPreview = true },
             Plan =
             [
                 new JobStep { Type = "screenshot", Name = "integration-frame" },
                 new JobStep { Type = "resume" },
-                new JobStep { Type = "wait", DelayMs = 100 },
+                new JobStep { Type = "wait", DelayMs = 1000 },
                 new JobStep { Type = "pause" },
                 new JobStep { Type = "resume" },
                 new JobStep { Type = "quit" }
@@ -788,6 +790,26 @@ try
             using var statusJson = await WaitForActiveRunAsync(client, TimeSpan.FromSeconds(3));
             Assert(statusJson.RootElement.GetProperty("RunId").ValueKind == JsonValueKind.String,
                 "The live HTTP status did not identify the active run.");
+
+            using var input = await client.PostAsync(
+                "/api/v1/input/press",
+                new StringContent("{\"Button\":\"A\",\"DurationMs\":100}", Encoding.UTF8, "application/json"));
+            Assert(input.StatusCode == HttpStatusCode.Conflict,
+                $"Blocked input returned {(int)input.StatusCode}, expected 409.");
+            Assert(input.Headers.ConnectionClose == true,
+                "A rejected request body must close the HTTP connection without draining it.");
+            Assert((await input.Content.ReadAsStringAsync()).Contains("operation_blocked", StringComparison.Ordinal),
+                "Blocked input did not return the structured operation policy error.");
+
+            using var upload = await client.PutAsync(
+                "/api/v1/files/blocked.txt",
+                new StringContent("must-not-land", Encoding.UTF8, "application/octet-stream"));
+            Assert(upload.StatusCode == HttpStatusCode.Conflict,
+                $"Blocked upload returned {(int)upload.StatusCode}, expected 409.");
+            Assert((await upload.Content.ReadAsStringAsync()).Contains("operation_blocked", StringComparison.Ordinal),
+                "Blocked upload did not return the structured operation policy error.");
+            Assert(!File.Exists(Path.Combine(paths.FileRoot, "blocked.txt")),
+                "The blocked upload unexpectedly created its destination file.");
         }
         finally
         {
