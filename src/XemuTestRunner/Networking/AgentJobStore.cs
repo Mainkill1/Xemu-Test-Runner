@@ -9,11 +9,12 @@ namespace XemuTestRunner.Networking;
 /// <summary>
 /// API-owned packages remain hidden until explicitly submitted. The queue and
 /// this store compete using directory renames, never by editing a visible job.
-/// A successful claim therefore makes an API withdrawal fail, and vice versa.
+/// A successful claim makes an API withdrawal fail, and vice versa.
 /// </summary>
 internal sealed partial class AgentJobStore
 {
     private const int MaximumFiles = 4096;
+    private const long MaximumStateBytes = 8 * 1024 * 1024;
     private readonly RunnerPaths _paths;
     private readonly FileUploadStore _uploads;
     private readonly PreflightOptions _preflight;
@@ -46,20 +47,22 @@ internal sealed partial class AgentJobStore
                 throw Conflict("job_identity_conflict", "This job ID belongs to a different creation request.",
                     "Use a new ID for a new attempt, or use PUT plan with the current revision to edit a draft.");
             }
-            return Get(request.Id);
+            return BuildView(request.Id, includeReservation: false);
         }
 
         Directory.CreateDirectory(home);
         var draft = Draft(request.Id);
         Directory.CreateDirectory(draft);
-        // Validate the plan through the same loader used by the runner. The
-        // payload need not exist yet; file readiness is checked by validate/submit.
+        // The payload need not exist yet. Use the runner's actual plan parser;
+        // physical readiness and content hashes are checked by validate/submit.
         WritePlan(draft, request.Job);
         AtomicJson.Write(documentPath, new AgentJobDocument(request, creationHash, DateTimeOffset.UtcNow));
-        return Get(request.Id);
+        return BuildView(request.Id, includeReservation: false);
     }
 
-    public AgentJobView Get(string id)
+    public AgentJobView Get(string id) => BuildView(id, includeReservation: true);
+
+    private AgentJobView BuildView(string id, bool includeReservation)
     {
         var document = ReadDocument(id);
         var (state, package) = Locate(id);
@@ -72,12 +75,13 @@ internal sealed partial class AgentJobStore
 
         var operation = GetOperation(id);
         bool busy;
-        lock (_gate) { busy = _busy.Contains(id); }
+        lock (_gate) { busy = includeReservation && _busy.Contains(id); }
         var baseUrl = Url(id);
         var actions = new Dictionary<string, AgentAction>
         {
             ["self"] = new("GET", baseUrl, "Read state and the current plan revision."),
-            ["files"] = new("GET", baseUrl + "/files", "Inspect declarations and committed upload offsets.")
+            ["files"] = new("GET", baseUrl + "/files", "Inspect declarations and committed upload offsets."),
+            ["validation"] = new("GET", baseUrl + "/validation", "Read the last structured validation report, or null before validation.")
         };
         if (operation is not null)
             actions["operation"] = new("GET", baseUrl + "/operation", "Poll the last operation; do not resubmit while running.");
@@ -89,9 +93,9 @@ internal sealed partial class AgentJobStore
         }
         if (!busy && state == "queued")
             actions["withdraw"] = new("POST", baseUrl + "/withdraw", "Return to draft only if the queue has not claimed it.");
-        if (!busy && state is "draft" or "queued")
+        if (!busy && state is ("draft" or "queued"))
             actions["cancel"] = new("DELETE", baseUrl, "Cancel an unstarted job, retaining its files.");
-        if (!busy && state is "draft" or "tested" or "cancelled")
+        if (!busy && state is ("draft" or "tested" or "cancelled"))
             actions["clone"] = new("POST", baseUrl + "/clone", "Copy this package into a new draft ID for a separate attempt.");
         if (runId is not null)
         {
@@ -111,7 +115,18 @@ internal sealed partial class AgentJobStore
                 .Where(id => id is not null && IsId(id) && File.Exists(System.IO.Path.Combine(Home(id), "request.json")))
                 .OrderBy(id => id, StringComparer.Ordinal).Skip(offset).Take(limit + 1).ToArray()
             : [];
-        var items = ids.Take(limit).Select(id => Get(id!)).ToArray();
+        // A page must not replicate up to 100 full multi-megabyte manifests.
+        var items = ids.Take(limit).Select(id =>
+        {
+            var job = Get(id!);
+            return new
+            {
+                job.Id, job.State, job.CreatedUtc, job.RunId,
+                fileCount = job.Files.Count,
+                operationState = job.Operation?.State,
+                self = Url(job.Id)
+            };
+        }).ToArray();
         return new { items, nextOffset = ids.Length > limit ? (int?)(offset + limit) : null };
     }
 
@@ -143,9 +158,11 @@ internal sealed partial class AgentJobStore
         var package = RequireDraft(id);
         var file = FindFile(document, relative);
         if ((range?.Total ?? length) != file.Length)
-            throw BadRequest("file_length_mismatch", "The upload length does not match its declaration.", "Send the declared whole-file length and sequential ranges, or create a new package.");
+            throw BadRequest("file_length_mismatch", "The upload length does not match its declaration.",
+                "Send the declared whole-file length and sequential ranges, or create a new package.");
         if (requestedHash is not null && !requestedHash.Equals(file.Sha256, StringComparison.OrdinalIgnoreCase))
-            throw BadRequest("file_digest_mismatch", "The header digest differs from the package declaration.", "Use the declared whole-file digest, not a chunk digest.");
+            throw BadRequest("file_digest_mismatch", "The header digest differs from the package declaration.",
+                "Use the declared whole-file digest, not a chunk digest.");
 
         var target = ResolveFile(package, relative);
         var receipt = await _uploads.ReceiveAsync(body, target, length, range, file.Sha256,
@@ -165,10 +182,11 @@ internal sealed partial class AgentJobStore
         var current = ReadJson<JobDefinition>(System.IO.Path.Combine(draft, "job.json"));
         if (revision != Quote(HashJson(current)))
             throw new AgentRequestException(revision is null ? 428 : 412, "plan_revision_mismatch",
-                "The plan revision is missing or has changed.", "GET this job and send its revision verbatim in If-Match; then retry the edit.");
+                "The plan revision is missing or has changed.",
+                "GET this job and send its revision verbatim in If-Match; then retry the edit.");
         RequireJobId(id, plan);
         WritePlan(draft, plan);
-        return Get(id);
+        return BuildView(id, includeReservation: false);
     }
 
     public AgentJobView Withdraw(string id)
@@ -176,15 +194,17 @@ internal sealed partial class AgentJobStore
         using var lease = Reserve(id);
         _ = ReadDocument(id);
         var location = Locate(id);
-        if (location.State == "draft") return Get(id);
+        if (location.State == "draft") return BuildView(id, includeReservation: false);
         if (location.State != "queued")
-            throw Conflict("job_not_queued", "Only an unclaimed queued job can be withdrawn.", "Inspect the job state. Clone a completed job rather than rewriting its evidence.");
+            throw Conflict("job_not_queued", "Only an unclaimed queued job can be withdrawn.",
+                "Inspect the job state. Clone a completed job rather than rewriting its evidence.");
         try { Directory.Move(location.Package, Draft(id)); }
         catch (IOException exception)
         {
-            throw Conflict("job_claim_race", exception.Message, "The queue may have claimed the package. GET the job before retrying; never edit Testing.");
+            throw Conflict("job_claim_race", exception.Message,
+                "The queue may have claimed the package. GET the job before retrying; never edit Testing.");
         }
-        return Get(id);
+        return BuildView(id, includeReservation: false);
     }
 
     public AgentJobView Cancel(string id)
@@ -192,24 +212,29 @@ internal sealed partial class AgentJobStore
         using var lease = Reserve(id);
         _ = ReadDocument(id);
         var location = Locate(id);
-        if (location.State == "cancelled") return Get(id);
+        if (location.State == "cancelled") return BuildView(id, includeReservation: false);
         if (location.State is not ("draft" or "queued"))
-            throw Conflict("job_already_started", "An active or completed attempt cannot be deleted through cancellation.", "Use the target-control API to stop an active target. Evidence is immutable; clone for another attempt.");
+            throw Conflict("job_already_started", "An active or completed attempt cannot be deleted through cancellation.",
+                "Use the target-control API to stop an active target. Evidence is immutable; clone for another attempt.");
         try { Directory.Move(location.Package, System.IO.Path.Combine(Home(id), "cancelled")); }
         catch (IOException exception)
         {
-            throw Conflict("job_claim_race", exception.Message, "GET the job again; it may have been claimed before cancellation.");
+            throw Conflict("job_claim_race", exception.Message,
+                "GET the job again; it may have been claimed before cancellation.");
         }
-        return Get(id);
+        return BuildView(id, includeReservation: false);
     }
 
     private void ValidateRequest(AgentJobRequest request)
     {
         if (request is null || !IsId(request.Id))
-            throw BadRequest("job_id_invalid", "Id must be 1..64 lowercase letters, digits or hyphens, starting with a letter or digit.", "Choose a stable, unique ID and reuse it only when retrying the identical creation request.");
+            throw BadRequest("job_id_invalid",
+                "Id must be 1..64 lowercase letters, digits or hyphens, starting with a letter or digit.",
+                "Choose a stable, unique ID and reuse it only when retrying the identical creation request.");
         RequireJobId(request.Id, request.Job);
         if (request.Files is null || request.Files.Count is < 1 or > MaximumFiles)
-            throw BadRequest("files_invalid", $"Declare between 1 and {MaximumFiles} payload files.", "Include the executable and every dependency; job.json is sent as Job, not as a payload file.");
+            throw BadRequest("files_invalid", $"Declare between 1 and {MaximumFiles} payload files.",
+                "Include the executable and every dependency; job.json is sent as Job, not as a payload file.");
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in request.Files)
         {
@@ -220,7 +245,6 @@ internal sealed partial class AgentJobStore
             if (file.Length < 0 || file.Sha256 is null || file.Sha256.Length != 64 || !file.Sha256.All(Uri.IsHexDigit))
                 throw new InvalidDataException("Each file needs a non-negative 64-bit length and a complete SHA-256 digest.");
         }
-        // Reject file/directory collisions before any writes, on both platforms.
         foreach (var name in names)
         {
             var parts = name.Split('/');
@@ -252,7 +276,9 @@ internal sealed partial class AgentJobStore
     private AgentJobDocument ReadDocument(string id)
     {
         var path = System.IO.Path.Combine(Home(id), "request.json");
-        if (!File.Exists(path)) throw new AgentRequestException(404, "job_not_found", "No API job has this ID.", "Create it with POST /api/v1/jobs, or list API jobs first.");
+        if (!File.Exists(path))
+            throw new AgentRequestException(404, "job_not_found", "No API job has this ID.",
+                "Create it with POST /api/v1/jobs, or list API jobs first.");
         return ReadJson<AgentJobDocument>(path);
     }
 
@@ -267,8 +293,8 @@ internal sealed partial class AgentJobStore
             (State: "tested", Package: System.IO.Path.Combine(_paths.Tested, name)),
             (State: "cancelled", Package: System.IO.Path.Combine(Home(id), "cancelled"))
         };
-        // Search the downstream states again if a concurrent rename occurred
-        // during the first pass. A missing result is never permission to resubmit.
+        // Recheck if a concurrent rename crossed the first pass. Missing state
+        // is never permission to publish a second copy of an attempt.
         for (var attempt = 0; attempt < 2; attempt++)
             foreach (var location in locations)
                 if (Directory.Exists(location.Package)) return location;
@@ -279,7 +305,8 @@ internal sealed partial class AgentJobStore
     {
         var location = Locate(id);
         if (location.State != "draft")
-            throw Conflict("job_not_editable", "The package is not an editable draft.", "Withdraw an unclaimed queued job, or clone a completed job to a new ID. Never modify a running attempt.");
+            throw Conflict("job_not_editable", "The package is not an editable draft.",
+                "Withdraw an unclaimed queued job, or clone a completed job to a new ID. Never modify a running attempt.");
         return location.Package;
     }
 
@@ -296,12 +323,21 @@ internal sealed partial class AgentJobStore
     private static string Quote(string value) => "\"" + value + "\"";
     private static string HashJson(object value) => Convert.ToHexString(SHA256.HashData(
         JsonSerializer.SerializeToUtf8Bytes(value, ConfigLoader.JsonOptions))).ToLowerInvariant();
-    private static T ReadJson<T>(string path) => JsonSerializer.Deserialize<T>(File.ReadAllText(path), ConfigLoader.JsonOptions)
-        ?? throw new InvalidDataException("Empty API state document.");
+
+    private static T ReadJson<T>(string path)
+    {
+        // Allow atomic replacement on Windows while an agent polls. Readers
+        // keep a stable handle to their document rather than blocking publication.
+        using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        if (file.Length > MaximumStateBytes) throw new InvalidDataException("API state document exceeds its size limit.");
+        return JsonSerializer.Deserialize<T>(file, ConfigLoader.JsonOptions)
+            ?? throw new InvalidDataException("Empty API state document.");
+    }
 
     private static AgentFile FindFile(AgentJobDocument document, string relative) =>
         document.Request.Files.FirstOrDefault(file => file.Path == relative)
-        ?? throw new AgentRequestException(404, "file_not_declared", "The file is not part of this package's manifest.", "Use a declared path, or create a new package with the intended file set.");
+        ?? throw new AgentRequestException(404, "file_not_declared", "The file is not part of this package's manifest.",
+            "Use a declared path, or create a new package with the intended file set.");
 
     private static void ValidateRelative(string relative)
     {
@@ -323,8 +359,7 @@ internal sealed partial class AgentJobStore
     private static string ResolveFile(string root, string relative)
     {
         ValidateRelative(relative);
-        var fullRoot = System.IO.Path.GetFullPath(root);
-        var current = fullRoot;
+        var current = System.IO.Path.GetFullPath(root);
         if (Directory.Exists(current) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
             throw new InvalidDataException("Linked package directories are not supported.");
         foreach (var part in relative.Split('/'))
@@ -340,7 +375,9 @@ internal sealed partial class AgentJobStore
     {
         _ = Home(id);
         lock (_gate)
-            if (!_busy.Add(id)) throw Conflict("job_busy", "Another operation owns this package.", "Poll the job/operation, then retry when its allowed actions are returned.");
+            if (!_busy.Add(id))
+                throw Conflict("job_busy", "Another operation owns this package.",
+                    "Poll the job/operation, then retry when its allowed actions are returned.");
         return new Reservation(this, id);
     }
     private sealed class Reservation(AgentJobStore owner, string id) : IDisposable

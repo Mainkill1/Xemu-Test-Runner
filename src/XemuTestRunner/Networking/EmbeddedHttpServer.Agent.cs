@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using XemuTestRunner.Config;
 using XemuTestRunner.Queue;
 using XemuTestRunner.Reliability;
 
@@ -15,25 +16,30 @@ public sealed partial class EmbeddedHttpServer
         get
         {
             lock (_agentStoreGate)
-                return _agentStore ??= new AgentJobStore(_paths, _uploads, Reliability.Preflight, _options.TransferBufferBytes);
+            {
+                return _agentStore ??= new AgentJobStore(_paths, _uploads, Reliability.Preflight, _options.TransferBufferBytes)
+                {
+                    Activity = Activity
+                };
+            }
         }
     }
 
     private async Task<bool?> TryAgentRouteAsync(Stream stream, HttpRequest request, CancellationToken ct)
     {
-        if (request.Method == "GET" && request.Path is "/api/v1" or "/api/v1/agent" or "/.well-known/agent.json")
+        if (request.Method == "GET" && request.Path is ("/api/v1" or "/api/v1/agent" or "/.well-known/agent.json"))
         {
-            await WriteAgentJsonAsync(stream, AgentApiCatalog.Describe()).ConfigureAwait(false);
+            await WriteAgentJsonAsync(stream, AgentApiCatalog.Describe(), cancellationToken: ct).ConfigureAwait(false);
             return false;
         }
         if (request.Method == "GET" && request.Path == "/api/v1/openapi.json")
         {
-            await WriteAgentJsonAsync(stream, AgentApiCatalog.OpenApi()).ConfigureAwait(false);
+            await WriteAgentJsonAsync(stream, AgentApiCatalog.OpenApi(), cancellationToken: ct).ConfigureAwait(false);
             return false;
         }
         if (request.Method == "GET" && request.Path == "/api/v1/help")
         {
-            await WriteAgentJsonAsync(stream, new { agent = AgentApiCatalog.Describe(), controls = ApiHelpCatalog.Describe() }).ConfigureAwait(false);
+            await WriteAgentJsonAsync(stream, new { agent = AgentApiCatalog.Describe(), controls = ApiHelpCatalog.Describe() }, cancellationToken: ct).ConfigureAwait(false);
             return false;
         }
 
@@ -42,8 +48,8 @@ public sealed partial class EmbeddedHttpServer
         var responseStarted = false;
         try
         {
-            // All new mutation/transfer responses close the connection. Rejected
-            // requests therefore cannot leave unread bytes framing the next call.
+            // Rejected mutations close the connection, so unread bodies cannot
+            // be interpreted as a second HTTP request on the same connection.
             if (request.Method is not ("GET" or "HEAD"))
             {
                 if (!await EnsureOperationAllowedAsync(stream, "bulk_transfer", false, ct).ConfigureAwait(false)) return false;
@@ -56,14 +62,14 @@ public sealed partial class EmbeddedHttpServer
                 {
                     var body = await ReadAgentBodyAsync<AgentJobRequest>(stream, request, ct).ConfigureAwait(false);
                     var result = AgentJobs.Create(body);
-                    await WriteAgentJsonAsync(stream, result, location: AgentJobStore.Url(result.Id), revision: result.Revision).ConfigureAwait(false);
+                    await WriteAgentJsonAsync(stream, result, location: AgentJobStore.Url(result.Id), revision: result.Revision, cancellationToken: ct).ConfigureAwait(false);
                     return false;
                 }
                 if (request.Method == "GET")
                 {
                     var offset = ReadBoundedQuery(request.Query, "offset", 0, 0, 1000000);
                     var limit = ReadBoundedQuery(request.Query, "limit", 25, 1, 100);
-                    await WriteAgentJsonAsync(stream, AgentJobs.List(offset, limit)).ConfigureAwait(false);
+                    await WriteAgentJsonAsync(stream, AgentJobs.List(offset, limit), cancellationToken: ct).ConfigureAwait(false);
                     return false;
                 }
             }
@@ -71,17 +77,17 @@ public sealed partial class EmbeddedHttpServer
             var parts = suffix.Split('/', 3);
             var id = Uri.UnescapeDataString(parts[0]);
             var action = parts.Length > 1 ? parts[1] : "";
-            if (action == "" && request.Method is "GET" or "DELETE")
+            if (action == "" && request.Method is ("GET" or "DELETE"))
             {
                 var job = request.Method == "DELETE" ? AgentJobs.Cancel(id) : AgentJobs.Get(id);
-                await WriteAgentJsonAsync(stream, job, revision: job.Revision).ConfigureAwait(false);
+                await WriteAgentJsonAsync(stream, job, revision: job.Revision, cancellationToken: ct).ConfigureAwait(false);
                 return false;
             }
             if (parts.Length == 2 && action == "plan" && request.Method == "PUT")
             {
                 var plan = await ReadAgentBodyAsync<JobDefinition>(stream, request, ct).ConfigureAwait(false);
                 var job = AgentJobs.ReplacePlan(id, plan, request.Headers.GetValueOrDefault("If-Match"));
-                await WriteAgentJsonAsync(stream, job, revision: job.Revision).ConfigureAwait(false);
+                await WriteAgentJsonAsync(stream, job, revision: job.Revision, cancellationToken: ct).ConfigureAwait(false);
                 return false;
             }
             if (parts.Length == 2 && request.Method == "GET")
@@ -95,7 +101,7 @@ public sealed partial class EmbeddedHttpServer
                 };
                 if (action is "files" or "operation" or "validation")
                 {
-                    await WriteAgentJsonAsync(stream, result).ConfigureAwait(false);
+                    await WriteAgentJsonAsync(stream, result, cancellationToken: ct).ConfigureAwait(false);
                     return false;
                 }
             }
@@ -104,20 +110,20 @@ public sealed partial class EmbeddedHttpServer
                 if (action == "withdraw")
                 {
                     var job = AgentJobs.Withdraw(id);
-                    await WriteAgentJsonAsync(stream, job, revision: job.Revision).ConfigureAwait(false);
+                    await WriteAgentJsonAsync(stream, job, revision: job.Revision, cancellationToken: ct).ConfigureAwait(false);
                     return false;
                 }
                 if (action is "submit" or "validate")
                 {
                     var operation = AgentJobs.StartValidation(id, action == "submit", ct);
-                    await WriteAgentJsonAsync(stream, operation, 202, AgentJobStore.Url(id) + "/operation").ConfigureAwait(false);
+                    await WriteAgentJsonAsync(stream, operation, 202, AgentJobStore.Url(id) + "/operation", cancellationToken: ct).ConfigureAwait(false);
                     return false;
                 }
                 if (action == "clone")
                 {
                     var clone = await ReadAgentBodyAsync<CloneJobRequest>(stream, request, ct).ConfigureAwait(false);
                     var operation = AgentJobs.Clone(id, clone.NewId, ct);
-                    await WriteAgentJsonAsync(stream, operation, 202, AgentJobStore.Url(operation.JobId) + "/operation").ConfigureAwait(false);
+                    await WriteAgentJsonAsync(stream, operation, 202, AgentJobStore.Url(operation.JobId) + "/operation", cancellationToken: ct).ConfigureAwait(false);
                     return false;
                 }
             }
@@ -126,7 +132,7 @@ public sealed partial class EmbeddedHttpServer
                 var relative = Uri.UnescapeDataString(parts[2]);
                 if (request.Method == "GET" && QueryContains(request.Query, "upload-status", "1"))
                 {
-                    await WriteAgentJsonAsync(stream, AgentJobs.FileStatus(id, relative)).ConfigureAwait(false);
+                    await WriteAgentJsonAsync(stream, AgentJobs.FileStatus(id, relative), cancellationToken: ct).ConfigureAwait(false);
                     return false;
                 }
                 if (request.Method is "PUT" or "POST")
@@ -135,20 +141,30 @@ public sealed partial class EmbeddedHttpServer
                     using var transfer = Activity.TrackTransfer(new { apiJob = id, file = relative, action = "upload" });
                     var receipt = await AgentJobs.UploadAsync(id, relative, stream, upload.Length, upload.Range,
                         upload.ExpectedHash, upload.Id, ct).ConfigureAwait(false);
-                    await WriteAgentJsonAsync(stream, receipt, receipt.Complete ? 201 : 202).ConfigureAwait(false);
+                    await WriteAgentJsonAsync(stream, receipt, receipt.Complete ? 201 : 202, cancellationToken: ct).ConfigureAwait(false);
                     return false;
                 }
                 if (request.Method is "GET" or "HEAD")
                 {
                     if (!await EnsureOperationAllowedAsync(stream, "bulk_transfer", false, ct).ConfigureAwait(false)) return false;
                     await using var file = AgentJobs.OpenFile(id, relative);
-                    var range = FileRange.Parse(request.Headers.GetValueOrDefault("Range"), file.Length);
+                    FileRange range;
+                    try { range = FileRange.Parse(request.Headers.GetValueOrDefault("Range"), file.Length); }
+                    catch (InvalidDataException)
+                    {
+                        responseStarted = true;
+                        await WriteHeadersAsync(stream, 416, "Range Not Satisfiable", new Dictionary<string, string>
+                        {
+                            ["Content-Range"] = $"bytes */{file.Length}", ["Content-Length"] = "0"
+                        }, false, ct).ConfigureAwait(false);
+                        await stream.FlushAsync(ct).ConfigureAwait(false);
+                        return false;
+                    }
                     var headers = new Dictionary<string, string>
                     {
                         ["Content-Type"] = "application/octet-stream",
                         ["Content-Length"] = range.Length.ToString(CultureInfo.InvariantCulture),
-                        ["Accept-Ranges"] = "bytes",
-                        ["Cache-Control"] = "no-store"
+                        ["Accept-Ranges"] = "bytes", ["Cache-Control"] = "no-store"
                     };
                     if (range.Partial) headers["Content-Range"] = $"bytes {range.Start}-{range.Start + range.Length - 1}/{file.Length}";
                     using var transfer = Activity.TrackTransfer(new { apiJob = id, file = relative, action = "download" });
@@ -204,27 +220,26 @@ public sealed partial class EmbeddedHttpServer
             throw new InvalidDataException("This JSON request requires Content-Length between 1 and 1048576 bytes.");
         var bytes = new byte[(int)length];
         await ReadExactlyAsync(stream, bytes, ct).ConfigureAwait(false);
-        return JsonSerializer.Deserialize<T>(bytes, Config.ConfigLoader.JsonOptions)
+        return JsonSerializer.Deserialize<T>(bytes, ConfigLoader.JsonOptions)
             ?? throw new InvalidDataException("The JSON body cannot be null.");
     }
 
     private static async Task WriteAgentJsonAsync(Stream stream, object? value, int status = 200,
-        string? location = null, string? revision = null)
+        string? location = null, string? revision = null, CancellationToken cancellationToken = default)
     {
         var bytes = JsonSerializer.SerializeToUtf8Bytes(value, AgentJson);
         var headers = new Dictionary<string, string>
         {
             ["Content-Type"] = "application/json; charset=utf-8",
             ["Content-Length"] = bytes.Length.ToString(CultureInfo.InvariantCulture),
-            ["Cache-Control"] = "no-store",
-            ["Link"] = "</api/v1/agent>; rel=\"service-desc\""
+            ["Cache-Control"] = "no-store", ["Link"] = "</api/v1/agent>; rel=\"service-desc\""
         };
         if (location is not null) headers["Location"] = location;
         if (revision is not null) headers["ETag"] = revision;
         if (status == 202) headers["Retry-After"] = "1";
-        await WriteHeadersAsync(stream, status, AgentReason(status), headers, false, CancellationToken.None).ConfigureAwait(false);
-        await stream.WriteAsync(bytes).ConfigureAwait(false);
-        await stream.FlushAsync().ConfigureAwait(false);
+        await WriteHeadersAsync(stream, status, AgentReason(status), headers, false, cancellationToken).ConfigureAwait(false);
+        await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static string AgentReason(int status) => status switch

@@ -9,7 +9,10 @@ internal sealed record AgentAction(string Method, string Href, string Purpose);
 internal sealed record AgentOperation(
     string Id, string JobId, string Action, string State, DateTimeOffset StartedUtc,
     DateTimeOffset? FinishedUtc = null, int FilesChecked = 0, string? Error = null,
-    string? Hint = null, object? Result = null, string? SourceJobId = null);
+    string? Hint = null, object? Result = null, string? SourceJobId = null)
+{
+    public string? ErrorCode { get; init; }
+}
 internal sealed record AgentJobView(
     string Id, string State, string Revision, DateTimeOffset CreatedUtc,
     JobDefinition Job, IReadOnlyList<AgentFile> Files, string? RunId,

@@ -7,24 +7,27 @@ namespace XemuTestRunner.Networking;
 
 internal sealed partial class AgentJobStore
 {
+    public ActivityHub Activity { get; init; } = new();
+
     public AgentOperation? GetOperation(string id)
     {
+        _ = ReadDocument(id);
         var path = OperationPath(id);
         if (!File.Exists(path)) return null;
         var operation = ReadJson<AgentOperation>(path);
         bool running;
         lock (_gate) { running = _runningOperations.Contains(id); }
-        if (!running && operation.State is "queued" or "running")
+        if (!running && operation.State is ("queued" or "running"))
         {
-            // A crash after publication but before the receipt is written must
-            // not duplicate an attempt. Queue location is the publication proof.
-            if (operation.Action == "submit" && Locate(id).State is "queued" or "testing" or "tested")
+            // Queue location reconciles a crash after rename but before receipt.
+            if (operation.Action == "submit" && Locate(id).State is ("queued" or "testing" or "tested"))
                 return operation with { State = "completed", Result = new { job = Url(id), recoveredPublication = true } };
             return operation with
             {
                 State = "interrupted",
+                ErrorCode = "operation_interrupted",
                 Error = "The runner restarted before this operation finished.",
-                Hint = "Inspect the draft/file offsets. Validation and submission may be retried; an interrupted clone should be cancelled and cloned to a fresh ID."
+                Hint = "Inspect the draft/file offsets. Validation and submission may be retried; cancel an interrupted clone and clone to a fresh ID."
             };
         }
         return operation;
@@ -43,7 +46,7 @@ internal sealed partial class AgentJobStore
                 throw Conflict("job_busy", "Another operation is already running for this package.", "Poll the operation until it reaches a terminal state.");
             }
         }
-        if (submit && Locate(id).State is "queued" or "testing" or "tested")
+        if (submit && Locate(id).State is ("queued" or "testing" or "tested"))
         {
             return GetOperation(id) ?? new AgentOperation(id, id, "submit", "completed", DateTimeOffset.UtcNow,
                 Result: new { job = Url(id), alreadySubmitted = true });
@@ -58,13 +61,14 @@ internal sealed partial class AgentJobStore
                 var report = await ValidatePayloadAsync(id, operation, ct).ConfigureAwait(false);
                 if (!report.Passed)
                     throw new AgentRequestException(422, "preflight_failed", "The package did not pass preflight.",
-                        "GET the operation for preflight details, correct the draft, then validate again.");
+                        "GET the job's validation action for detailed checks. Correct the draft and validate again.");
                 if (submit)
                 {
                     ct.ThrowIfCancellationRequested();
                     var destination = System.IO.Path.Combine(_paths.Pending, "agent-" + id);
                     if (Directory.Exists(destination) || Locate(id).State != "draft")
-                        throw Conflict("publication_conflict", "The package location changed before publication.", "GET the job; do not submit it under another ID unless a new attempt is intended.");
+                        throw Conflict("publication_conflict", "The package location changed before publication.",
+                            "GET the job; use a new ID only when a separate attempt is intended.");
                     Directory.Move(Draft(id), destination);
                 }
                 return new { job = Url(id), submitted = submit, preflight = report };
@@ -140,13 +144,14 @@ internal sealed partial class AgentJobStore
             ownership.Dispose();
             throw;
         }
-        // Observe all failures and retain the terminal receipt. Work belongs to
-        // the runner lifetime, not the requesting connection; polling can resume
-        // after a client disconnect without launching a duplicate operation.
+        // Work belongs to the runner, not the requesting connection. Every task
+        // observes its failure and persists a receipt; there is no fire-and-forget
+        // exception or automatic second submission after a client disconnect.
         _ = Task.Run(async () =>
         {
             try
             {
+                using var transfer = Activity.TrackTransfer(new { apiJob = id, action });
                 AtomicJson.Write(OperationPath(id), operation with { State = "running" });
                 var result = await work(operation, lifetime).ConfigureAwait(false);
                 var last = ReadJson<AgentOperation>(OperationPath(id));
@@ -157,18 +162,24 @@ internal sealed partial class AgentJobStore
             }
             catch (Exception exception)
             {
-                var failed = operation with
+                AgentOperation last;
+                try { last = ReadJson<AgentOperation>(OperationPath(id)); }
+                catch (Exception readError) when (readError is IOException or JsonException or UnauthorizedAccessException)
+                { last = operation; }
+                var failed = last with
                 {
                     State = exception is OperationCanceledException ? "interrupted" : "failed",
                     FinishedUtc = DateTimeOffset.UtcNow,
+                    ErrorCode = exception is AgentRequestException apiError ? apiError.Code :
+                        exception is UploadFailure uploadError ? uploadError.Code : "package_operation_failed",
                     Error = exception.Message,
                     Hint = exception is AgentRequestException request ? request.Hint :
                         "Check the draft's declared file lengths/digests and upload status. Existing run evidence is unchanged."
                 };
                 // Publication is authoritative even if cancellation arrives after
-                // rename. Never tell a client to create a duplicate submitted job.
-                if (action == "submit" && Locate(id).State is "queued" or "testing" or "tested")
-                    failed = failed with { State = "completed", Error = null, Hint = null, Result = new { job = Url(id), submitted = true } };
+                // rename. Never report a submitted package as safe to duplicate.
+                if (action == "submit" && Locate(id).State is ("queued" or "testing" or "tested"))
+                    failed = failed with { State = "completed", Error = null, ErrorCode = null, Hint = null, Result = new { job = Url(id), submitted = true } };
                 try { AtomicJson.Write(OperationPath(id), failed); }
                 catch (Exception writeError) { System.Diagnostics.Trace.TraceError("Cannot persist API operation: " + writeError); }
             }
@@ -209,18 +220,15 @@ internal sealed partial class AgentJobStore
                      .Concat(job.Inputs.Select(input => input.Path))
                      .Concat(job.RuntimeState.Files.Select(file => file.Source)))
         {
-            checks.Add(new("declared_input", declared.Contains(required.Replace('\\', '/')),
-                $"{required}: every package input must be in Files."));
+            var relative = System.IO.Path.GetRelativePath(package, JobDefinition.ResolveInsidePackage(package, required))
+                .Replace(System.IO.Path.DirectorySeparatorChar, '/');
+            checks.Add(new("declared_input", declared.Contains(relative), $"{required}: every package input must be in Files."));
         }
         var preflight = await Preflight.CheckAsync(job, package, _paths.Results, _preflight, ct).ConfigureAwait(false);
         checks.AddRange(preflight.Checks);
         var report = new PreflightReport(checks.All(check => check.Passed), preflight.ExecutableSha256, checks);
         AtomicJson.Write(System.IO.Path.Combine(Home(id), "validation.json"), report);
-        if (!report.Passed)
-        {
-            // Preserve structured details even when the operation is marked failed.
-            AtomicJson.Write(OperationPath(id), operation with { State = "running", FilesChecked = count, Result = report });
-        }
+        AtomicJson.Write(OperationPath(id), operation with { State = "running", FilesChecked = count, Result = report });
         return report;
     }
 
