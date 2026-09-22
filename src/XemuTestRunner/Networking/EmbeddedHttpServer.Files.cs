@@ -17,7 +17,15 @@ public sealed partial class EmbeddedHttpServer
         try { path = PathGuard.ResolveFile(_paths.FileRoot, relative); }
         catch (Exception ex) when (ex is InvalidDataException or UnauthorizedAccessException)
         {
-            await WriteJsonAsync(stream, 400, "Bad Request", new { error = ex.Message }, keepAlive, cancellationToken).ConfigureAwait(false);
+            await WriteApiErrorAsync(
+                stream,
+                400,
+                "Bad Request",
+                "file_path_invalid",
+                ex.Message,
+                "Use a relative path under the configured file root. Absolute paths and traversal outside the file root are not allowed.",
+                keepAlive,
+                cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -39,7 +47,15 @@ public sealed partial class EmbeddedHttpServer
 
         if (!File.Exists(path))
         {
-            await WriteJsonAsync(stream, 404, "Not Found", new { error = "File not found." }, keepAlive, cancellationToken).ConfigureAwait(false);
+            await WriteApiErrorAsync(
+                stream,
+                404,
+                "Not Found",
+                "file_not_found",
+                $"File '{relative}' was not found.",
+                "Check the relative file path or query upload status with ?upload-status=1.",
+                keepAlive,
+                cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -98,11 +114,13 @@ public sealed partial class EmbeddedHttpServer
             ex is InvalidDataException or
             UnauthorizedAccessException)
         {
-            await WriteJsonAsync(
+            await WriteApiErrorAsync(
                 stream,
                 400,
                 "Bad Request",
-                new { error = ex.Message },
+                "file_path_invalid",
+                ex.Message,
+                "Use a relative path under the configured file root. Absolute paths and traversal outside the file root are not allowed.",
                 false,
                 cancellationToken).ConfigureAwait(false);
             return;
@@ -116,18 +134,16 @@ public sealed partial class EmbeddedHttpServer
                 0,
                 cancellationToken).ConfigureAwait(false))
         {
-            await WriteJsonAsync(
+            await WriteApiErrorAsync(
                 stream,
                 409,
                 "Conflict",
-                new
-                {
-                    error =
-                        "Another upload is already writing this destination.",
-                    path = relative
-                },
+                "upload_in_progress",
+                "Another upload is already writing this destination.",
+                "Wait for the current upload to finish or choose a different destination path.",
                 false,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                new { path = relative }).ConfigureAwait(false);
             return;
         }
 
@@ -163,12 +179,28 @@ public sealed partial class EmbeddedHttpServer
         var contentLength = request.ContentLength;
         if (contentLength is null)
         {
-            await WriteJsonAsync(stream, 411, "Length Required", new { error = "Content-Length is required for file uploads." }, false, cancellationToken).ConfigureAwait(false);
+            await WriteApiErrorAsync(
+                stream,
+                411,
+                "Length Required",
+                "content_length_required",
+                "Content-Length is required for file uploads.",
+                "Send the exact body byte count in Content-Length. Chunked request encoding is not supported.",
+                false,
+                cancellationToken).ConfigureAwait(false);
             return;
         }
         if (contentLength < 0)
         {
-            await WriteJsonAsync(stream, 400, "Bad Request", new { error = "Invalid Content-Length." }, false, cancellationToken).ConfigureAwait(false);
+            await WriteApiErrorAsync(
+                stream,
+                400,
+                "Bad Request",
+                "content_length_invalid",
+                "Content-Length is invalid.",
+                "Send a non-negative decimal Content-Length matching the exact upload body size.",
+                false,
+                cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -183,15 +215,13 @@ public sealed partial class EmbeddedHttpServer
             if (expectedSha256.Length != 64 ||
                 !expectedSha256.All(Uri.IsHexDigit))
             {
-                await WriteJsonAsync(
+                await WriteApiErrorAsync(
                     stream,
                     400,
                     "Bad Request",
-                    new
-                    {
-                        error =
-                            "X-Content-SHA256 must be 64 hexadecimal characters."
-                    },
+                    "content_hash_invalid",
+                    "X-Content-SHA256 must be exactly 64 hexadecimal characters.",
+                    "Send the lowercase or uppercase SHA-256 digest of the complete final file, or omit the header if digest enforcement is not required.",
                     false,
                     cancellationToken).ConfigureAwait(false);
                 return;
@@ -204,7 +234,15 @@ public sealed partial class EmbeddedHttpServer
         {
             if (!TryParseContentRange(contentRange, out var start, out var end, out var total) || end - start + 1 != contentLength)
             {
-                await WriteJsonAsync(stream, 400, "Bad Request", new { error = "Content-Range must be 'bytes start-end/total' and match Content-Length." }, false, cancellationToken).ConfigureAwait(false);
+                await WriteApiErrorAsync(
+                    stream,
+                    400,
+                    "Bad Request",
+                    "content_range_invalid",
+                    "Content-Range must use 'bytes start-end/total' and the range length must match Content-Length.",
+                    "Query ?upload-status=1 for the current offset, then send the next sequential chunk using that offset.",
+                    false,
+                    cancellationToken).ConfigureAwait(false);
                 return;
             }
 
@@ -212,7 +250,16 @@ public sealed partial class EmbeddedHttpServer
             var current = File.Exists(partial) ? new FileInfo(partial).Length : 0;
             if (current != start)
             {
-                await WriteJsonAsync(stream, 409, "Conflict", new { error = "Upload offset mismatch.", expectedOffset = current }, false, cancellationToken).ConfigureAwait(false);
+                await WriteApiErrorAsync(
+                    stream,
+                    409,
+                    "Conflict",
+                    "upload_offset_mismatch",
+                    $"Upload offset mismatch. The server expects byte offset {current}.",
+                    "Query ?upload-status=1 and resume from expectedOffset instead of retransmitting a different range.",
+                    false,
+                    cancellationToken,
+                    new { expectedOffset = current }).ConfigureAwait(false);
                 return;
             }
 
@@ -247,19 +294,20 @@ public sealed partial class EmbeddedHttpServer
                     {
                         try { File.Delete(target); } catch { }
 
-                        await WriteJsonAsync(
+                        await WriteApiErrorAsync(
                             stream,
                             422,
                             "Unprocessable Content",
+                            "upload_hash_mismatch",
+                            "Uploaded file SHA-256 does not match X-Content-SHA256.",
+                            "Verify the source file/digest and upload the complete file again. The mismatched completed target was deleted.",
+                            false,
+                            cancellationToken,
                             new
                             {
-                                error =
-                                    "Uploaded file SHA-256 does not match X-Content-SHA256.",
                                 expectedSha256,
                                 actualSha256
-                            },
-                            false,
-                            cancellationToken).ConfigureAwait(false);
+                            }).ConfigureAwait(false);
                         return;
                     }
                 }

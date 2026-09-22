@@ -63,6 +63,30 @@ public sealed partial class EmbeddedHttpServer
         }
     }
 
+    private static Task WriteApiErrorAsync(
+        Stream stream,
+        int status,
+        string reason,
+        string code,
+        string message,
+        string hint,
+        bool keepAlive,
+        CancellationToken cancellationToken,
+        object? details = null) =>
+        WriteJsonAsync(
+            stream,
+            status,
+            reason,
+            new ApiErrorResponse(
+                message,
+                code,
+                hint,
+                status,
+                "/api/v1/help",
+                details),
+            keepAlive,
+            cancellationToken);
+
     private static async Task WriteJsonAsync(Stream stream, int code, string reason, object value, bool keepAlive, CancellationToken cancellationToken)
     {
         var body = JsonSerializer.SerializeToUtf8Bytes(value, ConfigLoader.JsonOptions);

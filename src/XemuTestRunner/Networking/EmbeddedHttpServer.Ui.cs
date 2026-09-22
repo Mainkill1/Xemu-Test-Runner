@@ -11,11 +11,13 @@ public sealed partial class EmbeddedHttpServer
     {
         if (!_uiOptions.LivePreviewEnabled)
         {
-            await WriteJsonAsync(
+            await WriteApiErrorAsync(
                 stream,
                 404,
                 "Not Found",
-                new { error = "Live preview is disabled by configuration." },
+                "preview_disabled",
+                "Live preview is disabled by runner configuration.",
+                "Enable Ui.LivePreviewEnabled in runner.json, or use retained screenshots/other evidence instead.",
                 keepAlive,
                 cancellationToken).ConfigureAwait(false);
             return;
@@ -23,11 +25,13 @@ public sealed partial class EmbeddedHttpServer
 
         if (!_control.HasActiveSession)
         {
-            await WriteJsonAsync(
+            await WriteApiErrorAsync(
                 stream,
                 409,
                 "Conflict",
-                new { error = "No xemu test is currently active." },
+                "target_not_active",
+                "No xemu test is currently active.",
+                "Start a queued test before requesting a live preview.",
                 keepAlive,
                 cancellationToken).ConfigureAwait(false);
             return;
@@ -79,11 +83,13 @@ public sealed partial class EmbeddedHttpServer
             if (responseStarted)
                 throw new IOException("Preview response failed after HTTP headers were sent.", ex);
 
-            await WriteJsonAsync(
+            await WriteApiErrorAsync(
                 stream,
                 503,
                 "Service Unavailable",
-                new { error = ex.Message },
+                "preview_unavailable",
+                ex.Message,
+                "Verify xemu is running and the configured screenshot provider can capture a frame. Check /api/v1/control and the current run evidence.",
                 false,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -124,11 +130,13 @@ public sealed partial class EmbeddedHttpServer
             InvalidOperationException or
             TimeoutException)
         {
-            await WriteJsonAsync(
+            await WriteApiErrorAsync(
                 stream,
                 503,
                 "Service Unavailable",
-                new { error = ex.Message },
+                "pause_failed",
+                ex.Message,
+                "Verify an active QMP-controlled xemu target exists and retry. Check /api/v1/control for current state.",
                 keepAlive,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -162,11 +170,13 @@ public sealed partial class EmbeddedHttpServer
             InvalidOperationException or
             TimeoutException)
         {
-            await WriteJsonAsync(
+            await WriteApiErrorAsync(
                 stream,
                 503,
                 "Service Unavailable",
-                new { error = ex.Message },
+                "resume_failed",
+                ex.Message,
+                "Verify an active QMP-controlled xemu target exists and retry. Check /api/v1/control for current state.",
                 keepAlive,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -202,11 +212,13 @@ public sealed partial class EmbeddedHttpServer
         }
         catch (InvalidOperationException ex)
         {
-            await WriteJsonAsync(
+            await WriteApiErrorAsync(
                 stream,
                 409,
                 "Conflict",
-                new { error = ex.Message },
+                "recorder_state_invalid",
+                ex.Message,
+                "Check GET /api/v1/input/record for the current recorder state before starting/stopping/clearing it.",
                 keepAlive,
                 cancellationToken).ConfigureAwait(false);
         }

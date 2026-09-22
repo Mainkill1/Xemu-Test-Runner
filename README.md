@@ -254,6 +254,51 @@ For readiness/progress that should not rely on fixed sleeps, use:
 This waits for a declared host-visible artifact condition with a hard deadline.
 
 
+## Error and recovery contract
+
+Invalid API requests return JSON with a stable machine-readable code and a human correction hint while preserving the existing `error` string:
+
+```json
+{
+  "error": "Controller input cannot be sent while xemu is paused.",
+  "code": "target_not_ready",
+  "hint": "Resume xemu with POST /api/v1/xemu/resume, then retry the input request.",
+  "status": 409,
+  "help": "/api/v1/help"
+}
+```
+
+Use:
+
+```text
+GET /api/v1/help
+```
+
+to discover route purposes, request-body examples, the error shape, and common recovery actions.
+
+Queue/package problems are exposed through `QueueIssue` in `/api/v1/status` and include a `Hint` telling the operator how to recover. The CLI shows that hint as `Queue help`.
+
+For package validation:
+
+```sh
+xemu-test-runner validate workspace/Queue/Pending/build-123
+xemu-test-runner validate workspace/Queue/Pending/build-123 --json
+```
+
+The JSON form returns a stable code plus a correction hint instead of requiring an agent to parse terminal formatting.
+
+Automation failures from `run --json` include:
+
+```json
+{
+  "error": "...",
+  "errorCode": "request_invalid",
+  "errorHint": "Correct the reported field/path/value, then retry."
+}
+```
+
+Common classes include invalid request bodies, unavailable/paused targets, benchmark-policy blocks, invalid package plans, busy/incomplete packages, upload offset/hash mismatches, missing evidence, and unavailable diagnostic tools. See [docs/ERRORS.md](docs/ERRORS.md).
+
 ## A queue item contains the plan AND candidate executable
 
 ```text

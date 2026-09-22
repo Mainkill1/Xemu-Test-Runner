@@ -66,7 +66,31 @@ public sealed class StatusCommand : Command<StatusCommandSettings>
         }
         catch (Exception ex)
         {
-            AnsiConsole.WriteException(ex, ExceptionFormats.ShortenEverything);
+            var advice =
+                UserErrorAdviceFactory.From(
+                    ex,
+                    "Runner status request failed");
+
+            if (settings.Json)
+            {
+                Console.Out.WriteLine(
+                    JsonSerializer.Serialize(
+                        new
+                        {
+                            ok = false,
+                            advice.Code,
+                            advice.Error,
+                            advice.Hint
+                        }));
+            }
+            else
+            {
+                AnsiConsole.MarkupLine(
+                    $"[red]{Markup.Escape(advice.Code)}:[/] {Markup.Escape(advice.Error)}");
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Hint:[/] {Markup.Escape(advice.Hint)}");
+            }
+
             return 1;
         }
     }
