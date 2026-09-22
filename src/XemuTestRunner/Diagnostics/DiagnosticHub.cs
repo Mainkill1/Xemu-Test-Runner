@@ -405,13 +405,7 @@ public sealed class DiagnosticHub
             throw new PlatformNotSupportedException("perf diagnostics require Linux.");
 
         var perfData = Path.Combine(directory, SafeOutput(recipe.OutputName, "perf.data", ".data"));
-        var args = new List<string>
-        {
-            "record", "-p", context.Process.Id.ToString(CultureInfo.InvariantCulture),
-            "-g", "--call-graph", recipe.CallGraph,
-            "-F", recipe.Frequency.ToString(CultureInfo.InvariantCulture),
-            "-o", perfData
-        };
+        var args = BuildPerfRecordArguments(context.Process.Id, recipe, perfData);
 
         await using var perfTool = await ToolProcess.StartLongRunningAsync(
             _options.PerfExecutable,
@@ -768,6 +762,28 @@ public sealed class DiagnosticHub
         ];
     }
 
+    internal static List<string> BuildPerfRecordArguments(
+        int processId,
+        DiagnosticRecipe recipe,
+        string perfData)
+    {
+        var args = new List<string>
+        {
+            "record", "-p", processId.ToString(CultureInfo.InvariantCulture)
+        };
+        if (recipe.ClockId is int clockId)
+        {
+            args.Add("-k");
+            args.Add(clockId.ToString(CultureInfo.InvariantCulture));
+        }
+        args.AddRange([
+            "-g", "--call-graph", recipe.CallGraph,
+            "-F", recipe.Frequency.ToString(CultureInfo.InvariantCulture),
+            "-o", perfData
+        ]);
+        return args;
+    }
+
     private async Task RunTimedWorkloadAsync(DiagnosticRecipe recipe, CancellationToken ct)
     {
         if (recipe.ResumeDuring && _control.Snapshot().Paused)
@@ -812,6 +828,7 @@ public sealed class DiagnosticHub
         Profile = source.Profile,
         Frequency = source.Frequency,
         CallGraph = source.CallGraph,
+        ClockId = source.ClockId,
         Frames = source.Frames,
         TracePgraph = source.TracePgraph,
         RenderDocTrigger = source.RenderDocTrigger,
