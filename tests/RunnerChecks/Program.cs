@@ -768,6 +768,7 @@ try
             TimeoutSeconds = 5,
             StartPaused = true,
             Operations = new OperationPolicyDefinition { Mode = "benchmark", AllowPreview = true },
+            Experiment = new ExperimentDefinition { Id = "runner-integration", Variant = "fixture" },
             Plan =
             [
                 new JobStep { Type = "screenshot", Name = "integration-frame" },
@@ -790,6 +791,13 @@ try
             using var statusJson = await WaitForActiveRunAsync(client, TimeSpan.FromSeconds(3));
             Assert(statusJson.RootElement.GetProperty("RunId").ValueKind == JsonValueKind.String,
                 "The live HTTP status did not identify the active run.");
+
+            using var comparison = await client.GetAsync("/api/v1/experiments/runner-integration");
+            Assert(comparison.StatusCode == HttpStatusCode.OK,
+                $"Documented experiment API returned {(int)comparison.StatusCode}, expected 200.");
+            using var comparisonJson = JsonDocument.Parse(await comparison.Content.ReadAsStringAsync());
+            Assert(comparisonJson.RootElement.GetProperty("ExperimentId").GetString() == "runner-integration",
+                "Experiment API did not preserve the requested experiment identity.");
 
             using var input = await client.PostAsync(
                 "/api/v1/input/press",
