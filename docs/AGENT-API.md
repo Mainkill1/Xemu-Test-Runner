@@ -1,253 +1,164 @@
-# Agent operation through HTTP
+# Agent HTTP API
 
-## Contract
+Normal operation stays on the tester's HTTP interface. The optional Python client runs on the agent/build machine and implements this protocol; it does not execute commands on the tester. Start with [client commands](AGENT-CLIENT.md) for the short workflow.
 
-Use the tester's HTTP API for normal remote operation. An agent should not SSH/RDP into the test machine to deposit a build, edit job.json, move queue directories, invoke a test, or copy its evidence back.
+The foreground runner must already be running persistently. Initial installation/startup, machine recovery and upgrades are operator tasks. Do not use the runner's local --once/--one-shot modes for a persistent remote queue. Do not bypass API benchmark-policy refusals through SSH.
 
-The runner is still one foreground C# application with its embedded listener. The optional Spectre display is an operator view, not an automation dependency. Install/configure/start it once on the tester and leave it running:
+## Discover only what is needed
 
-```text
-XemuTestRunner run --non-interactive
-```
+`GET /api/v1/agent?view=summary` returns the deployed build identity, capabilities, phase/policy information and focused help links. The complete legacy catalog remains at `/api/v1/agent`; fetch it only for explicit reference. `/api/v1/openapi.json` describes the original package workflow, not every additive route or JobDefinition property.
 
-Do not use `--once` or `--one-shot` for this persistent remote workflow: those deliberately exit when their finite work is finished. Installation, initial launch, remote application upgrades and waking/recovering a powered-off machine remain bootstrap/operator tasks. An API in a stopped process cannot restart itself.
-
-## Start with discovery
-
-```http
-GET /api/v1/agent
-```
-
-The same discovery document is available at `GET /api/v1` and `GET /.well-known/agent.json`. It contains the workflow, limits, example creation request, supported job operations, existing control/result links and error guidance.
-
-`GET /api/v1/openapi.json` describes the new job workflow in OpenAPI 3.1. This is not a claim that every legacy route or every JobDefinition property has been exhaustively described in OpenAPI. The existing job.json format remains the plan schema.
-
-`GET /api/v1/help` now returns `agent` (the workflow catalog) and `controls` (the existing route/error catalog). New job API responses use camelCase. Existing status/results endpoints retain their established field casing; clients must not assume this change rewrites legacy responses.
-
-Every job response includes named `actions` with method, relative URL and purpose. Follow those actions rather than constructing remote filesystem paths. All returned relative URLs are on the same tester origin.
-
-## The complete workflow
+The normal pre-baked workflow is:
 
 ```text
-create draft
-    -> upload or resume declared files
-    -> edit draft plan if needed
-    -> validate (optional explicit preview)
-    -> submit (always validates before publication)
-    -> poll operation
-    -> poll job
-    -> follow run/result links
-    -> download listed artifacts
+choose test ID + immutable revision
+  -> create new attempt by reference
+  -> copy/verify unchanged payload on tester
+  -> upload changed build files only
+  -> submit
+  -> observe compact status
+  -> read compact assessment
+  -> inspect selected evidence when needed
 ```
 
-A new attempt uses a new job ID. A retry after a lost HTTP response uses the same ID and the identical original creation document. Never create another attempt merely because an upload/submission request timed out.
+See [test definitions](AGENT-TEST-LIBRARY.md), [observations](AGENT-OBSERVATIONS.md) and [focused evidence](AGENT-EVIDENCE.md). An unknown/missing deployed capability is an upgrade/configuration issue, not permission to substitute shell access.
 
-### Client convenience commands
+## Initial/custom package lifecycle
 
-Run the bundled standard-library Python client on the **agent/build machine**, not the tester. Python 3.10 or later is required. It performs HTTP calls only; there is no SSH fallback.
-
-```sh
-python scripts/runner_api.py --url http://192.168.1.42:9368 discover
-python scripts/runner_api.py --url http://192.168.1.42:9368 submit ./build-package --id build-149-a --wait
-python scripts/runner_api.py --url http://192.168.1.42:9368 collect build-149-a ./evidence
-```
-
-`submit` reads local job.json, computes actual file lengths/digests, creates a draft, uploads files in bounded chunks, submits it, and polls the submission operation. `--wait` additionally waits for a terminal queue disposition. Its exit status is not an assertion that the guest passed; inspect the returned run assessment.
-
-Hidden files/directories are omitted from package discovery, and symlinks are rejected. The Python helper reads ordinary JSON, not the comments/trailing commas accepted by the C# configuration parser. Every required payload must be present in the local package.
-
-Stdout is JSON; progress and errors go to stderr. Network failures can be recovered by rerunning with the **same ID and unchanged local package**. If the server says `job_busy`, poll its existing operation before retrying.
-
-## Create a draft
+For a new test definition, create a complete API-owned draft:
 
 ```http
 POST /api/v1/jobs
 Content-Type: application/json
-Content-Length: <actual encoded byte count>
+Content-Length: <encoded JSON byte count>
 ```
-
-Example shape only: lengths and digest strings below must be replaced with the real values. The Python helper computes them.
 
 ```json
 {
-  "Id": "build-149-a",
-  "Job": {
-    "Id": "build-149-a",
-    "TargetOs": "windows",
-    "Executable": "xemu.exe",
-    "WorkingDirectory": ".",
-    "Arguments": ["-config_path", "xemu.toml"],
-    "RequiredFiles": ["xemu.toml"],
-    "TimeoutSeconds": 120
+  "id":"seed-smoke",
+  "job":{
+    "id":"seed-smoke",
+    "targetOs":"windows",
+    "executable":"xemu.exe",
+    "arguments":["-config_path","xemu.toml"],
+    "requiredFiles":["xemu.toml"],
+    "timeoutSeconds":120
   },
-  "Files": [
-    {"Path": "xemu.exe", "Length": 123, "Sha256": "<64 hexadecimal digits>", "Executable": true},
-    {"Path": "xemu.toml", "Length": 456, "Sha256": "<64 hexadecimal digits>"}
+  "files":[
+    {"path":"xemu.exe","length":123,"sha256":"<actual whole-file SHA-256>","executable":true},
+    {"path":"xemu.toml","length":456,"sha256":"<actual whole-file SHA-256>"}
   ]
 }
 ```
 
-`Id` is 1..64 lowercase letters, digits or hyphens, starting with a letter/digit. Job.Id must match; an omitted/empty Job.Id is filled with the API ID. Use a stable unique ID such as build/workload/attempt identity.
+The example sizes/digests are placeholders. The client computes actual declarations. Job IDs contain 1..64 lowercase letters, digits or hyphens and start with a letter/digit. The JobDefinition ID must match; an omitted/empty ID is filled from the request.
 
-A creation request declares 1..4096 files. Every file requires a non-negative **64-bit** byte length and the whole-file SHA-256 digest. Executable marks a Linux executable permission bit; it does not execute the file during upload. The plan itself is sent in `Job`, not uploaded as a payload named job.json.
+Creation declares 1..4096 files with non-negative 64-bit lengths and whole-file SHA-256 hashes. JSON request bodies are limited to 1 MiB. Send the plan as `job`, not as a payload named job.json. Include every required binary, dependency, workload and runtime-state seed. Paths are package-relative forward-slash paths; hidden/traversal/linked/platform-reserved components are rejected.
 
-Paths are package-relative forward-slash paths. Hidden components, traversal, symlinks/junctions and reserved Windows device names are rejected. Declare the executable, dependencies, required inputs and runtime-state seeds. File declarations cannot be changed after creation; create another package ID for a changed file set or build. Plan edits are supported independently.
+A draft is hidden from the queue. Creation does not start xemu. Retrying the same ID and original creation document returns the existing job; a different document conflicts. File declarations are immutable. New build contents need a new manifest/ID or a new pre-baked attempt, not an in-place rewrite of an active package.
 
-The draft remains hidden from the execution queue until explicit submission. Creating it does not start xemu. Repeating the same original creation document with the same ID returns the existing job; different content with that ID returns `job_identity_conflict`.
-
-## Upload large files
+## Stream or resume payloads
 
 ```http
-PUT /api/v1/jobs/build-149-a/files/xemu.exe
-Content-Length: <body bytes>
+PUT /api/v1/jobs/seed-smoke/files/xemu.exe
 Content-Type: application/octet-stream
+Content-Length: <body byte count>
 ```
 
-The declared digest is always checked by the upload store before a completed file is published. Supplying `X-Content-SHA256` is optional here because the declaration already pins it; a supplied value must match the declaration.
+The declaration already pins the required digest. Optional `X-Content-SHA256` must match that whole-file digest. The server verifies content before completed-file publication.
 
-Use sequential chunks for large files:
+For large files, send sequential chunks:
 
 ```http
-PUT /api/v1/jobs/build-149-a/files/test.iso
+PUT /api/v1/jobs/seed-smoke/files/test.iso
 Content-Length: 8388608
 Content-Range: bytes 0-8388607/12884901888
-X-Content-SHA256: <whole 12 GiB file digest>
+X-Content-SHA256: <whole-file digest>
 ```
 
-An incomplete upload returns 202 with `uploadId`, `received`, `total` and `complete:false`. Later chunks send that ID in `X-Upload-Id`. The range is inclusive and Content-Length is the current body size, not the final size. Do not send a chunk digest as the whole-file digest.
+An incomplete response is 202 with uploadId, received/total and complete:false. Later chunks include `X-Upload-Id`. Ranges are inclusive; Content-Length is the current chunk length, not the final file length. Zero-length whole-file uploads are supported.
 
-After any disconnect, query:
+After a disconnect, query:
 
 ```http
-GET /api/v1/jobs/build-149-a/files/test.iso?upload-status=1
+GET /api/v1/jobs/seed-smoke/files/test.iso?upload-status=1
 ```
 
-Resume from the returned committed `length`, not the client's last attempted byte count. `publication_unconfirmed` is not proof of a completed file. The client helper reports it explicitly rather than inventing a final zero-length range.
+Resume at the returned committed `length`, not the client's last attempted byte count. `publication_unconfirmed` does not prove a completed file. Never manufacture a zero-length final range to convert it into success.
 
-Whole-file uploads and zero-length files are supported with Content-Length. Chunked HTTP request encoding is not supported. There is no application-level 10 GB ceiling; filesystem capacity/limits still apply. Payloads stream through a bounded buffer instead of loading the full file into memory.
+Payloads stream with bounded buffers and 64-bit sizes. HTTP chunked request encoding is not supported; Content-Length is required. There is no application-wide 10 GB cap, but filesystem/capacity limits remain. Real 10 GB+ LAN qualification is separate from this protocol's arithmetic.
 
-Only one mutation owns a draft at a time. Overlapping uploads/edits/submission for the same job return `job_busy`; independent drafts can upload independently. Successful partial and final files remain in hidden staging until submission. Completed payload downloads support GET/HEAD and single byte ranges at the same file URL.
-
-`GET /api/v1/jobs/{id}/files` returns declarations, upload state, and upload/status URLs for the package. This is an administration call, not a 100 ms telemetry poll.
+Only one mutation owns a draft at a time. Concurrent upload/edit/submit returns job_busy. `GET /api/v1/jobs/{id}/files` is an explicit full declaration/status inspection, not a routine polling call. Completed payload GET/HEAD supports single byte ranges at the same file URL.
 
 ## Edit, validate and submit
 
-Fetch the current job to get its quoted `revision` and allowed actions:
+`GET /api/v1/jobs/{id}?view=summary` is the ordinary observation. Fetch `GET /api/v1/jobs/{id}` only when the full plan, declaration list, legal actions or quoted plan revision is needed.
+
+Replace a draft plan with:
 
 ```http
-GET /api/v1/jobs/build-149-a
-```
-
-Replace an editable draft's plan:
-
-```http
-PUT /api/v1/jobs/build-149-a/plan
-If-Match: "<revision returned by GET>"
+PUT /api/v1/jobs/seed-smoke/plan
+If-Match: "<current plan revision>"
 Content-Type: application/json
 ```
 
-The body is the complete JobDefinition document, not JSON Patch. Missing If-Match returns 428; a stale revision returns 412. This prevents an agent from silently overwriting another worker's plan edits. Changing Job.Id is not allowed.
+The body is the complete JobDefinition, not JSON Patch. Missing If-Match returns 428; a stale revision returns 412. Job ID cannot change. No live plan or completed evidence is editable.
+
+```http
+POST /api/v1/jobs/seed-smoke/validate
+POST /api/v1/jobs/seed-smoke/submit
+```
+
+These parameterless actions accept an empty body or `{}`. Unexpected JSON fields are rejected before mutation. Empty JSON is consumed before the response closes, avoiding an unread request body on successful action responses.
+
+Validation/submission returns 202, an operation Location and Retry-After. The operation belongs to the runner and survives the requesting connection. Poll its receipt, not a second creation request:
+
+```http
+GET /api/v1/jobs/seed-smoke/operation
+GET /api/v1/jobs/seed-smoke/validation
+```
+
+Queued/running operations are nonterminal; completed/failed/interrupted are terminal. Submission verifies all declared file lengths/hashes/references and existing preflight, then atomically publishes the complete package to Pending. The existing runner automatically claims it: no separate remote CLI launch is needed.
+
+Acceptance, preflight and queue publication are not correctness verdicts. The normal execution engine still owns launch/control/readiness/timeout/finalization. A request that loses its response may already have succeeded; retain the same job ID and inspect its state.
+
+## Observe outcomes, not raw files
+
+Summary views expose lifecycle cursors independent of plan revisions, bounded waits, held/blocked states and canonical assessment outcomes. Missing/invalid assessment data never implies pass.
+
+```http
+GET /api/v1/jobs/seed-smoke?view=summary
+GET /api/v1/runs/<run-id>?view=summary
+```
+
+Execution, correctness, evidence and comparison remain independent. `tested` is archival queue disposition, not guest correctness. The older `GET /api/v1/runs/{id}` remains an artifact listing; use the summary view for assessment information.
+
+Detailed evidence remains available through the ranged artifact route, paged artifact metadata and bounded incremental logs. The client defaults to an assessment summary and selected collection, not every file. `collect --all` is explicit and must check every page's completeness and every download. Artifact byte counts are checked; no independent result digest manifest is currently provided.
+
+Existing target controls and diagnostics remain available under `/api/v1/control`, `/api/v1/xemu/*`, `/api/v1/input/press` and `/api/v1/diagnostics`. Their operation policies still apply. Experiment aggregation remains available at `/api/v1/experiments/{id}`; it is not an automatic statistical-significance or Xbox-correctness claim.
+
+## Withdraw, cancel or repeat
+
+`POST /api/v1/jobs/{id}/withdraw` atomically returns an unclaimed queued job to draft. Queue claim and withdrawal compete through rename; a lost claim race returns conflict, not permission to edit Testing.
+
+`DELETE /api/v1/jobs/{id}` cancels only draft/unclaimed work and retains its files. It does not delete evidence or kill an active process.
+
+`POST /api/v1/jobs/{id}/clone` with `{"newId":"new-attempt"}` copies a stable package into a new draft. Poll the destination operation, edit if needed, then submit. For a new build, use the test-library reference workflow or a new manifest plus `/reuse` so unchanged workload assets need not cross the network again.
+
+Existing manually staged packages are not automatically adopted by the API-owned draft store. Do not rename its hidden directories or manipulate its journals outside the API.
+
+## Error recovery
+
+Errors retain machine-readable code, status, explanation and a correction hint. job_busy/upload_in_progress means inspect the same operation or upload status. Revision mismatches require refreshing the plan revision before an intentional edit. preflight_failed requires reading validation and correcting the draft. operation_blocked means respect the active benchmark policy. Missing/held ownership is not evidence that a new attempt is safe.
+
+Hashing/copying/transfers retain existing activity accounting across run transitions; this is not a scheduler-level zero-overlap guarantee. The listener remains trusted-LAN-only without built-in authentication/TLS. Keep the foreground runner available instead of restarting it for every agent request.
+
+## Checks
 
 ```sh
-python scripts/runner_api.py --url http://192.168.1.42:9368 edit build-149-a ./revised-job.json
-python scripts/runner_api.py --url http://192.168.1.42:9368 request POST /api/v1/jobs/build-149-a/validate
+dotnet run --project tests/AgentChecks -c Release
+python -m unittest discover -s tests -p 'test_runner_api*.py' -v
+dotnet run --project tests/AgentChecks -c Release -- --client
 ```
 
-Validation and submission are asynchronous **runner operations**:
-
-```http
-POST /api/v1/jobs/build-149-a/validate
-POST /api/v1/jobs/build-149-a/submit
-```
-
-Both return 202 with a `Location` pointing to the job's operation and `Retry-After: 1`. Poll once per second until `state` is completed, failed or interrupted. A 202 is acceptance, not successful preflight, launch, guest correctness or test completion.
-
-```http
-GET /api/v1/jobs/build-149-a/operation
-GET /api/v1/jobs/build-149-a/validation
-```
-
-Validation checks every declared file's committed upload/size/digest, ensures referenced package inputs are declared, and runs the existing package preflight (including target OS and Linux executable permission). Submission performs validation itself, then atomically moves the complete package into Pending. The normal runner still performs its launch/control/tool checks. API preflight success does not guarantee the environment or xemu will work.
-
-Operation failures retain a machine-readable errorCode, explanation, recovery hint and available progress/report. A disconnected client can resume polling. A runner/process restart marks unfinished work interrupted, except a submitted package already in the queue is reconciled as published rather than submitted a second time.
-
-Hashing/copying is done outside fast status polling and is tracked as activity for the whole operation lifetime. If a benchmark is already active, its operation policy may reject heavy operations with 409. If an already-running transfer/operation overlaps a later test, the existing activity tracker records the intervention; this is not a guarantee of zero benchmark impact.
-
-## Follow the attempt and collect results
-
-```http
-GET /api/v1/jobs/build-149-a
-```
-
-Job states describe package ownership: draft, busy, queued, testing, tested, cancelled or unavailable. `tested` is a terminal queue disposition, **not** a correctness verdict. During testing, a run ID and run/result/log actions become available. Follow those links rather than looking for files through SSH.
-
-```http
-GET /api/v1/runs/<run-id>
-GET /api/v1/runs/<run-id>/tail?file=stdout.log&bytes=32768
-GET /api/v1/runs/<run-id>/artifacts/result.json
-GET /api/v1/runs/<run-id>/artifacts/metrics.csv
-```
-
-The existing result response includes its assessment and artifact listing. Read execution/correctness/evidence/comparison separately. Downloads use the existing streaming/range implementation. Active benchmark policy can block tails/downloads; wait or explicitly change the plan for a future attempt, not bypass the policy with a shell.
-
-`collect` downloads the **listed** artifacts of a tested job under `<output>/<run-id>/`, using .part files and byte ranges for interrupted local downloads. It checks byte counts, not an independent result digest (the existing artifact API does not supply a digest manifest). Existing server artifact enumeration limits still apply; collection is not a new unlimited archive endpoint.
-
-For frequent activity polling use `/api/v1/status` and `/api/v1/metrics/latest`. They read cached telemetry. Do not substitute repeated validation, directory listings or discovery calls at 100 ms.
-
-## Modify queued work and retry without touching evidence
-
-Withdraw an unclaimed queued job:
-
-```http
-POST /api/v1/jobs/build-149-a/withdraw
-```
-
-It returns to draft, where the plan and payload uploads can be changed within the original file declarations. The queue and withdrawal compete by atomic rename. If execution claimed it first, withdrawal returns a conflict; the API does not edit Testing.
-
-Cancel a draft or unclaimed queued job:
-
-```http
-DELETE /api/v1/jobs/build-149-a
-```
-
-Cancellation retains the files in a cancelled state. It does not delete completed evidence or kill a running process. Active xemu pause/resume/input/quit remain available through their existing target-control routes where policy permits. This patch does not add a policy-bypassing active process kill or remote OS command endpoint.
-
-Clone a stable draft, tested or cancelled package into a **new** draft ID:
-
-```http
-POST /api/v1/jobs/build-149-a/clone
-Content-Type: application/json
-
-{"newId":"build-149-b"}
-```
-
-The tester copies and verifies the declared payload locally, so an unchanged large workload does not have to cross the network again. Poll the destination operation. After it completes, edit the new draft and submit it. Clone preserves source file declarations and changes Job.Id; use a new creation manifest when replacing the executable with different content.
-
-```sh
-python scripts/runner_api.py --url http://192.168.1.42:9368 clone build-149-a build-149-b
-python scripts/runner_api.py --url http://192.168.1.42:9368 edit build-149-b ./variant-b-job.json
-python scripts/runner_api.py --url http://192.168.1.42:9368 request POST /api/v1/jobs/build-149-b/submit
-python scripts/runner_api.py --url http://192.168.1.42:9368 wait build-149-b
-```
-
-An interrupted clone is reported, not silently treated as a complete package. Cancel it and clone to a fresh ID, or inspect/fill its remaining declared payload through the upload API before submission.
-
-## Error handling for agents
-
-| Code or status | Required response |
-| --- | --- |
-| job_busy / upload_in_progress | Poll the current operation or file offset; retry after ownership is released. |
-| job_identity_conflict | Reuse an ID only for the identical creation request; use a fresh ID for a new attempt. |
-| plan_revision_mismatch (412/428) | Fetch the job and retry with its current revision in If-Match. |
-| job_not_editable / job_already_started | Do not change the running attempt; withdraw before claim or clone after completion. |
-| upload_identity_mismatch / upload_offset_mismatch | Query committed upload status and use that ID/offset. |
-| preflight_failed | Read the structured validation report and correct the draft. |
-| operation_blocked | Respect benchmark policy. Wait or change the next draft's intended policy. |
-| job_claim_race | Re-read the job state. A concurrent queue claim may have won. |
-| unavailable | The API-owned directory could not be located. Do not assume it is safe to resubmit. |
-
-API-created package directories and internal metadata are runner-owned. Existing manually staged packages are not automatically adopted by this API. Do not rename API package directories outside the API or manipulate its hidden metadata. Results and control remain accessible through the existing endpoints.
-
-## Verification boundary
-
-This change includes a standard-library client and the HTTP/store implementation. Existing CI covers compilation/regressions; the client's syntax and CLI help can be checked locally without xemu. Real Windows/Linux API-only launch, native controller/capture behavior, interrupted 10 GB+ LAN transfer, and process-restart reconciliation require qualification on the test rigs. No native capture, large-network throughput or telemetry-overhead result is implied by a successful build.
+The final command runs the Python client against the real embedded listener using fixture packages. It does not launch real xemu. Windows/Linux native rendering, large LAN transfers, runtime recovery and monitoring overhead still need the test rigs. PR verification records preserve the earlier intermittent Windows filesystem-access finding rather than treating later green runs as proof of its resolution.

@@ -7,6 +7,7 @@ launch is available. Use --help for commands and --detail only for explicit insp
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import math
 import os
@@ -21,6 +22,18 @@ from runner_workflows import Workflows, gate
 class Parser(argparse.ArgumentParser):
     def error(self, message):
         raise ClientError("arguments_invalid", message, "Run this command with --help.")
+
+
+def bounded_integer(minimum: int, maximum: int):
+    def parse(text: str) -> int:
+        try:
+            value = int(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"must be an integer from {minimum} to {maximum}") from None
+        if not minimum <= value <= maximum:
+            raise argparse.ArgumentTypeError(f"must be from {minimum} to {maximum}")
+        return value
+    return parse
 
 
 def json_input(args, required=False):
@@ -88,7 +101,7 @@ def build_parser():
     submit.add_argument("package", type=Path)
     submit.add_argument("--id", required=True)
     submit.add_argument("--reuse")
-    submit.add_argument("--chunk-mib", type=int, choices=range(1, 65), default=8)
+    submit.add_argument("--chunk-mib", type=bounded_integer(1, 64), metavar="1..64", default=8)
     add_wait(submit)
     bake = sub.add_parser("bake")
     bake.add_argument("test")
@@ -103,7 +116,7 @@ def build_parser():
     run.add_argument("--experiment")
     run.add_argument("--variant")
     run.add_argument("--reference")
-    run.add_argument("--chunk-mib", type=int, choices=range(1, 65), default=8)
+    run.add_argument("--chunk-mib", type=bounded_integer(1, 64), metavar="1..64", default=8)
     add_wait(run)
     retry = sub.add_parser("retry")
     retry.add_argument("source")
@@ -120,7 +133,7 @@ def build_parser():
     logs.add_argument("id")
     logs.add_argument("--stream", choices=("stdout", "stderr", "operator-events", "segments"), default="stderr")
     logs.add_argument("--cursor")
-    logs.add_argument("--max-bytes", type=int, default=4096, choices=range(1, 16385))
+    logs.add_argument("--max-bytes", type=bounded_integer(1, 16384), metavar="1..16384", default=4096)
     collect = sub.add_parser("collect")
     collect.add_argument("id")
     collect.add_argument("output", type=Path)
@@ -228,7 +241,7 @@ def main() -> int:
         value, code = error.document(), 1
     except KeyboardInterrupt:
         value, code = {"ok": False, "code": "client_interrupted", "hint": "The server may still own the operation. Inspect the SAME job ID."}, 130
-    except (OSError, ValueError, KeyError, TypeError, urllib.error.URLError) as error:
+    except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException, urllib.error.URLError) as error:
         value, code = {"ok": False, "code": "client_error", "error": str(error)[:1024],
                        "hint": "Check the response/local input. Keep the same ID after an interrupted request."}, 1
     print(json.dumps(value, indent=2 if pretty else None, separators=None if pretty else (",", ":"), allow_nan=False))

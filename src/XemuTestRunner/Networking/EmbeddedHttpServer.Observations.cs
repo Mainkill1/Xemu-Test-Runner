@@ -33,7 +33,7 @@ public sealed partial class EmbeddedHttpServer
             await WriteAgentJsonAsync(stream, new
             {
                 api = "xemu-test-runner", protocol = "v1", agentRevision = 4,
-                version = typeof(EmbeddedHttpServer).Assembly.GetName().Version?.ToString(),
+                version = ApplicationInfo.DisplayVersion,
                 instance = _observationEpoch, phase = snapshot.Phase,
                 blocked = snapshot.QueueIssue is not null,
                 bulkTransfersAllowed = snapshot.CurrentJob is null || snapshot.Operations.BulkTransfersAllowed,
