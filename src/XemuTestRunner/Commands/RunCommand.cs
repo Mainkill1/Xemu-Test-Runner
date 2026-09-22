@@ -91,13 +91,15 @@ public sealed class RunCommand : Command<RunCommandSettings>
             }
             else
             {
-                RunLiveDashboard(
-                    engine,
-                    runTask,
-                    config.Ui.CliRefreshMs,
-                    cancellationToken);
-
-                runTask.GetAwaiter().GetResult();
+                WaitForEngineAfterTerminalFailureAsync(
+                    () => RunLiveDashboardAsync(
+                        engine,
+                        runTask,
+                        config.Ui.CliRefreshMs,
+                        cancellationToken),
+                    runTask)
+                    .GetAwaiter()
+                    .GetResult();
             }
 
             var snapshot = engine.State.Snapshot();
@@ -157,9 +159,12 @@ public sealed class RunCommand : Command<RunCommandSettings>
             }
             else
             {
-                AnsiConsole.WriteException(
+                ReportInteractiveFailure(
                     ex,
-                    ExceptionFormats.ShortenEverything);
+                    error => AnsiConsole.WriteException(
+                        error,
+                        ExceptionFormats.ShortenEverything),
+                    error => Console.Error.WriteLine(error));
             }
 
             return exitCode;
@@ -190,13 +195,52 @@ public sealed class RunCommand : Command<RunCommandSettings>
         return 0;
     }
 
-    private static void RunLiveDashboard(
+    public static async Task WaitForEngineAfterTerminalFailureAsync(
+        Func<Task> liveDisplay,
+        Task engineTask)
+    {
+        try
+        {
+            await liveDisplay().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+            when (ex is IOException or InvalidOperationException or NotSupportedException)
+        {
+        }
+
+        await engineTask.ConfigureAwait(false);
+    }
+
+    public static void ReportInteractiveFailure(
+        Exception error,
+        Action<Exception> richWriter,
+        Action<Exception> fallbackWriter)
+    {
+        try
+        {
+            richWriter(error);
+        }
+        catch (Exception ex)
+            when (ex is IOException or InvalidOperationException or NotSupportedException)
+        {
+            try
+            {
+                fallbackWriter(error);
+            }
+            catch (Exception fallbackError)
+                when (fallbackError is IOException or InvalidOperationException or NotSupportedException)
+            {
+            }
+        }
+    }
+
+    private static Task RunLiveDashboardAsync(
         RunnerEngine engine,
         Task runTask,
         int refreshMs,
         CancellationToken cancellationToken)
     {
-        AnsiConsole.Live(
+        return AnsiConsole.Live(
                 CliDashboard.Build(
                     engine.State.Snapshot()))
             .AutoClear(false)
@@ -228,9 +272,7 @@ public sealed class RunCommand : Command<RunCommandSettings>
                             engine.State.Snapshot()));
                     live.Refresh();
                 }
-            })
-            .GetAwaiter()
-            .GetResult();
+            });
     }
 
     private static async Task MonitorPlainAsync(
