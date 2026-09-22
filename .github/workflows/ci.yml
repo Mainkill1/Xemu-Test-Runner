@@ -40,6 +40,8 @@ jobs:
           python-version: '3.13'
       - name: Run HTTP client contract checks
         run: python -m unittest discover -s tests -p test_runner_api.py -v
+      - name: Run client against the actual embedded HTTP listener
+        run: dotnet run --project tests/AgentChecks -c Release --no-build -- --client
       - name: Publish Linux
         if: runner.os == 'Linux'
         run: bash scripts/publish.sh linux-x64
