@@ -6,6 +6,7 @@ else
     ObservationChecks.Register(checks);
     TemplateChecks.Register(checks);
     EvidenceChecks.Register(checks);
+    ActionBodyChecks.Register(checks);
 }
 var failures = 0;
 foreach (var (name, run) in checks)
