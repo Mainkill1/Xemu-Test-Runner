@@ -202,6 +202,13 @@ public sealed partial class EmbeddedHttpServer
             }
             if (parts[1] == "tail" && request.Method == "GET")
             {
+                if (!await EnsureOperationAllowedAsync(
+                        stream,
+                        "bulk_transfer",
+                        keepAlive,
+                        ct).ConfigureAwait(false))
+                    return true;
+
                 var name = GetQueryValue(request.Query, "file") ?? "stdout.log";
                 var bytes = int.TryParse(GetQueryValue(request.Query, "bytes"), out var parsed) ? parsed : 32768;
                 await WriteJsonAsync(stream, 200, "OK", await catalog.TailAsync(runId, name, bytes, ct), keepAlive, ct);
@@ -209,6 +216,13 @@ public sealed partial class EmbeddedHttpServer
             }
             if (parts[1] == "artifacts" && parts.Length == 3)
             {
+                if (!await EnsureOperationAllowedAsync(
+                        stream,
+                        "bulk_transfer",
+                        keepAlive,
+                        ct).ConfigureAwait(false))
+                    return true;
+
                 var path = catalog.Resolve(runId, Uri.UnescapeDataString(parts[2]));
                 // Open before sending any headers. Downloads use the actual handle length.
                 await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
