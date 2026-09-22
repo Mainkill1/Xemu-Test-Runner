@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Text.Json;
 using XemuTestRunner.Config;
 using XemuTestRunner.Queue;
+using XemuTestRunner.Runtime;
 
 namespace XemuTestRunner.Control;
 
