@@ -117,6 +117,62 @@ try
         Assert(AttemptJournal.HasFinalResult(results, attempt), "Exhausted finalized interruption was not archivable.");
         return Task.CompletedTask;
     });
+    await Check("package archival retries transient file locks", async () =>
+    {
+        var fixture = Path.Combine(root, "archive-retry");
+        var paths = new RunnerPaths(
+            Path.Combine(fixture, "runner.json"),
+            fixture,
+            Path.Combine(fixture, "Pending"),
+            Path.Combine(fixture, "Testing"),
+            Path.Combine(fixture, "Tested"),
+            Path.Combine(fixture, "Results"),
+            Path.Combine(fixture, "Files"));
+        var attempts = 0;
+        var queue = new JobQueue(
+            new RunnerConfig(),
+            paths,
+            (source, destination) =>
+            {
+                attempts++;
+                if (attempts < 3)
+                    throw new IOException("fixture lock");
+                Directory.Move(source, destination);
+            });
+        queue.EnsureDirectories();
+        var package = Path.Combine(paths.Testing, "completed-package");
+        Directory.CreateDirectory(package);
+
+        var archived = await queue.CompleteAsync(
+            package,
+            TimeSpan.FromSeconds(1),
+            CancellationToken.None);
+
+        Assert(attempts == 3, $"Archive move used {attempts} attempts instead of retrying twice.");
+        Assert(Directory.Exists(archived) && !Directory.Exists(package),
+            "Finalized package was not archived after its transient lock cleared.");
+
+        var held = Path.Combine(paths.Testing, "persistently-locked");
+        Directory.CreateDirectory(held);
+        var blockedQueue = new JobQueue(
+            new RunnerConfig(),
+            paths,
+            (_, _) => throw new IOException("persistent fixture lock"));
+        var reported = false;
+        try
+        {
+            await blockedQueue.CompleteAsync(
+                held,
+                TimeSpan.FromMilliseconds(10),
+                CancellationToken.None);
+        }
+        catch (IOException exception)
+        {
+            reported = exception.Message.Contains("left in Testing for recovery", StringComparison.Ordinal);
+        }
+        Assert(reported && Directory.Exists(held),
+            "Persistent archive lock did not leave a durable recoverable package in Testing.");
+    });
     await Check("watchdog trips only after consecutive failed probes", async () =>
     {
         int calls = 0;

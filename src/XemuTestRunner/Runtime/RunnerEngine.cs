@@ -1222,7 +1222,40 @@ public sealed class RunnerEngine
 
         attempt.Phase = "finalized";
         AttemptJournal.Write(package, attempt);
-        _queue.Complete(package);
+        try
+        {
+            await _queue.CompleteAsync(
+                package,
+                TimeSpan.FromMilliseconds(
+                    _config.Reliability.ProcessExitTimeoutMs),
+                ct).ConfigureAwait(false);
+        }
+        catch (IOException exception)
+        {
+            packageIssue = new QueueIssue(
+                "package_archive_busy",
+                Path.GetFileName(package),
+                exception.Message,
+                DateTimeOffset.UtcNow,
+                Retryable: true,
+                HoldsTesting: true);
+            _state.EndJob(
+                status,
+                job?.Id ?? Path.GetFileName(package),
+                resultDirectory,
+                failed:
+                    assessment.Execution !=
+                        ExecutionOutcome.Completed ||
+                    assessment.Correctness is
+                        (CorrectnessOutcome.Failed or
+                         CorrectnessOutcome.Incomplete) ||
+                    assessment.Evidence is
+                        (EvidenceOutcome.Incomplete or
+                         EvidenceOutcome.Invalid));
+            _state.SetQueueIssue(packageIssue);
+            _state.SetPhase("queue_blocked");
+            return;
+        }
         _state.SetQueueIssue(null);
         _state.EndJob(
             status,

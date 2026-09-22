@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using XemuTestRunner.Config;
 using XemuTestRunner.Reliability;
@@ -8,16 +9,21 @@ public sealed class JobQueue
 {
     private readonly RunnerConfig _config;
     private readonly RunnerPaths _paths;
+    private readonly Action<string, string> _moveDirectory;
     private readonly object _gate = new();
     private readonly Dictionary<string, PackageObservation> _observations =
         new(OperatingSystem.IsWindows()
             ? StringComparer.OrdinalIgnoreCase
             : StringComparer.Ordinal);
 
-    public JobQueue(RunnerConfig config, RunnerPaths paths)
+    public JobQueue(
+        RunnerConfig config,
+        RunnerPaths paths,
+        Action<string, string>? moveDirectory = null)
     {
         _config = config;
         _paths = paths;
+        _moveDirectory = moveDirectory ?? Directory.Move;
     }
 
     public void EnsureDirectories()
@@ -375,8 +381,49 @@ public sealed class JobQueue
             var destination = UniqueDirectory(
                 _paths.Tested,
                 Path.GetFileName(package));
-            Directory.Move(package, destination);
+            _moveDirectory(package, destination);
             return destination;
+        }
+    }
+
+    public async Task<string> CompleteAsync(
+        string package,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        string destination;
+        lock (_gate)
+        {
+            destination = UniqueDirectory(
+                _paths.Tested,
+                Path.GetFileName(package));
+        }
+
+        var started = Stopwatch.GetTimestamp();
+        var retryDelay = TimeSpan.FromMilliseconds(100);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                _moveDirectory(package, destination);
+                return destination;
+            }
+            catch (IOException exception)
+            {
+                var elapsed = Stopwatch.GetElapsedTime(started);
+                if (elapsed >= timeout)
+                {
+                    throw new IOException(
+                        $"Finalized package '{Path.GetFileName(package)}' remained busy for {elapsed.TotalMilliseconds:0} ms and was left in Testing for recovery.",
+                        exception);
+                }
+
+                var remaining = timeout - elapsed;
+                await Task.Delay(
+                    remaining < retryDelay ? remaining : retryDelay,
+                    cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 
