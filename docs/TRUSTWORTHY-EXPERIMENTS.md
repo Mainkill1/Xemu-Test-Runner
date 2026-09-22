@@ -43,9 +43,15 @@ input-manifest.json records the frozen job manifest hash, executable hash, decla
 CorrectnessChecks and EvidenceRequirements use artifact checks with result/package/runtime scopes. Supported checks include:
 - existence
 - minimum byte size
+- minimum visible non-black pixel ratio for non-interlaced 8-bit PNGs
 - SHA-256
 - contains text
 - exact text
+
+`MinimumNonBlackPixelRatio` is opt-in and ranges from 0 to 1. Use it for
+screenshots captured at a point where visible gameplay is required. The check
+fails closed for malformed or unsupported PNGs; jobs that do not declare it
+retain their existing artifact behavior.
 
 ReportedMetrics extracts finite numeric values from JSON artifacts using dot-separated object-property paths. These measurements feed the compare command.
 

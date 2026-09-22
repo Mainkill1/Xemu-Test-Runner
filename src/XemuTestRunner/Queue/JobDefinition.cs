@@ -179,6 +179,11 @@ public sealed class JobDefinition
                 throw new InvalidDataException(
                     "Workload artifact MinimumBytes cannot be negative.");
 
+            if (artifact.MinimumNonBlackPixelRatio is double minimumRatio &&
+                (!double.IsFinite(minimumRatio) || minimumRatio < 0 || minimumRatio > 1))
+                throw new InvalidDataException(
+                    "Workload artifact MinimumNonBlackPixelRatio must be between 0 and 1.");
+
             if (!string.IsNullOrWhiteSpace(artifact.ExpectedSha256) &&
                 (artifact.ExpectedSha256.Length != 64 ||
                  !artifact.ExpectedSha256.All(Uri.IsHexDigit)))
