@@ -10,6 +10,10 @@ public sealed class StatusCommandSettings : CommandSettings
     [CommandOption("-u|--url <URL>")]
     [Description("Runner base URL.")]
     public string Url { get; set; } = "http://127.0.0.1:9368";
+
+    [CommandOption("--json")]
+    [Description("Emit the runner status JSON without a Spectre table.")]
+    public bool Json { get; set; }
 }
 
 public sealed class StatusCommand : Command<StatusCommandSettings>
@@ -25,8 +29,15 @@ public sealed class StatusCommand : Command<StatusCommandSettings>
             };
             var json = client.GetStringAsync("api/v1/status", cancellationToken).GetAwaiter().GetResult();
             using var document = JsonDocument.Parse(json);
-            var root = document.RootElement;
+            if (settings.Json)
+            {
+                Console.WriteLine(
+                    JsonSerializer.Serialize(
+                        document.RootElement));
+                return 0;
+            }
 
+            var root = document.RootElement;
             var table = new Table().RoundedBorder();
             table.AddColumn("Field");
             table.AddColumn("Value");

@@ -31,7 +31,8 @@ public sealed partial class EmbeddedHttpServer
         if (!_options.Enabled) return;
         _listener = new TcpListener(await ResolveBindAddressAsync(_options.BindAddress), _options.Port);
         _listener.Start();
-        _state.SetHttpEndpoint($"http://{_options.BindAddress}:{_options.Port}");
+        var advertised = NetworkEndpointResolver.Resolve(_options);
+        _state.SetHttpEndpoint(advertised.Url);
         using var registration = cancellationToken.Register(() =>
         {
             _listener?.Stop();

@@ -1,6 +1,7 @@
 using Spectre.Console;
 using Spectre.Console.Cli;
 using System.ComponentModel;
+using System.Text.Json;
 using XemuTestRunner.Config;
 using XemuTestRunner.Queue;
 
@@ -11,6 +12,10 @@ public sealed class QueueCommandSettings : CommandSettings
     [CommandOption("-c|--config <PATH>")]
     [Description("Path to runner JSON configuration.")]
     public string ConfigPath { get; set; } = "runner.json";
+
+    [CommandOption("--json")]
+    [Description("Emit machine-readable JSON instead of a Spectre table.")]
+    public bool Json { get; set; }
 }
 
 public sealed class QueueCommand : Command<QueueCommandSettings>
@@ -23,6 +28,22 @@ public sealed class QueueCommand : Command<QueueCommandSettings>
             var queue = new JobQueue(config, paths);
             queue.EnsureDirectories();
             var snapshot = queue.Snapshot();
+            var interrupted = queue.GetTestingJobs();
+
+            if (settings.Json)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    queue = snapshot,
+                    testingPackages = interrupted
+                        .Select(Path.GetFileName)
+                        .ToArray()
+                }, new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                }));
+                return 0;
+            }
 
             var table = new Table().RoundedBorder();
             table.AddColumn("State");
@@ -32,7 +53,6 @@ public sealed class QueueCommand : Command<QueueCommandSettings>
             table.AddRow("Tested", snapshot.Tested.ToString());
             AnsiConsole.Write(table);
 
-            var interrupted = queue.GetTestingJobs();
             if (interrupted.Count > 0)
                 AnsiConsole.MarkupLine($"[yellow]Testing contains:[/] {Markup.Escape(string.Join(", ", interrupted.Select(Path.GetFileName)))}");
             return 0;

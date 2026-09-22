@@ -22,15 +22,48 @@ public static class Preflight
             checks.Add(new("executable", File.Exists(executable), job.Executable));
             if (File.Exists(executable))
             {
-                await using var file = new FileStream(executable, FileMode.Open, FileAccess.Read, FileShare.Read,
-                    128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-                hash = Convert.ToHexString(await SHA256.HashDataAsync(file, ct)).ToLowerInvariant();
+                var before = new FileInfo(executable);
+                var beforeLength = before.Length;
+                var beforeWrite = before.LastWriteTimeUtc;
+
+                await using var file = new FileStream(
+                    executable,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    128 * 1024,
+                    FileOptions.Asynchronous | FileOptions.SequentialScan);
+                hash = Convert.ToHexString(
+                    await SHA256.HashDataAsync(file, ct)).ToLowerInvariant();
+
+                var after = new FileInfo(executable);
+                after.Refresh();
+                var stable = after.Exists &&
+                    after.Length == beforeLength &&
+                    after.LastWriteTimeUtc == beforeWrite;
+
+                checks.Add(new(
+                    "executable_stable",
+                    stable,
+                    stable
+                        ? "Executable metadata remained unchanged while hashing."
+                        : "Executable changed while preflight was hashing it. Another process may still be copying or replacing the build."));
+
                 var expected = job.ExpectedExecutableSha256;
-                checks.Add(new("sha256", string.IsNullOrWhiteSpace(expected) || hash.Equals(expected, StringComparison.OrdinalIgnoreCase), hash));
+                checks.Add(new(
+                    "sha256",
+                    string.IsNullOrWhiteSpace(expected) ||
+                        hash.Equals(expected, StringComparison.OrdinalIgnoreCase),
+                    hash));
+
                 if (OperatingSystem.IsLinux())
                 {
                     var mode = File.GetUnixFileMode(executable);
-                    checks.Add(new("executable_bit", (mode & (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) != 0,
+                    checks.Add(new(
+                        "executable_bit",
+                        (mode & (UnixFileMode.UserExecute |
+                                 UnixFileMode.GroupExecute |
+                                 UnixFileMode.OtherExecute)) != 0,
                         "The Linux package must retain an executable permission bit."));
                 }
             }
