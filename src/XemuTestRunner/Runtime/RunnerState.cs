@@ -1,5 +1,6 @@
 using XemuTestRunner.Monitoring;
 using XemuTestRunner.Queue;
+using XemuTestRunner.Workstation;
 
 namespace XemuTestRunner.Runtime;
 
@@ -18,10 +19,18 @@ public sealed class RunnerState
     private string? _lastJob;
     private string? _lastResult;
     private DateTimeOffset? _lastFinishedUtc;
+    private WorkstationStateSnapshot _workstation = WorkstationStateSnapshot.Unsupported;
+    private QueueIssue? _queueIssue;
+    private int _jobsFinished;
+    private int _failedJobs;
+    private string? _lastResultDirectory;
 
     public void SetPhase(string phase) { lock (_gate) _phase = phase; }
     public void SetHttpEndpoint(string? endpoint) { lock (_gate) _httpEndpoint = endpoint; }
     public void SetQueue(QueueSnapshot queue) { lock (_gate) _queue = queue; }
+    public void SetQueueIssue(QueueIssue? issue) { lock (_gate) _queueIssue = issue; }
+    public void SetWorkstationState(WorkstationStateSnapshot workstation) { lock (_gate) _workstation = workstation; }
+    public bool HasActiveJob { get { lock (_gate) return _currentJob is not null; } }
 
     public void BeginJob(string jobId, string runId, int processId)
     {
@@ -38,13 +47,22 @@ public sealed class RunnerState
 
     public void SetLatestMetric(MetricSample sample) { lock (_gate) _latestMetric = sample; }
 
-    public void EndJob(string result, string? jobId = null)
+    public void EndJob(
+        string result,
+        string? jobId = null,
+        string? resultDirectory = null)
     {
         lock (_gate)
         {
             _lastJob = jobId ?? _currentJob;
             _lastResult = result;
             _lastFinishedUtc = DateTimeOffset.UtcNow;
+            _lastResultDirectory = resultDirectory;
+            _jobsFinished++;
+            if (!result.Equals(
+                    "completed",
+                    StringComparison.OrdinalIgnoreCase))
+                _failedJobs++;
             _phase = "idle";
             _currentJob = null;
             _runId = null;
@@ -74,7 +92,12 @@ public sealed class RunnerState
                 _httpEndpoint,
                 _lastJob,
                 _lastResult,
-                _lastFinishedUtc);
+                _lastFinishedUtc,
+                _workstation,
+                _queueIssue,
+                _jobsFinished,
+                _failedJobs,
+                _lastResultDirectory);
         }
     }
 }
@@ -93,4 +116,9 @@ public sealed record RunnerStateSnapshot(
     string? HttpEndpoint,
     string? LastJob,
     string? LastResult,
-    DateTimeOffset? LastFinishedUtc);
+    DateTimeOffset? LastFinishedUtc,
+    WorkstationStateSnapshot Workstation,
+    QueueIssue? QueueIssue,
+    int JobsFinished,
+    int FailedJobs,
+    string? LastResultDirectory);

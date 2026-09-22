@@ -26,12 +26,20 @@ public sealed class JobDefinition
     [System.Text.Json.Serialization.JsonIgnore]
     public string? PackageDirectory { get; private set; }
 
-    public static JobDefinition LoadPackage(string packageDirectory)
+    public static JobDefinition LoadPackage(string packageDirectory) =>
+        LoadPackage(packageDirectory, Path.Combine(packageDirectory, "job.json"));
+
+    public static JobDefinition LoadPackage(
+        string packageDirectory,
+        string manifestPath)
     {
-        var path = Path.Combine(packageDirectory, "job.json");
-        if (!File.Exists(path)) throw new InvalidDataException("Package is missing job.json.");
-        if (new FileInfo(path).Length > 1024 * 1024) throw new InvalidDataException("job.json exceeds 1 MiB.");
-        var job = JsonSerializer.Deserialize<JobDefinition>(File.ReadAllText(path), ConfigLoader.JsonOptions)
+        if (!File.Exists(manifestPath))
+            throw new InvalidDataException("Package is missing job.json.");
+        if (new FileInfo(manifestPath).Length > 1024 * 1024)
+            throw new InvalidDataException("job.json exceeds 1 MiB.");
+        var job = JsonSerializer.Deserialize<JobDefinition>(
+            File.ReadAllText(manifestPath),
+            ConfigLoader.JsonOptions)
             ?? throw new InvalidDataException("Empty job.json.");
         if (string.IsNullOrWhiteSpace(job.Id)) job.Id = Path.GetFileName(packageDirectory);
         if (string.IsNullOrWhiteSpace(job.Executable)) throw new InvalidDataException("Executable is required.");

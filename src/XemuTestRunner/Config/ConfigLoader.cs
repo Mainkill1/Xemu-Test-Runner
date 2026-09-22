@@ -46,8 +46,18 @@ public static class ConfigLoader
             c.Reliability.Watchdog is null || c.XemuControl.ButtonKeys is null ||
             c.XemuControl.ScreenshotArguments is null)
             throw new InvalidDataException("Configuration sections cannot be null.");
-        if (c.Monitoring.IntervalMs <= 0 || c.Monitoring.FlushIntervalMs <= 0 || c.Monitoring.BufferCapacity < 16 || c.Queue.ScanIntervalMs <= 0)
-            throw new InvalidDataException("Sampling/flush/queue intervals must be positive; buffer capacity must be at least 16.");
+        if (c.Monitoring.IntervalMs <= 0 ||
+            c.Monitoring.FlushIntervalMs <= 0 ||
+            c.Monitoring.BufferCapacity < 16 ||
+            c.Queue.ScanIntervalMs <= 0 ||
+            c.Queue.PackageStabilityMs < 100)
+            throw new InvalidDataException(
+                "Sampling/flush/queue intervals must be positive; PackageStabilityMs must be at least 100; buffer capacity must be at least 16.");
+        if (c.Monitoring.Gpu.SampleIntervalMs < c.Monitoring.IntervalMs ||
+            c.Monitoring.Gpu.SensorIntervalMs < c.Monitoring.Gpu.SampleIntervalMs ||
+            c.Monitoring.Gpu.CounterRefreshMs < c.Monitoring.Gpu.SampleIntervalMs)
+            throw new InvalidDataException(
+                "GPU SampleIntervalMs must be >= Monitoring.IntervalMs; SensorIntervalMs and CounterRefreshMs must be >= SampleIntervalMs.");
         if (c.Http.Port is < 1 or > 65535 || c.Http.TransferBufferBytes is < 65536 or > 16777216 || c.Http.MaxHeaderBytes is < 4096 or > 1048576)
             throw new InvalidDataException("Invalid HTTP port or buffer/header size.");
         if (c.XemuControl.QmpPort is < 0 or > 65535 || c.XemuControl.ConnectTimeoutMs <= 0 || c.XemuControl.ScreenshotTimeoutMs <= 0 ||

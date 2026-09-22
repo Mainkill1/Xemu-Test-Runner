@@ -15,6 +15,83 @@ dotnet run --project src/XemuTestRunner -- run
 
 Publish a self-contained executable with `scripts/publish.ps1 -Rid win-x64` or `bash scripts/publish.sh linux-x64`. Use the produced `XemuTestRunner.exe` or `XemuTestRunner` executable. The `run --once` command drains the queue and exits when it is empty. `queue` inspects the local queue; `status --url http://host:9368` reads a running instance.
 
+## Automation / AI-friendly operation
+
+The runner has a non-interactive mode intended for agents, scripts, CI, and remote orchestration. It never requires terminal input.
+
+Run at most one queued package:
+
+```sh
+xemu-test-runner run --one-shot --non-interactive
+```
+
+Run one package and return exactly one JSON document on stdout:
+
+```sh
+xemu-test-runner run --one-shot --json
+```
+
+Drain the queue and return one final JSON summary:
+
+```sh
+xemu-test-runner run --once --json
+```
+
+`--json` implies non-interactive mode and suppresses the Spectre live dashboard. Stdout is reserved for the final JSON object so an agent does not need to scrape terminal formatting.
+
+Example result:
+
+```json
+{
+  "ok": true,
+  "exitCode": 0,
+  "cancelled": false,
+  "mode": "one-shot",
+  "phase": "finished",
+  "jobsFinished": 1,
+  "failedJobs": 0,
+  "lastJob": "build-123",
+  "lastResult": "completed",
+  "evidenceDirectory": "workspace/Results/...",
+  "resultFile": "workspace/Results/.../result.json",
+  "queue": {
+    "pending": 2,
+    "testing": 0,
+    "tested": 41
+  },
+  "httpEndpoint": "http://192.168.1.42:9368"
+}
+```
+
+Automation exit codes are stable:
+
+| Exit | Meaning |
+| ---: | --- |
+| 0 | Requested work completed with no failed jobs and no blocked queue state |
+| 1 | Runner/internal failure |
+| 2 | One or more tests finished with a non-`completed` result |
+| 3 | Queue/package state blocked execution |
+| 130 | Cancelled/interrupted |
+
+`--non-interactive` without `--json` emits plain state changes instead of a repainting terminal UI. This is useful when a log stream is desired. Redirected stdout also automatically selects non-interactive rendering.
+
+The existing queue and status commands also expose JSON:
+
+```sh
+xemu-test-runner queue --json
+xemu-test-runner status --url http://runner:9368 --json
+```
+
+A typical agent loop can therefore:
+
+1. stage a complete package under `.incoming-...` and atomically rename it into Pending;
+2. run `run --one-shot --json`;
+3. check the process exit code and `lastResult`;
+4. open the returned `resultFile` / evidence directory;
+5. make a code change and repeat.
+
+`--one-shot` differs from `--once`: one-shot processes at most one claimed package, while once drains the current queue before exiting.
+
 ## A queue item contains the plan AND candidate executable
 
 ```text
@@ -33,6 +110,8 @@ workspace/
 ```
 
 The **whole build directory** moves `Pending -> Testing -> Tested`. Only one visible package may occupy Testing. Keep these directories on the same local filesystem for directory renames. Copy incomplete packages under `.incoming-build-123`, then rename to `build-123` after all files arrive. Dot-prefixed directories are ignored.
+
+Visible packages are also stability-checked before claim. The runner fingerprints `job.json`, the candidate executable, and declared `RequiredFiles`; the critical set must remain unchanged for `Queue.PackageStabilityMs` (750 ms by default). Busy, incomplete, moved, access-denied, invalid, and changed-after-claim packages are reported as structured queue issues instead of generic runner failures. A package that changes after entering Testing is held there and is not launched.
 
 Linux builds must retain their executable bit. Package-relative paths are used for `Executable` and `WorkingDirectory`; xemu arguments are passed separately without shell expansion. Supply your own firmware, disks and test assets; none are distributed here.
 
@@ -102,7 +181,15 @@ Preview requests share one latest frame per run and a server-side minimum captur
 
 Manual input, pauses, retained screenshots, preview captures and bulk transfers are journaled to `operator-events.jsonl`. The result includes `operatorActivity` and `comparisonStatus: "operator_intervened"` when these occurred. In-flight transfers begun before a job also mark the new job. The home page and console display these counts through `/api/v1/quality`.
 
-This is a warning mechanism, not an automatic performance verdict. A run without interventions is `not_evaluated`, never automatically benchmark-valid. Close/disable previews during clean measurements; the 100 ms telemetry sampler stays independent of HTTP polling.
+This is a warning mechanism, not an automatic performance verdict. A run without interventions is `not_evaluated`, never automatically benchmark-valid. Close/disable previews during clean measurements; telemetry sampling stays independent of HTTP polling.
+
+### Telemetry cost and recording model
+
+There is one telemetry loop for the lifetime of the runner. While idle it samples host state into memory only so the CLI/API remain live without writing telemetry files. When xemu starts, that same collector attaches the target process and begins `metrics.csv`; when the run ends it detaches xemu and stops disk recording while host sampling continues.
+
+Cheap host/process CPU, RAM, and process-I/O counters use `Monitoring.IntervalMs` (100 ms by default). GPU engine utilization is provider-cached at `Gpu.SampleIntervalMs` (250 ms by default); sensor-style values such as thermal/power/VRAM refresh at `Gpu.SensorIntervalMs` (1 second by default). Windows GPU counter instance discovery stays on the slower `CounterRefreshMs` cadence. This avoids calling every expensive provider at the 100 ms base rate.
+
+Each sample records collector duration and duty-cycle. Run results retain sample count, overruns, dropped writes, average collector duty, maximum collector duty, and maximum collection duration. Those values are the first place to look when deciding whether telemetry is perturbing a benchmark.
 
 
 ## Deep diagnostics and snapshot recipes
@@ -198,7 +285,15 @@ These captures are explicitly diagnostic/intervened evidence. They are not clean
 
 ```json
 {
-  "Monitoring": { "IntervalMs": 100 },
+  "Queue": { "PackageStabilityMs": 750 },
+  "Monitoring": {
+    "IntervalMs": 100,
+    "Gpu": {
+      "SampleIntervalMs": 250,
+      "SensorIntervalMs": 1000,
+      "CounterRefreshMs": 5000
+    }
+  },
   "XemuControl": {
     "ScreenshotProvider": "auto",
     "ScreenshotExecutable": "",
@@ -278,7 +373,7 @@ POST /api/v1/input/record/clear
 POST /api/v1/runner/stop
 ```
 
-Telemetry includes host/process CPU, RAM, swap/pagefile, I/O and available GPU/VRAM/thermal counters. Missing values are shown as unavailable, not manufactured as GPU zero. Vendor support and update frequencies vary. Host/process samples are collected during active jobs; the idle dashboard is not an always-on system monitor.
+Telemetry includes host/process CPU, RAM, swap/pagefile, I/O and available GPU/VRAM/thermal counters. Missing values are shown as unavailable, not manufactured as GPU zero. Vendor support and update frequencies vary. Host values are sampled continuously from runner startup; process values and CSV recording begin only while a test is active.
 
 ## Large file transfers
 
@@ -290,6 +385,6 @@ The existing `GET/HEAD/PUT/POST /api/v1/files/<path>` interface streams artifact
 dotnet run --project tests/RunnerChecks -c Release
 ```
 
-This dependency-free regression executable currently runs 20 checks covering the remote-listener default, preflight, ownership, recovery decisions, watchdog sequences/cancellation, concurrent preview caching, bounded tails, large-range arithmetic, input ABI size, intervention accounting, diagnostic schema/reference validation, tool discovery, release identity, quit ordering, and a full queued-process/QMP/HTTP/telemetry/screenshot-fallback lifecycle. `-- --large-file` opts into an 11 GiB local file-length test; it is not a 10 GB HTTP transfer test.
+This dependency-free regression executable covers covering the remote-listener default, preflight, ownership, recovery decisions, watchdog sequences/cancellation, concurrent preview caching, bounded tails, large-range arithmetic, input ABI size, intervention accounting, diagnostic schema/reference validation, tool discovery, release identity, quit ordering, and a full queued-process/QMP/HTTP/telemetry/screenshot-fallback lifecycle. `-- --large-file` opts into an 11 GiB local file-length test; it is not a 10 GB HTTP transfer test.
 
 Optional offline browser fixtures: `python scripts/check-browser.py --browser /path/to/chromium`. Requires Python Playwright; it uses no running C# server and must not be mistaken for end-to-end xemu qualification. See [validation](docs/VALIDATION.md) and [architecture](docs/ARCHITECTURE.md).

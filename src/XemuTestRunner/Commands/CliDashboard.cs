@@ -5,35 +5,137 @@ namespace XemuTestRunner.Commands;
 
 internal static class CliDashboard
 {
-    public static Table Build(RunnerStateSnapshot s)
+    public static Table Build(RunnerStateSnapshot state)
     {
-        var table = new Table().RoundedBorder().BorderColor(Color.Grey).AddColumn("[bold]Xemu Test Runner[/]").AddColumn("[bold]Value[/]");
-        void Row(string label, string? value) => table.AddRow(Markup.Escape(label), Markup.Escape(value ?? "-"));
-        Row("Runner", s.Phase.ToUpperInvariant()); Row("Uptime", Duration(s.Uptime)); Row("HTTP", s.HttpEndpoint);
-        Row("Queue", $"Pending {s.Queue.Pending} / Testing {s.Queue.Testing} / Tested {s.Queue.Tested}");
-        Row("Current job", s.CurrentJob); Row("Run ID", s.RunId); Row("PID", s.ProcessId?.ToString());
-        Row("Job runtime", s.JobStartedUtc is null ? "-" : Duration(DateTimeOffset.UtcNow - s.JobStartedUtc.Value));
-        var m = s.LatestMetric;
-        Row("Host CPU", Percent(m?.HostCpuPercent)); Row("Process CPU (core %)", Percent(m?.ProcessCpuPercent));
-        Row("GPU", Percent(m?.GpuUtilizationPercent)); Row("Process GPU", Percent(m?.ProcessGpuUtilizationPercent));
-        Row("Host memory", Bytes(m?.HostMemoryUsedBytes) + " / " + Bytes(m?.HostMemoryTotalBytes));
-        Row("Process memory", Bytes(m?.ProcessWorkingSetBytes));
-        Row("Swap / pagefile", m?.SwapTotalBytes is not null ? Bytes(m.SwapUsedBytes) + " / " + Bytes(m.SwapTotalBytes) : Percent(m?.PageFileUsagePercent));
-        Row("VRAM", Bytes(m?.VramUsedBytes) + " / " + Bytes(m?.VramTotalBytes)); Row("Process VRAM", Bytes(m?.ProcessVramBytes));
-        Row("Process I/O", $"R {Bytes(m?.ProcessReadBytesPerSecond)}/s / W {Bytes(m?.ProcessWriteBytesPerSecond)}/s");
-        Row("GPU temp/power", $"{m?.GpuTemperatureC:0.0} C / {m?.GpuPowerWatts:0.0} W");
-        Row("Collector", m is null ? "-" : $"{m.CollectorDurationMs:0.###} ms{(m.Overrun ? " OVERRUN" : "")}");
-        Row("Sample age", m is null ? "-" : $"{Math.Max(0, (DateTimeOffset.UtcNow - m.TimestampUtc).TotalMilliseconds):0} ms");
-        Row("Last job", s.LastJob); Row("Last result", s.LastResult);
+        var table = new Table()
+            .RoundedBorder()
+            .BorderColor(Color.Grey)
+            .AddColumn("[bold]Xemu Test Runner[/]")
+            .AddColumn("[bold]Value[/]");
+
+        void Row(string label, string? value) =>
+            table.AddRow(
+                Markup.Escape(label),
+                Markup.Escape(value ?? "-"));
+
+        Row("Runner", state.Phase.ToUpperInvariant());
+        Row("HTTP", state.HttpEndpoint);
+        Row(
+            "Queue",
+            $"Pending {state.Queue.Pending} / Testing {state.Queue.Testing} / Tested {state.Queue.Tested}");
+
+        if (state.QueueIssue is not null)
+        {
+            Row(
+                "Queue issue",
+                $"{state.QueueIssue.Code}: {state.QueueIssue.Message}");
+        }
+
+        if (state.CurrentJob is not null)
+        {
+            var runtime = state.JobStartedUtc is null
+                ? "-"
+                : Duration(
+                    DateTimeOffset.UtcNow -
+                    state.JobStartedUtc.Value);
+
+            Row(
+                "Current test",
+                $"{state.CurrentJob} / PID {state.ProcessId?.ToString() ?? "-"} / {runtime}");
+        }
+
+        var metric = state.LatestMetric;
+        Row(
+            "Host",
+            $"CPU {Percent(metric?.HostCpuPercent)} / " +
+            $"RAM {Bytes(metric?.HostMemoryUsedBytes)} / " +
+            $"GPU {Percent(metric?.GpuUtilizationPercent)} / " +
+            $"VRAM {Bytes(metric?.VramUsedBytes)}");
+
+        if (state.CurrentJob is not null)
+        {
+            Row(
+                "xemu",
+                $"CPU {Percent(metric?.ProcessCpuPercent)} core / " +
+                $"RAM {Bytes(metric?.ProcessWorkingSetBytes)} / " +
+                $"GPU {Percent(metric?.ProcessGpuUtilizationPercent)} / " +
+                $"VRAM {Bytes(metric?.ProcessVramBytes)}");
+
+            Row(
+                "xemu I/O",
+                $"R {Rate(metric?.ProcessReadBytesPerSecond)} / " +
+                $"W {Rate(metric?.ProcessWriteBytesPerSecond)}");
+        }
+
+        if (metric?.GpuTemperatureC is not null ||
+            metric?.GpuPowerWatts is not null)
+        {
+            Row(
+                "GPU sensors",
+                $"{Number(metric?.GpuTemperatureC, "0.0", " C")} / " +
+                $"{Number(metric?.GpuPowerWatts, "0.0", " W")}");
+        }
+
+        if (metric is not null)
+        {
+            Row(
+                "Sampler",
+                $"{metric.CollectorDurationMs:0.###} ms / " +
+                $"{metric.CollectorDutyPercent:0.##}% duty" +
+                (metric.Overrun ? " / OVERRUN" : ""));
+
+            if (metric.Errors.Count > 0)
+            {
+                Row(
+                    "Sampler errors",
+                    string.Join(
+                        " | ",
+                        metric.Errors.Take(3)));
+            }
+        }
+
+        if (state.LastJob is not null || state.LastResult is not null)
+            Row("Last result", $"{state.LastJob ?? "-"} / {state.LastResult ?? "-"}");
+
         return table;
     }
-    private static string Duration(TimeSpan value) => ((int)value.TotalHours).ToString("00") + ":" + value.Minutes.ToString("00") + ":" + value.Seconds.ToString("00");
-    private static string Percent(double? value) => value is null ? "-" : $"{value:0.0}%";
+
+    private static string Duration(TimeSpan value) =>
+        ((int)value.TotalHours).ToString("00") +
+        ":" + value.Minutes.ToString("00") +
+        ":" + value.Seconds.ToString("00");
+
+    private static string Percent(double? value) =>
+        value is null ? "-" : $"{value:0.0}%";
+
+    private static string Rate(double? bytesPerSecond) =>
+        bytesPerSecond is null
+            ? "-"
+            : Bytes(bytesPerSecond) + "/s";
+
     private static string Bytes(double? value)
     {
-        if (value is null) return "-";
-        var n = value.Value; var i = 0; string[] units = ["B", "KiB", "MiB", "GiB", "TiB"];
-        while (n >= 1024 && i < units.Length - 1) { n /= 1024; i++; }
-        return $"{n:0.##} {units[i]}";
+        if (value is null)
+            return "-";
+
+        var number = value.Value;
+        var unit = 0;
+        string[] units = ["B", "KiB", "MiB", "GiB", "TiB"];
+
+        while (number >= 1024 && unit < units.Length - 1)
+        {
+            number /= 1024;
+            unit++;
+        }
+
+        return $"{number:0.##} {units[unit]}";
     }
+
+    private static string Number(
+        double? value,
+        string format,
+        string suffix) =>
+        value is null
+            ? "-"
+            : value.Value.ToString(format) + suffix;
 }

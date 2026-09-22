@@ -4,10 +4,14 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using XemuTestRunner.Commands;
 using XemuTestRunner.Config;
 using XemuTestRunner.Diagnostics;
+using XemuTestRunner.Monitoring.Providers;
+using XemuTestRunner.Networking;
 using XemuTestRunner.Queue;
 using XemuTestRunner.Reliability;
+using XemuTestRunner.Workstation;
 
 if (args.Contains("--fake-xemu", StringComparer.Ordinal))
     return await FakeXemuHost.RunAsync(args);
@@ -294,6 +298,328 @@ try
         Assert(summary.Intervened && summary.PreviewCaptures == 1 && summary.ManualInputs == 1 &&
             summary.Diagnostics == 1, "Intervention was lost.");
         return Task.CompletedTask;
+    });
+
+    await Check("workstation rendering risk flags lock display sleep and battery saver", () =>
+    {
+        Assert(new WorkstationStateSnapshot { SessionLocked = true }.RenderingRisk,
+            "Locked workstation was not marked as a rendering risk.");
+        Assert(new WorkstationStateSnapshot { DisplayState = "off" }.RenderingRisk,
+            "Display-off workstation was not marked as a rendering risk.");
+        Assert(new WorkstationStateSnapshot { PowerState = "suspending" }.RenderingRisk,
+            "Suspending workstation was not marked as a rendering risk.");
+        Assert(new WorkstationStateSnapshot { BatterySaver = true }.RenderingRisk,
+            "Battery saver was not marked as a rendering risk.");
+        Assert(!new WorkstationStateSnapshot
+        {
+            SessionLocked = false,
+            DisplayState = "on",
+            PowerState = "awake",
+            BatterySaver = false
+        }.RenderingRisk, "Normal interactive workstation was marked risky.");
+        return Task.CompletedTask;
+    });
+
+    await Check("runner publishes host telemetry while idle", async () =>
+    {
+        var fixture = Path.Combine(root, "idle-telemetry");
+        var configPath = Path.Combine(fixture, "runner.json");
+        Directory.CreateDirectory(fixture);
+
+        var config = new RunnerConfig
+        {
+            Workspace = "workspace",
+            Http = new HttpOptions { Enabled = false },
+            Monitoring = new MonitoringOptions
+            {
+                Enabled = true,
+                IntervalMs = 50,
+                FlushIntervalMs = 100,
+                BufferCapacity = 64,
+                Gpu = new GpuOptions { Enabled = false }
+            },
+            XemuControl = new XemuControlOptions { Enabled = false },
+            Reliability = new ReliabilityOptions
+            {
+                Preflight = new PreflightOptions { MinimumFreeSpaceBytes = 0 },
+                Watchdog = new WatchdogOptions { Enabled = false }
+            }
+        };
+
+        await File.WriteAllTextAsync(
+            configPath,
+            JsonSerializer.Serialize(config, ConfigLoader.JsonOptions));
+
+        var (_, paths) = ConfigLoader.Load(configPath);
+        var engine = new XemuTestRunner.Runtime.RunnerEngine(config, paths);
+        using var stop = new CancellationTokenSource();
+        var runTask = engine.RunAsync(once: false, stop.Token);
+
+        try
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            while (!deadline.IsCancellationRequested)
+            {
+                var snapshot = engine.State.Snapshot();
+                if (snapshot.CurrentJob is null &&
+                    snapshot.LatestMetric?.HostMemoryTotalBytes is > 0 &&
+                    snapshot.LatestMetric.HostCpuPercent is >= 0)
+                    break;
+
+                await Task.Delay(50, deadline.Token);
+            }
+
+            var idle = engine.State.Snapshot();
+            Assert(idle.CurrentJob is null, "Idle telemetry unexpectedly attached a target process.");
+            Assert(idle.LatestMetric?.HostMemoryTotalBytes is > 0,
+                "Idle runner did not publish host memory.");
+            Assert(idle.LatestMetric?.HostCpuPercent is >= 0,
+                "Idle runner did not publish host CPU after priming.");
+        }
+        finally
+        {
+            stop.Cancel();
+            await runTask;
+        }
+
+        var idleCsv = Directory.Exists(paths.Workspace)
+            ? Directory.EnumerateFiles(
+                paths.Workspace,
+                "*.csv",
+                SearchOption.AllDirectories).ToArray()
+            : [];
+        Assert(
+            idleCsv.Length == 0,
+            "Idle telemetry wrote CSV data before a test started: " +
+            string.Join(", ", idleCsv));
+    });
+
+    await Check("queue holds incomplete and changing packages before claim", async () =>
+    {
+        var fixture = Path.Combine(root, "queue-stability");
+        var configPath = Path.Combine(fixture, "runner.json");
+        Directory.CreateDirectory(fixture);
+
+        var config = new RunnerConfig
+        {
+            Workspace = "workspace",
+            Queue = new QueueOptions
+            {
+                PackageStabilityMs = 100,
+                ScanIntervalMs = 25
+            },
+            Http = new HttpOptions { Enabled = false },
+            Monitoring = new MonitoringOptions { Enabled = false },
+            XemuControl = new XemuControlOptions { Enabled = false },
+            Reliability = new ReliabilityOptions
+            {
+                Preflight = new PreflightOptions
+                {
+                    MinimumFreeSpaceBytes = 0
+                },
+                Watchdog = new WatchdogOptions { Enabled = false }
+            }
+        };
+
+        await File.WriteAllTextAsync(
+            configPath,
+            JsonSerializer.Serialize(config, ConfigLoader.JsonOptions));
+
+        var (_, paths) = ConfigLoader.Load(configPath);
+        var queue = new JobQueue(config, paths);
+        queue.EnsureDirectories();
+
+        var incomplete = Path.Combine(paths.Pending, "incomplete");
+        Directory.CreateDirectory(incomplete);
+
+        var first = queue.TryClaimNext();
+        Assert(
+            first.Package is null &&
+            first.Issue?.Code == "package_incomplete",
+            "Visible package without job.json did not report package_incomplete.");
+
+        Directory.Delete(incomplete, recursive: true);
+
+        var package = Path.Combine(paths.Pending, "changing");
+        Directory.CreateDirectory(package);
+        var executable = Path.Combine(package, "xemu");
+        await File.WriteAllTextAsync(executable, "first");
+        await File.WriteAllTextAsync(
+            Path.Combine(package, "job.json"),
+            JsonSerializer.Serialize(
+                new JobDefinition
+                {
+                    Id = "changing",
+                    Executable = "xemu"
+                },
+                ConfigLoader.JsonOptions));
+
+        var stabilizing = queue.TryClaimNext();
+        Assert(
+            stabilizing.Package is null &&
+            stabilizing.Issue?.Code == "package_stabilizing",
+            "New package was claimed without a stability observation.");
+
+        await File.AppendAllTextAsync(executable, "-changed");
+        await Task.Delay(110);
+
+        var changed = queue.TryClaimNext();
+        Assert(
+            changed.Package is null &&
+            changed.Issue?.Code == "package_stabilizing",
+            "Changing executable did not reset package stability.");
+
+        await Task.Delay(110);
+        var claimed = queue.TryClaimNext();
+        Assert(
+            claimed.Package is not null &&
+            claimed.Issue is null,
+            "Stable package was not claimed after the stability window.");
+
+        await File.AppendAllTextAsync(
+            Path.Combine(claimed.Package!, "xemu"),
+            "-post-claim");
+
+        var integrity = queue.VerifyClaimedPackage(claimed.Package!);
+        Assert(
+            integrity?.Code == "package_changed_during_preflight",
+            "Post-claim package mutation was not detected before launch.");
+    });
+
+    await Check("automation exit codes distinguish success failure and queue blockage", () =>
+    {
+        var success = new XemuTestRunner.Runtime.RunnerState();
+        success.EndJob("completed", "ok-job", "/tmp/ok");
+        Assert(
+            RunCommand.DetermineExitCode(success.Snapshot(), cancelled: false) == 0,
+            "Completed automation run did not return exit code 0.");
+
+        var failed = new XemuTestRunner.Runtime.RunnerState();
+        failed.EndJob("timeout", "failed-job", "/tmp/failed");
+        Assert(
+            RunCommand.DetermineExitCode(failed.Snapshot(), cancelled: false) == 2,
+            "Failed test did not return automation exit code 2.");
+
+        var blocked = new XemuTestRunner.Runtime.RunnerState();
+        blocked.SetQueueIssue(new QueueIssue(
+            "package_busy",
+            "build",
+            "busy",
+            DateTimeOffset.UtcNow,
+            Retryable: true,
+            HoldsTesting: false));
+        Assert(
+            RunCommand.DetermineExitCode(blocked.Snapshot(), cancelled: false) == 3,
+            "Queue issue did not return automation exit code 3.");
+
+        Assert(
+            RunCommand.DetermineExitCode(success.Snapshot(), cancelled: true) == 130,
+            "Cancellation did not return exit code 130.");
+        return Task.CompletedTask;
+    });
+
+    await Check("one-shot runner processes at most one queued package", async () =>
+    {
+        var fixture = Path.Combine(root, "one-shot");
+        var configPath = Path.Combine(fixture, "runner.json");
+        Directory.CreateDirectory(fixture);
+
+        var config = new RunnerConfig
+        {
+            Workspace = "workspace",
+            Queue = new QueueOptions
+            {
+                PackageStabilityMs = 100,
+                ScanIntervalMs = 25
+            },
+            Http = new HttpOptions { Enabled = false },
+            Monitoring = new MonitoringOptions { Enabled = false },
+            XemuControl = new XemuControlOptions
+            {
+                Enabled = true,
+                ConnectTimeoutMs = 3000,
+                InputProvider = "unavailable"
+            },
+            Reliability = new ReliabilityOptions
+            {
+                Preflight = new PreflightOptions { MinimumFreeSpaceBytes = 0 },
+                ProcessExitTimeoutMs = 3000,
+                Watchdog = new WatchdogOptions { Enabled = false }
+            }
+        };
+
+        await File.WriteAllTextAsync(
+            configPath,
+            JsonSerializer.Serialize(config, ConfigLoader.JsonOptions));
+
+        var (_, paths) = ConfigLoader.Load(configPath);
+        var executable = Path.GetFileName(Environment.ProcessPath!);
+
+        foreach (var name in new[] { "job-a", "job-b" })
+        {
+            var package = Path.Combine(paths.Pending, name);
+            Directory.CreateDirectory(package);
+            CopyRunnerFixture(package);
+
+            await File.WriteAllTextAsync(
+                Path.Combine(package, "job.json"),
+                JsonSerializer.Serialize(
+                    new JobDefinition
+                    {
+                        Id = name,
+                        TargetOs = OperatingSystem.IsWindows() ? "windows" : "linux",
+                        Executable = executable,
+                        Arguments = ["--fake-xemu", "--fake-runtime-ms", "5000"],
+                        TimeoutSeconds = 3,
+                        Plan = [new JobStep { Type = "quit" }]
+                    },
+                    ConfigLoader.JsonOptions));
+        }
+
+        var engine = new XemuTestRunner.Runtime.RunnerEngine(config, paths);
+        await engine.RunAsync(
+            once: true,
+            maxJobs: 1,
+            cancellationToken: CancellationToken.None);
+
+        var snapshot = engine.State.Snapshot();
+        Assert(snapshot.JobsFinished == 1, $"One-shot finished {snapshot.JobsFinished} jobs.");
+        Assert(snapshot.FailedJobs == 0, "One-shot fixture failed.");
+        Assert(Directory.GetDirectories(paths.Tested).Length == 1,
+            "One-shot did not archive exactly one package.");
+        Assert(Directory.GetDirectories(paths.Pending).Length == 1,
+            "One-shot consumed more than one pending package.");
+    });
+
+    await Check("advertised HTTP address never reports wildcard when an override is supplied", () =>
+    {
+        var endpoint = NetworkEndpointResolver.Resolve(new HttpOptions
+        {
+            BindAddress = "0.0.0.0",
+            AdvertiseAddress = "192.0.2.44",
+            Port = 9368
+        });
+        Assert(endpoint.ListenAddress == "0.0.0.0", "Listen address changed unexpectedly.");
+        Assert(endpoint.AdvertisedAddress == "192.0.2.44", "Advertised override was ignored.");
+        Assert(endpoint.Url == "http://192.0.2.44:9368", "Advertised URL is incorrect.");
+        return Task.CompletedTask;
+    });
+
+    await Check("system telemetry produces baseline process and memory values", async () =>
+    {
+        using var provider = new SystemMetricProvider();
+        using var current = Process.GetCurrentProcess();
+        _ = provider.Sample(current, processIo: true);
+        await Task.Delay(150);
+        var sample = provider.Sample(current, processIo: true);
+
+        Assert(sample.HostMemoryTotalBytes is > 0, "Host memory total is unavailable.");
+        Assert(sample.HostMemoryAvailableBytes is >= 0, "Host available memory is unavailable.");
+        Assert(sample.ProcessWorkingSetBytes is > 0, "Process working set is unavailable.");
+        Assert(sample.ProcessPrivateBytes is > 0, "Process private memory is unavailable.");
+        Assert(sample.ProcessCpuPercent is >= 0, "Process CPU did not become available after the priming sample.");
+        Assert(sample.HostCpuPercent is >= 0, "Host CPU did not become available after the priming sample.");
+        Assert(sample.Errors.Count == 0, "Telemetry provider reported: " + string.Join(" | ", sample.Errors));
     });
 
     await Check("runner completes a queued QMP job and retains its evidence", async () =>
