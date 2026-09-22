@@ -52,24 +52,66 @@ public static class AttemptJournal
         }
         catch (Exception e) when (e is IOException or JsonException or KeyNotFoundException or InvalidOperationException) { return false; }
     }
-    public static RecoveryAction RecoveryDecision(AttemptRecord? record, bool finalResult, int maxRetries)
+    public static RecoveryAction RecoveryDecision(
+        AttemptRecord? record,
+        bool finalResult,
+        int maxRetries)
     {
-        if (finalResult) return RecoveryAction.Archive;
-        if (record is null || record.Phase == "starting") return RecoveryAction.Hold;
+        if (record is null)
+            return RecoveryAction.Hold;
+
+        // Process ownership takes precedence over a result file. A runner may
+        // intentionally preserve xemu after a control/runner fault.
+        if (record.Phase == "starting")
+            return RecoveryAction.Hold;
+
         if (record.Phase == "running")
         {
-            if (record.ProcessId is null || record.ProcessStartedUtc is null) return RecoveryAction.Hold;
+            if (record.ProcessId is null ||
+                record.ProcessStartedUtc is null)
+                return RecoveryAction.Hold;
+
             try
             {
-                using var process = Process.GetProcessById(record.ProcessId.Value);
-                if (!process.HasExited && Math.Abs((process.StartTime.ToUniversalTime() - record.ProcessStartedUtc.Value).TotalMilliseconds) < 1000)
+                using var process =
+                    Process.GetProcessById(
+                        record.ProcessId.Value);
+
+                if (!process.HasExited &&
+                    Math.Abs(
+                        (process.StartTime.ToUniversalTime() -
+                         record.ProcessStartedUtc.Value)
+                        .TotalMilliseconds) < 1000)
                     return RecoveryAction.Hold;
             }
-            catch (ArgumentException) { /* PID no longer exists. */ }
-            catch (InvalidOperationException) { /* Process exited during inspection. */ }
-            catch (System.ComponentModel.Win32Exception) { return RecoveryAction.Hold; }
+            catch (ArgumentException)
+            {
+                // PID no longer exists.
+            }
+            catch (InvalidOperationException)
+            {
+                // Process exited during inspection.
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                return RecoveryAction.Hold;
+            }
         }
-        else if (record.Phase is not ("preflight" or "exited" or "finalized")) return RecoveryAction.Hold;
-        return record.Attempt > maxRetries ? RecoveryAction.Exhausted : RecoveryAction.Retry;
+        else if (record.Phase is not
+                 ("preflight" or "exited" or
+                  "finalized" or "held"))
+        {
+            return RecoveryAction.Hold;
+        }
+
+        if (finalResult)
+            return RecoveryAction.Archive;
+
+        if (record.Phase == "held")
+            return RecoveryAction.Hold;
+
+        return record.Attempt > maxRetries
+            ? RecoveryAction.Exhausted
+            : RecoveryAction.Retry;
     }
 }

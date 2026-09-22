@@ -104,8 +104,15 @@ public sealed partial class EmbeddedHttpServer
                     if (metric is null) await WriteEmptyAsync(stream, 204, "No Content", keepAlive, ct);
                     else await WriteJsonAsync(stream, 200, "OK", metric, keepAlive, ct);
                     return true;
-                case "/api/v1/preview": await HandleSharedPreviewAsync(stream, keepAlive, ct); return true;
-                case "/api/v1/screenshot": return await HandleScreenshotAsync(stream, request, keepAlive, ct);
+                case "/api/v1/preview":
+                    if (!await EnsureOperationAllowedAsync(stream, "preview", keepAlive, ct))
+                        return true;
+                    await HandleSharedPreviewAsync(stream, keepAlive, ct);
+                    return true;
+                case "/api/v1/screenshot":
+                    if (!await EnsureOperationAllowedAsync(stream, "preview", keepAlive, ct))
+                        return true;
+                    return await HandleScreenshotAsync(stream, request, keepAlive, ct);
                 case "/api/v1/input/record": await WriteJsonAsync(stream, 200, "OK", _control.RecordingSnapshot(), keepAlive, ct); return true;
             }
         }
@@ -113,9 +120,46 @@ public sealed partial class EmbeddedHttpServer
         {
             switch (request.Path)
             {
-                case "/api/v1/input/press": return await HandleButtonPressAsync(stream, request, keepAlive, ct);
-                case "/api/v1/xemu/pause": Activity.Mark("pause", null); await HandlePauseAsync(stream, request, keepAlive, ct); return true;
-                case "/api/v1/xemu/resume": Activity.Mark("resume", null); await HandleResumeAsync(stream, request, keepAlive, ct); return true;
+                case "/api/v1/input/press":
+                    if (!await EnsureOperationAllowedAsync(stream, "input", keepAlive, ct))
+                        return true;
+                    return await HandleButtonPressAsync(stream, request, keepAlive, ct);
+                case "/api/v1/xemu/pause":
+                    if (!await EnsureOperationAllowedAsync(stream, "pause", keepAlive, ct))
+                        return true;
+                    Activity.Mark("pause", null);
+                    await HandlePauseAsync(stream, request, keepAlive, ct);
+                    return true;
+                case "/api/v1/xemu/resume":
+                    if (!await EnsureOperationAllowedAsync(stream, "pause", keepAlive, ct))
+                        return true;
+                    Activity.Mark("resume", null);
+                    await HandleResumeAsync(stream, request, keepAlive, ct);
+                    return true;
+                case "/api/v1/xemu/quit":
+                    if (!await EnsureOperationAllowedAsync(stream, "pause", keepAlive, ct))
+                        return true;
+                    if (!_control.HasActiveSession)
+                    {
+                        await WriteJsonAsync(
+                            stream,
+                            409,
+                            "Conflict",
+                            new { error = "No active xemu target." },
+                            keepAlive,
+                            ct).ConfigureAwait(false);
+                        return true;
+                    }
+                    Activity.Mark("manual_input", new { action = "quit" });
+                    await _control.QuitAsync(ct).ConfigureAwait(false);
+                    await WriteJsonAsync(
+                        stream,
+                        202,
+                        "Accepted",
+                        new { quitting = true },
+                        keepAlive,
+                        ct).ConfigureAwait(false);
+                    return true;
                 case "/api/v1/input/record/start": await HandleRecordingActionAsync(stream, request, keepAlive, "start", ct); return true;
                 case "/api/v1/input/record/stop": await HandleRecordingActionAsync(stream, request, keepAlive, "stop", ct); return true;
                 case "/api/v1/input/record/clear": await HandleRecordingActionAsync(stream, request, keepAlive, "clear", ct); return true;
@@ -128,6 +172,9 @@ public sealed partial class EmbeddedHttpServer
         const string prefix = "/api/v1/files/";
         if (request.Path.StartsWith(prefix, StringComparison.Ordinal))
         {
+            if (!await EnsureOperationAllowedAsync(stream, "bulk_transfer", keepAlive, ct))
+                return true;
+
             var relative = request.Path[prefix.Length..];
             using var transfer = Activity.TrackTransfer(new { method = request.Method, file = relative });
             // A dedicated transfer connection avoids interpreting unread bodies as a subsequent request on failure.
@@ -136,6 +183,47 @@ public sealed partial class EmbeddedHttpServer
         }
         await WriteJsonAsync(stream, 404, "Not Found", new { error = "Route not found." }, false, ct); return false;
     }
+    private async Task<bool> EnsureOperationAllowedAsync(
+        Stream stream,
+        string operation,
+        bool keepAlive,
+        CancellationToken cancellationToken)
+    {
+        var snapshot = _state.Snapshot();
+        if (snapshot.CurrentJob is null)
+            return true;
+
+        var policy = snapshot.Operations;
+        var allowed = operation switch
+        {
+            "preview" => policy.PreviewAllowed,
+            "input" => policy.ManualInputAllowed,
+            "pause" => policy.PauseResumeAllowed,
+            "diagnostic" => policy.DiagnosticsAllowed,
+            "bulk_transfer" => policy.BulkTransfersAllowed,
+            _ => true
+        };
+
+        if (allowed)
+            return true;
+
+        await WriteJsonAsync(
+            stream,
+            409,
+            "Conflict",
+            new
+            {
+                error =
+                    $"Operation '{operation}' is blocked by the active job's '{policy.Mode}' operation policy.",
+                mode = policy.Mode,
+                operation
+            },
+            keepAlive,
+            cancellationToken).ConfigureAwait(false);
+
+        return false;
+    }
+
     private async Task<bool> HandleScreenshotAsync(Stream stream, HttpRequest request, bool keepAlive, CancellationToken ct)
     {
         if (!_control.HasActiveSession) { await WriteJsonAsync(stream, 409, "Conflict", new { error = "No active xemu." }, keepAlive, ct); return true; }

@@ -7,7 +7,8 @@
     "Results": "Results",
     "ScanIntervalMs": 500,
     "InterruptedAction": "retry",
-    "PackageStabilityMs": 750
+    "PackageStabilityMs": 750,
+    "FiniteWaitTimeoutSeconds": 30
   },
   "Monitoring": {
     "Enabled": true,

@@ -103,7 +103,8 @@ public sealed class RunCommand : Command<RunCommandSettings>
             var snapshot = engine.State.Snapshot();
             var exitCode = DetermineExitCode(
                 snapshot,
-                cancelled: false);
+                cancelled:
+                    cancellationToken.IsCancellationRequested);
 
             WriteFinalOutput(
                 settings,
@@ -176,6 +177,12 @@ public sealed class RunCommand : Command<RunCommandSettings>
         if (snapshot.QueueIssue is not null ||
             snapshot.Phase.Equals(
                 "queue_blocked",
+                StringComparison.OrdinalIgnoreCase) ||
+            snapshot.Phase.Equals(
+                "interrupted",
+                StringComparison.OrdinalIgnoreCase) ||
+            snapshot.Phase.Equals(
+                "waiting_for_package",
                 StringComparison.OrdinalIgnoreCase))
             return 3;
 

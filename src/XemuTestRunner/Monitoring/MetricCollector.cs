@@ -25,12 +25,28 @@ public sealed class MetricCollector : IDisposable
 
     private Process? _targetProcess;
     private RecordingSession? _recording;
+    private string? _activeSegment;
     private bool _disposed;
 
     public long SampleCount { get; private set; }
     public long OverrunCount { get; private set; }
     public IReadOnlyList<string> GpuProviders =>
         _gpuProviders.Select(provider => provider.Name).ToArray();
+
+    public Task? RecordingTask
+    {
+        get
+        {
+            lock (_gate)
+                return _recording?.Completion;
+        }
+    }
+
+    public void SetSegment(string? segment)
+    {
+        lock (_gate)
+            _activeSegment = segment;
+    }
 
     public MetricCollector(
         MonitoringOptions options,
@@ -54,11 +70,13 @@ public sealed class MetricCollector : IDisposable
                 var started = Stopwatch.GetTimestamp();
                 Process? process;
                 RecordingSession? recording;
+                string? segment;
 
                 lock (_gate)
                 {
                     process = _targetProcess;
                     recording = _recording;
+                    segment = _activeSegment;
                 }
 
                 MetricSample sample;
@@ -82,6 +100,7 @@ public sealed class MetricCollector : IDisposable
 
                 sample = sample with
                 {
+                    MeasurementSegment = segment,
                     CollectorDurationMs = duration.TotalMilliseconds,
                     CollectorDutyPercent = duty,
                     Overrun = duration >= interval
@@ -128,6 +147,7 @@ public sealed class MetricCollector : IDisposable
                     "Metric recording is already active.");
 
             _targetProcess = process;
+            _activeSegment = null;
             _recording = new RecordingSession(_options, csvPath);
         }
     }
@@ -141,6 +161,7 @@ public sealed class MetricCollector : IDisposable
             recording = _recording;
             _recording = null;
             _targetProcess = null;
+            _activeSegment = null;
         }
 
         if (recording is null)
@@ -293,6 +314,7 @@ public sealed class MetricCollector : IDisposable
         public long Samples { get; private set; }
         public long Overruns { get; private set; }
         public long DroppedWriteSamples { get; private set; }
+        public Task Completion => _writerTask;
         public double TotalCollectorDutyPercent { get; private set; }
         public double MaxCollectorDutyPercent { get; private set; }
         public double MaxCollectorDurationMs { get; private set; }
@@ -374,7 +396,7 @@ public sealed class MetricCollector : IDisposable
                 leaveOpen: false);
 
             await writer.WriteLineAsync(
-                "timestamp_utc,host_cpu_pct,process_cpu_core_pct,host_mem_total,host_mem_used,host_mem_available,process_working_set,process_private,swap_total,swap_used,pagefile_usage_pct,process_read_bps,process_write_bps,gpu_pct,process_gpu_pct,vram_total,vram_used,process_vram,gpu_temp_c,gpu_power_w,collector_ms,collector_duty_pct,overrun,errors")
+                "timestamp_utc,segment,host_cpu_pct,process_cpu_core_pct,host_mem_total,host_mem_used,host_mem_available,process_working_set,process_private,swap_total,swap_used,pagefile_usage_pct,process_read_bps,process_write_bps,gpu_pct,process_gpu_pct,vram_total,vram_used,process_vram,gpu_temp_c,gpu_power_w,collector_ms,collector_duty_pct,overrun,errors")
                 .ConfigureAwait(false);
 
             var lastFlush = Stopwatch.GetTimestamp();
@@ -403,6 +425,7 @@ public sealed class MetricCollector : IDisposable
 
             return string.Join(',',
                 s.TimestampUtc.ToString("O", CultureInfo.InvariantCulture),
+                Q(s.MeasurementSegment ?? ""),
                 D(s.HostCpuPercent),
                 D(s.ProcessCpuPercent),
                 L(s.HostMemoryTotalBytes),

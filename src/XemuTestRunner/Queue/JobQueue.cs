@@ -474,6 +474,12 @@ public sealed class JobQueue
         critical.AddRange(
             job.RequiredFiles.Select(relative =>
                 JobDefinition.ResolveInsidePackage(package, relative)));
+        critical.AddRange(
+            job.Inputs.Select(input =>
+                JobDefinition.ResolveInsidePackage(package, input.Path)));
+        critical.AddRange(
+            job.RuntimeState.Files.Select(runtimeFile =>
+                JobDefinition.ResolveInsidePackage(package, runtimeFile.Source)));
 
         var stamps = new List<string>(critical.Count);
         foreach (var path in critical.Distinct(

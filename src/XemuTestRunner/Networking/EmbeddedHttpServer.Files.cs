@@ -1,9 +1,16 @@
+using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using XemuTestRunner.Util;
 
 namespace XemuTestRunner.Networking;
 
 public sealed partial class EmbeddedHttpServer
 {
+    private readonly ConcurrentDictionary<string, SemaphoreSlim>
+        _uploadLocks = new(
+            OperatingSystem.IsWindows()
+                ? StringComparer.OrdinalIgnoreCase
+                : StringComparer.Ordinal);
     private async Task HandleFileReadAsync(Stream stream, HttpRequest request, string relative, bool keepAlive, CancellationToken cancellationToken)
     {
         string path;
@@ -73,7 +80,85 @@ public sealed partial class EmbeddedHttpServer
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task HandleFileUploadAsync(Stream stream, HttpRequest request, string relative, bool keepAlive, CancellationToken cancellationToken)
+    private async Task HandleFileUploadAsync(
+        Stream stream,
+        HttpRequest request,
+        string relative,
+        bool keepAlive,
+        CancellationToken cancellationToken)
+    {
+        string target;
+        try
+        {
+            target = PathGuard.ResolveFile(
+                _paths.FileRoot,
+                relative);
+        }
+        catch (Exception ex) when (
+            ex is InvalidDataException or
+            UnauthorizedAccessException)
+        {
+            await WriteJsonAsync(
+                stream,
+                400,
+                "Bad Request",
+                new { error = ex.Message },
+                false,
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        var gate = _uploadLocks.GetOrAdd(
+            target,
+            static _ => new SemaphoreSlim(1, 1));
+
+        if (!await gate.WaitAsync(
+                0,
+                cancellationToken).ConfigureAwait(false))
+        {
+            await WriteJsonAsync(
+                stream,
+                409,
+                "Conflict",
+                new
+                {
+                    error =
+                        "Another upload is already writing this destination.",
+                    path = relative
+                },
+                false,
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            await HandleFileUploadCoreAsync(
+                stream,
+                request,
+                relative,
+                target,
+                keepAlive,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
+            if (gate.CurrentCount == 1)
+                _uploadLocks.TryRemove(
+                    new KeyValuePair<string, SemaphoreSlim>(
+                        target,
+                        gate));
+        }
+    }
+
+    private async Task HandleFileUploadCoreAsync(
+        Stream stream,
+        HttpRequest request,
+        string relative,
+        string target,
+        bool keepAlive,
+        CancellationToken cancellationToken)
     {
         var contentLength = request.ContentLength;
         if (contentLength is null)
@@ -87,12 +172,30 @@ public sealed partial class EmbeddedHttpServer
             return;
         }
 
-        string target;
-        try { target = PathGuard.ResolveFile(_paths.FileRoot, relative); }
-        catch (Exception ex) when (ex is InvalidDataException or UnauthorizedAccessException)
+        string? expectedSha256 = null;
+        if (request.Headers.TryGetValue(
+                "X-Content-SHA256",
+                out var requestedHash))
         {
-            await WriteJsonAsync(stream, 400, "Bad Request", new { error = ex.Message }, false, cancellationToken).ConfigureAwait(false);
-            return;
+            expectedSha256 =
+                requestedHash.Trim().ToLowerInvariant();
+
+            if (expectedSha256.Length != 64 ||
+                !expectedSha256.All(Uri.IsHexDigit))
+            {
+                await WriteJsonAsync(
+                    stream,
+                    400,
+                    "Bad Request",
+                    new
+                    {
+                        error =
+                            "X-Content-SHA256 must be 64 hexadecimal characters."
+                    },
+                    false,
+                    cancellationToken).ConfigureAwait(false);
+                return;
+            }
         }
 
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
@@ -121,16 +224,61 @@ public sealed partial class EmbeddedHttpServer
             }
 
             var complete = end + 1 == total;
-            if (complete)
-                File.Move(partial, target, overwrite: true);
+            string? actualSha256 = null;
 
-            await WriteJsonAsync(stream, complete ? 201 : 202, complete ? "Created" : "Accepted", new
+            if (complete)
             {
-                path = relative,
-                complete,
-                received = end + 1,
-                total
-            }, keepAlive, cancellationToken).ConfigureAwait(false);
+                File.Move(
+                    partial,
+                    target,
+                    overwrite: true);
+
+                if (expectedSha256 is not null)
+                {
+                    actualSha256 =
+                        await CalculateSha256Async(
+                            target,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+
+                    if (!actualSha256.Equals(
+                            expectedSha256,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { File.Delete(target); } catch { }
+
+                        await WriteJsonAsync(
+                            stream,
+                            422,
+                            "Unprocessable Content",
+                            new
+                            {
+                                error =
+                                    "Uploaded file SHA-256 does not match X-Content-SHA256.",
+                                expectedSha256,
+                                actualSha256
+                            },
+                            false,
+                            cancellationToken).ConfigureAwait(false);
+                        return;
+                    }
+                }
+            }
+
+            await WriteJsonAsync(
+                stream,
+                complete ? 201 : 202,
+                complete ? "Created" : "Accepted",
+                new
+                {
+                    path = relative,
+                    complete,
+                    received = end + 1,
+                    total,
+                    sha256 = actualSha256
+                },
+                keepAlive,
+                cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -142,14 +290,83 @@ public sealed partial class EmbeddedHttpServer
                 await CopyBytesAsync(stream, file, contentLength.Value, cancellationToken).ConfigureAwait(false);
                 await file.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
-            File.Move(temporary, target, overwrite: true);
-            await WriteJsonAsync(stream, 201, "Created", new { path = relative, bytes = contentLength.Value, complete = true }, keepAlive, cancellationToken).ConfigureAwait(false);
+            File.Move(
+                temporary,
+                target,
+                overwrite: true);
+
+            string? actualSha256 = null;
+            if (expectedSha256 is not null)
+            {
+                actualSha256 =
+                    await CalculateSha256Async(
+                        target,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!actualSha256.Equals(
+                        expectedSha256,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    try { File.Delete(target); } catch { }
+
+                    await WriteJsonAsync(
+                        stream,
+                        422,
+                        "Unprocessable Content",
+                        new
+                        {
+                            error =
+                                "Uploaded file SHA-256 does not match X-Content-SHA256.",
+                            expectedSha256,
+                            actualSha256
+                        },
+                        false,
+                        cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+            }
+
+            await WriteJsonAsync(
+                stream,
+                201,
+                "Created",
+                new
+                {
+                    path = relative,
+                    bytes = contentLength.Value,
+                    complete = true,
+                    sha256 = actualSha256
+                },
+                keepAlive,
+                cancellationToken).ConfigureAwait(false);
         }
         catch
         {
             try { File.Delete(temporary); } catch { }
             throw;
         }
+    }
+
+    private static async Task<string>
+        CalculateSha256Async(
+            string path,
+            CancellationToken cancellationToken)
+    {
+        await using var file = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            1024 * 1024,
+            FileOptions.Asynchronous |
+            FileOptions.SequentialScan);
+
+        return Convert.ToHexString(
+            await SHA256.HashDataAsync(
+                file,
+                cancellationToken).ConfigureAwait(false))
+            .ToLowerInvariant();
     }
 
     private static bool TryParseRange(string value, long fileLength, out long start, out long end)

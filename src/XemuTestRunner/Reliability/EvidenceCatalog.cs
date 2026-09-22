@@ -19,6 +19,16 @@ public sealed class EvidenceCatalog
             .OrderByDescending(Path.GetFileName, StringComparer.Ordinal).Take(Math.Clamp(limit, 1, 200))
             .Select(p => new RunEntry(Path.GetFileName(p), ReadResult(p))).ToArray();
     }
+    public RunEntry GetRun(string runId)
+    {
+        var root = Resolve(runId, ".");
+        if (!Directory.Exists(root))
+            throw new DirectoryNotFoundException(runId);
+        return new RunEntry(
+            runId,
+            ReadResult(root));
+    }
+
     public IReadOnlyList<ArtifactEntry> Artifacts(string runId)
     {
         var root = Resolve(runId, ".");
@@ -45,7 +55,12 @@ public sealed class EvidenceCatalog
     }
     public async Task<LogTail> TailAsync(string runId, string fileName, int count, CancellationToken ct)
     {
-        if (fileName is not ("stdout.log" or "stderr.log" or "operator-events.jsonl")) throw new InvalidDataException("Unsupported log name.");
+        if (fileName is not
+            ("stdout.log" or
+             "stderr.log" or
+             "operator-events.jsonl" or
+             "segments.jsonl"))
+            throw new InvalidDataException("Unsupported log name.");
         await using var file = new FileStream(Resolve(runId, fileName), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
             4096, FileOptions.Asynchronous);
         var length = file.Length; var bytes = (int)Math.Min(Math.Clamp(count, 1, 65536), length); var offset = length - bytes;

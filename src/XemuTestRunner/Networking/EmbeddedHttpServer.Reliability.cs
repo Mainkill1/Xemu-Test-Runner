@@ -98,6 +98,8 @@ public sealed partial class EmbeddedHttpServer
 
         if (request.Method == "POST" && request.Path == "/api/v1/diagnostics/run")
         {
+            if (!await EnsureOperationAllowedAsync(stream, "diagnostic", keepAlive, ct).ConfigureAwait(false))
+                return true;
             if (request.ContentLength is not long length || length is < 1 or > 65536)
             {
                 await WriteJsonAsync(

@@ -1,0 +1,104 @@
+{
+  "Id": "experiment-contract-example",
+  "TargetOs": "windows",
+  "Executable": "xemu.exe",
+  "Arguments": [
+    "-config_path",
+    "xemu.toml"
+  ],
+  "WorkingDirectory": ".",
+  "RequiredFiles": [
+    "xemu.toml"
+  ],
+  "TimeoutSeconds": 120,
+  "Inputs": [
+    {
+      "Path": "xemu.toml",
+      "Role": "emulator-config",
+      "Hash": true
+    }
+  ],
+  "RuntimeState": {
+    "Enabled": false,
+    "KeepOnFailure": true,
+    "KeepOnSuccess": false,
+    "Files": []
+  },
+  "Operations": {
+    "Mode": "benchmark"
+  },
+  "Experiment": {
+    "Id": "example-a-b",
+    "Variant": "candidate",
+    "Reference": "baseline",
+    "VariedFactors": [
+      "xemu-build"
+    ],
+    "ControlledFactors": [
+      "xemu-config",
+      "input-plan"
+    ],
+    "RequireCorrectnessPass": true,
+    "RequireCompleteEvidence": true,
+    "AllowOperatorIntervention": false,
+    "AllowDiagnostics": false
+  },
+  "Workload": {
+    "MinimumMetricSamples": 50,
+    "RequirePlanCompletion": true,
+    "CorrectnessChecks": [
+      {
+        "Name": "guest-result",
+        "Scope": "result",
+        "Path": "guest-results.json",
+        "ContainsText": "\"passed\":true"
+      }
+    ],
+    "EvidenceRequirements": [
+      {
+        "Name": "guest-result-file",
+        "Scope": "result",
+        "Path": "guest-results.json",
+        "MinimumBytes": 2
+      }
+    ],
+    "ReportedMetrics": [
+      {
+        "Name": "average-frame-ms",
+        "Scope": "result",
+        "Path": "guest-results.json",
+        "JsonProperty": "timing.averageFrameMs",
+        "Unit": "ms",
+        "Direction": "lower",
+        "Required": true
+      }
+    ]
+  },
+  "Plan": [
+    {
+      "Type": "wait_for_artifact",
+      "TimeoutMs": 30000,
+      "PollIntervalMs": 100,
+      "Condition": {
+        "Scope": "result",
+        "Path": "guest-ready.json",
+        "ContainsText": "\"ready\":true"
+      }
+    },
+    {
+      "Type": "segment_start",
+      "Name": "steady-state"
+    },
+    {
+      "Type": "wait",
+      "DelayMs": 30000
+    },
+    {
+      "Type": "segment_end",
+      "Name": "steady-state"
+    },
+    {
+      "Type": "quit"
+    }
+  ]
+}
