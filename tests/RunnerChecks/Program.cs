@@ -21,6 +21,27 @@ if (args.Length == 2 && args[0] == "--fake-screenshot")
     FakeXemuHost.WritePng(args[1]);
     return 0;
 }
+if (args.Length == 2 && args[0] == "--fake-screenshot-writer")
+{
+    await Task.Delay(300);
+    FakeXemuHost.WritePng(args[1]);
+    return 0;
+}
+if (args.Length == 2 && args[0] == "--fake-screenshot-delayed")
+{
+    var writer = new ProcessStartInfo(Environment.ProcessPath!)
+    {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true
+    };
+    writer.ArgumentList.Add("--fake-screenshot-writer");
+    writer.ArgumentList.Add(args[1]);
+    using var process = Process.Start(writer)
+        ?? throw new IOException("Failed to start delayed screenshot fixture.");
+    return 0;
+}
 
 var failures = 0;
 async Task Check(string name, Func<Task> test)
@@ -859,7 +880,7 @@ try
                 InputProvider = "unavailable",
                 ScreenshotProvider = "auto",
                 ScreenshotExecutable = Environment.ProcessPath!,
-                ScreenshotArguments = ["--fake-screenshot", "{path}"]
+                ScreenshotArguments = ["--fake-screenshot-delayed", "{path}"]
             },
             Reliability = new ReliabilityOptions
             {

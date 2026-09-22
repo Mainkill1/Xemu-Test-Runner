@@ -676,6 +676,55 @@ public sealed class XemuControlManager : IDisposable
             var detail = string.IsNullOrWhiteSpace(error) ? output : error;
             throw new IOException($"Screenshot command exited with code {process.ExitCode}: {detail.Trim()}");
         }
+
+        try
+        {
+            await WaitForCompletePngAsync(path, deadline.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Screenshot command exited successfully but did not publish a complete PNG within {_options.ScreenshotTimeoutMs} ms.");
+        }
+    }
+
+    private static async Task WaitForCompletePngAsync(string path, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                await using var file = new FileStream(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete,
+                    4096,
+                    FileOptions.Asynchronous | FileOptions.SequentialScan);
+                if (file.Length >= 20)
+                {
+                    var signature = new byte[8];
+                    await file.ReadExactlyAsync(signature, cancellationToken).ConfigureAwait(false);
+                    file.Position = file.Length - 12;
+                    var endChunk = new byte[8];
+                    await file.ReadExactlyAsync(endChunk, cancellationToken).ConfigureAwait(false);
+                    if (signature.AsSpan().SequenceEqual(
+                            new byte[] { 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a }) &&
+                        endChunk.AsSpan().SequenceEqual(
+                            new byte[] { 0, 0, 0, 0, (byte)'I', (byte)'E', (byte)'N', (byte)'D' }))
+                        return;
+                }
+            }
+            catch (Exception exception) when (exception is FileNotFoundException or
+                DirectoryNotFoundException or IOException or UnauthorizedAccessException)
+            {
+                // Portal/compositor commands may exit before a delegated
+                // process creates or atomically replaces the requested file.
+            }
+
+            await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private async Task WaitIfPausedAsync(CancellationToken cancellationToken)

@@ -22,9 +22,26 @@ Start the runner with those variables in its own environment. Job-level `Environ
 
 ## Screenshot fallback
 
-The tested xemu build did not advertise the QMP `screendump` command. SteamOS Spectacle also returned success from a remote session without creating the requested file. The runner detects the missing output and rejects that capture.
+The tested xemu build did not advertise the QMP `screendump` command. On the
+SteamOS Wayland desktop, use Spectacle so the compositor supplies the pixels:
 
-`ffmpeg` X11 capture produced a real PNG reliably under XWayland:
+```json
+{
+  "XemuControl": {
+    "ScreenshotProvider": "external",
+    "ScreenshotExecutable": "/usr/bin/spectacle",
+    "ScreenshotArguments": [
+      "--background", "--nonotify", "--fullscreen", "--output", "{path}"
+    ]
+  }
+}
+```
+
+Spectacle may return before its delegated capture creates the file. The runner
+waits within `ScreenshotTimeoutMs` for a complete PNG. It still rejects a
+missing, incomplete, or workload-declared blank image.
+
+`ffmpeg` X11 capture is an alternative for a true X11 desktop:
 
 ```json
 {
@@ -40,7 +57,11 @@ The tested xemu build did not advertise the QMP `screendump` command. SteamOS Sp
 }
 ```
 
-Adjust `-video_size` when the desktop resolution differs. This captures the X11/XWayland desktop. Use RenderDoc for a renderer-frame capture; a desktop PNG does not expose draw state.
+Adjust `-video_size` when the desktop resolution differs. X11 root capture may
+produce an all-black image for an XWayland Vulkan window; use a
+`MinimumNonBlackPixelRatio` correctness assertion to reject that evidence. Use
+RenderDoc for a renderer-frame capture; a desktop PNG does not expose draw
+state.
 
 ## `perf` capture
 
