@@ -122,6 +122,8 @@ public sealed partial class EmbeddedHttpServer
     }
     private async Task<bool> RouteAsync(Stream stream, HttpRequest request, bool keepAlive, CancellationToken ct)
     {
+        var agent = await TryAgentRouteAsync(stream, request, ct).ConfigureAwait(false);
+        if (agent.HasValue) return agent.Value;
         var evidence = await TryEvidenceRouteAsync(stream, request, keepAlive, ct);
         if (evidence.HasValue) return evidence.Value;
         if (request.Method == "GET")
@@ -131,7 +133,6 @@ public sealed partial class EmbeddedHttpServer
                 case "/": await WriteHtmlAsync(stream, WebPages.Home(_uiOptions.WebRefreshMs), keepAlive, ct); return true;
                 case "/control": await WriteHtmlAsync(stream, WebPages.Control(_uiOptions.WebRefreshMs, _uiOptions.LivePreviewIntervalMs, _uiOptions.LivePreviewEnabled), keepAlive, ct); return true;
                 case "/api/v1/health": await WriteJsonAsync(stream, 200, "OK", new { status = "ok", timestampUtc = DateTimeOffset.UtcNow }, keepAlive, ct); return true;
-                case "/api/v1/help": await WriteJsonAsync(stream, 200, "OK", ApiHelpCatalog.Describe(), keepAlive, ct); return true;
                 case "/api/v1/status": await WriteJsonAsync(stream, 200, "OK", _state.Snapshot(), keepAlive, ct); return true;
                 case "/api/v1/control": await WriteJsonAsync(stream, 200, "OK", _control.Snapshot(), keepAlive, ct); return true;
                 case "/api/v1/queue": await WriteJsonAsync(stream, 200, "OK", _state.Snapshot().Queue, keepAlive, ct); return true;
@@ -203,18 +204,6 @@ public sealed partial class EmbeddedHttpServer
                 case "/api/v1/input/record/clear": await HandleRecordingActionAsync(stream, request, keepAlive, "clear", ct); return true;
                 case "/api/v1/runner/stop":
                     await WriteJsonAsync(stream, 202, "Accepted", new { stopping = true }, false, ct); _requestStop(); return false;
-                case "/api/v1/jobs":
-                    await WriteApiErrorAsync(
-                        stream,
-                        409,
-                        "Conflict",
-                        "package_directory_required",
-                        "Standalone JSON job submission is not supported.",
-                        "Stage a complete package directory containing job.json, the candidate executable, and required assets under Queue/Pending. Prefer .incoming-<name> then rename when complete.",
-                        false,
-                        ct,
-                        new { expected = "Queue/Pending/<package>/job.json" }).ConfigureAwait(false);
-                    return false;
             }
         }
         const string prefix = "/api/v1/files/";
@@ -273,7 +262,7 @@ public sealed partial class EmbeddedHttpServer
             $"Operation '{operation}' is blocked by the active job's '{policy.Mode}' operation policy.",
             policy.IsBenchmark
                 ? "Do not disturb the benchmark. If this operation is intentionally required, explicitly allow it in job.json Operations and accept the comparison-validity implications."
-                : "Change the active job operation policy only if this action is intentionally allowed.",
+                : "Edit a draft plan through /api/v1/jobs before submitting it; active plans cannot be rewritten.",
             false,
             cancellationToken,
             new
@@ -392,9 +381,7 @@ public sealed partial class EmbeddedHttpServer
             await _control.PressButtonAsync(input.Button, input.DurationMs, ct);
             await WriteJsonAsync(stream, 200, "OK", new { accepted = true, button = input.Button, durationMs = input.DurationMs }, keepAlive, ct);
         }
-        catch (Exception e) when (
-            e is JsonException or
-            InvalidDataException)
+        catch (Exception e) when (e is JsonException or InvalidDataException)
         {
             await WriteApiErrorAsync(
                 stream,
@@ -414,7 +401,7 @@ public sealed partial class EmbeddedHttpServer
                 "Service Unavailable",
                 "input_provider_unavailable",
                 e.Message,
-                "Check GET /api/v1/control and xemu-test-runner doctor for input-provider availability/focus requirements.",
+                "Check GET /api/v1/control and /api/v1/diagnostics/tools for input-provider availability and tool readiness.",
                 keepAlive,
                 ct).ConfigureAwait(false);
         }
