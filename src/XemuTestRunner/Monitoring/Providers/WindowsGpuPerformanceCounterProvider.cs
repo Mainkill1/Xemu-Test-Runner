@@ -1,4 +1,6 @@
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Security;
 using XemuTestRunner.Config;
 
 namespace XemuTestRunner.Monitoring.Providers;
@@ -8,6 +10,9 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
 {
     private const string EngineCategory = "GPU Engine";
     private const string MemoryCategory = "GPU Process Memory";
+    private const int InitialDiscoveryRetryMs = 500;
+    private const int MaximumBackoffExponent = 4;
+
     private readonly int _discoveryIntervalMs;
     private readonly int _processIntervalMs;
     private readonly int _sensorIntervalMs;
@@ -35,7 +40,9 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
     public string Name => "Windows GPU performance counters";
 
     public static bool TryCreate(
-        GpuOptions options, out WindowsGpuPerformanceCounterProvider? provider, out string status)
+        GpuOptions options,
+        out WindowsGpuPerformanceCounterProvider? provider,
+        out string status)
     {
         provider = null;
         status = "Windows GPU performance counters unavailable.";
@@ -105,6 +112,11 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
         _processVram = null;
         _emptyDiscoveries = 0;
         _nextDiscovery = 0;
+
+        // A new target needs its own priming interval, not the previous target's
+        // sampling deadlines. Host baselines stay alive across this transition.
+        _nextProcessSample = 0;
+        _nextMemorySample = 0;
         DisposeCounters(_processEngines);
         DisposeCounters(_processMemory);
     }
@@ -124,7 +136,10 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
             var memoryInstances = TryGetInstances(MemoryCategory);
             if (memoryInstances is not null)
             {
-                SynchronizeCounters(_processMemory, MemoryCategory, "Dedicated Usage",
+                SynchronizeCounters(
+                    _processMemory,
+                    MemoryCategory,
+                    "Dedicated Usage",
                     memoryInstances.Where(BelongsToTarget).ToArray());
             }
         }
@@ -134,8 +149,10 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
         if (_processId is not null && _processEngines.Count == 0)
         {
             // Try promptly for a new process, then back off to normal discovery.
-            retryDelay = Math.Min(_discoveryIntervalMs, 500 * (1 << Math.Min(_emptyDiscoveries, 4)));
-            _emptyDiscoveries++;
+            retryDelay = Math.Min(
+                _discoveryIntervalMs,
+                InitialDiscoveryRetryMs * (1 << _emptyDiscoveries));
+            _emptyDiscoveries = Math.Min(_emptyDiscoveries + 1, MaximumBackoffExponent);
         }
         else
         {
@@ -163,7 +180,7 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
         {
             return new PerformanceCounterCategory(category).GetInstanceNames();
         }
-        catch (Exception exception) when (exception is InvalidOperationException or UnauthorizedAccessException)
+        catch (Exception exception) when (IsCounterUnavailable(exception))
         {
             return null; // Keep live counters; an unsuccessful discovery is not an empty snapshot.
         }
@@ -195,10 +212,16 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
                 counter = new PerformanceCounter(category, counterName, instance, readOnly: true);
                 _ = counter.NextValue();
                 counters.Add(instance, counter);
+                counter = null; // The dictionary now owns the handle.
             }
-            catch (Exception exception) when (exception is InvalidOperationException or UnauthorizedAccessException)
+            catch (Exception exception) when (IsCounterUnavailable(exception))
             {
-                counter?.Dispose(); // Instances may disappear between discovery and opening.
+                // Instances can disappear or become inaccessible during opening.
+            }
+            finally
+            {
+                // Also release a partially opened counter on an unexpected error.
+                counter?.Dispose();
             }
         }
     }
@@ -242,7 +265,7 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
             total += value.Value;
         }
 
-        return total <= long.MaxValue ? (long)total : null;
+        return total < long.MaxValue ? (long)total : null;
     }
 
     private static double? TryRead(PerformanceCounter counter)
@@ -252,11 +275,15 @@ public sealed class WindowsGpuPerformanceCounterProvider : IGpuMetricProvider
             var value = counter.NextValue();
             return double.IsFinite(value) && value >= 0 ? value : null;
         }
-        catch (Exception exception) when (exception is InvalidOperationException or UnauthorizedAccessException)
+        catch (Exception exception) when (IsCounterUnavailable(exception))
         {
             return null;
         }
     }
+
+    private static bool IsCounterUnavailable(Exception exception) =>
+        exception is InvalidOperationException or UnauthorizedAccessException or
+            Win32Exception or SecurityException;
 
     public void Dispose()
     {
