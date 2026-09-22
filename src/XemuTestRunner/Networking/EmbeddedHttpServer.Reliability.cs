@@ -1,4 +1,5 @@
 using System.Globalization;
+using XemuTestRunner.Analysis;
 using XemuTestRunner.Reliability;
 using XemuTestRunner.Diagnostics;
 using XemuTestRunner.Config;
@@ -255,6 +256,29 @@ public sealed partial class EmbeddedHttpServer
         var catalog = new EvidenceCatalog(_paths.Results);
         if (request.Method == "GET" && request.Path == "/api/v1/runs")
         { await WriteJsonAsync(stream, 200, "OK", catalog.ListRuns(Reliability.EvidenceListLimit), keepAlive, ct); return true; }
+        const string experimentPrefix = "/api/v1/experiments/";
+        if (request.Method == "GET" && request.Path.StartsWith(experimentPrefix, StringComparison.Ordinal))
+        {
+            var encodedId = request.Path[experimentPrefix.Length..];
+            if (string.IsNullOrWhiteSpace(encodedId) || encodedId.Contains('/'))
+            {
+                await WriteApiErrorAsync(
+                    stream,
+                    400,
+                    "Bad Request",
+                    "experiment_id_invalid",
+                    "The experiment route requires exactly one non-empty path segment.",
+                    "URL-encode the Experiment.Id and request /api/v1/experiments/<experiment-id>.",
+                    keepAlive,
+                    ct).ConfigureAwait(false);
+                return true;
+            }
+
+            var experimentId = Uri.UnescapeDataString(encodedId);
+            var comparison = ComparisonAnalyzer.Analyze(_paths.Results, experimentId);
+            await WriteJsonAsync(stream, 200, "OK", comparison, keepAlive, ct).ConfigureAwait(false);
+            return true;
+        }
         const string prefix = "/api/v1/runs/";
         if (!request.Path.StartsWith(prefix, StringComparison.Ordinal) || request.Method is not ("GET" or "HEAD")) return null;
         var parts = request.Path[prefix.Length..].Split('/', 3);
