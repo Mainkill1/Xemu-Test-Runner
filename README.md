@@ -2,7 +2,7 @@
 
 A foreground C#/.NET 10 and Spectre.Console.Cli application for Windows/Linux xemu build testing. The console owns the queue, launched process, telemetry, test plan and embedded LAN HTTP endpoint. No ASP.NET service, separate daemon or physical Xbox is required.
 
-**Validation status:** a warning-free release build, both self-contained target publishes, and browser fixtures pass on Linux; the regression/process suite passes on Linux, native Windows, and Steam Deck. A real xemu QMP/telemetry/remote-HTTP/`perf` run also passes on Steam Deck. See [validation](docs/VALIDATION.md) for exact coverage and remaining limits.
+**Validation status:** a warning-free release build, both self-contained target publishes, and browser fixtures pass; the regression/process suite passes on Linux, native Windows, and Steam Deck. Real xemu QMP/telemetry/remote-HTTP runs pass on Windows and Steam Deck, and native `perf` capture passes on Steam Deck. See [validation](docs/VALIDATION.md) for exact coverage, measured monitoring overhead, and remaining limits.
 
 ## Build and start
 
