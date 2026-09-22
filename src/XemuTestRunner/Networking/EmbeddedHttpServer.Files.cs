@@ -1,474 +1,245 @@
-using System.Collections.Concurrent;
-using System.Security.Cryptography;
+using System.Globalization;
+using XemuTestRunner.Reliability;
 using XemuTestRunner.Util;
 
 namespace XemuTestRunner.Networking;
 
 public sealed partial class EmbeddedHttpServer
 {
-    private readonly ConcurrentDictionary<string, SemaphoreSlim>
-        _uploadLocks = new(
-            OperatingSystem.IsWindows()
-                ? StringComparer.OrdinalIgnoreCase
-                : StringComparer.Ordinal);
-    private async Task HandleFileReadAsync(Stream stream, HttpRequest request, string relative, bool keepAlive, CancellationToken cancellationToken)
+    private readonly FileUploadStore _uploads = new();
+
+    private async Task HandleFileReadAsync(
+        Stream stream, HttpRequest request, string relative, bool keepAlive, CancellationToken cancellationToken)
     {
         string path;
-        try { path = PathGuard.ResolveFile(_paths.FileRoot, relative); }
-        catch (Exception ex) when (ex is InvalidDataException or UnauthorizedAccessException)
+        try
         {
-            await WriteApiErrorAsync(
-                stream,
-                400,
-                "Bad Request",
-                "file_path_invalid",
-                ex.Message,
-                "Use a relative path under the configured file root. Absolute paths and traversal outside the file root are not allowed.",
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
+            path = ResolveTransferPath(relative);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or UnauthorizedAccessException)
+        {
+            await WriteApiErrorAsync(stream, 400, "Bad Request", "file_path_invalid", exception.Message,
+                "Use a relative path under the file root, not a linked path or the internal upload staging directory.",
+                keepAlive, cancellationToken).ConfigureAwait(false);
             return;
         }
 
         if (QueryContains(request.Query, "upload-status", "1"))
         {
-            var partial = path + ".partial";
-            var completeExists = File.Exists(path);
-            var partialExists = File.Exists(partial);
-            var uploadedLength = completeExists ? new FileInfo(path).Length : partialExists ? new FileInfo(partial).Length : 0;
-            await WriteJsonAsync(stream, 200, "OK", new
+            try
             {
-                path = relative,
-                complete = completeExists,
-                partial = partialExists,
-                length = uploadedLength
-            }, keepAlive, cancellationToken).ConfigureAwait(false);
+                var status = _uploads.GetStatus(path);
+                if (request.Method == "HEAD")
+                {
+                    await WriteEmptyAsync(stream, 200, "OK", keepAlive, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+
+                await WriteJsonAsync(stream, 200, "OK", new
+                {
+                    path = relative,
+                    complete = status.Complete,
+                    partial = status.Partial,
+                    length = status.Length,
+                    total = status.Total,
+                    uploadId = status.UploadId,
+                    completedFileBytes = status.CompletedFileBytes,
+                    state = status.State,
+                    sha256 = status.Sha256
+                }, keepAlive, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                await WriteApiErrorAsync(stream, 409, "Conflict", "upload_state_invalid", exception.Message,
+                    "Restart with a whole-file upload. Existing published data is not modified by a failed status query.",
+                    false, cancellationToken).ConfigureAwait(false);
+            }
+
             return;
         }
 
-        if (!File.Exists(path))
+        // Open before publishing response headers. A reader keeps this exact file
+        // handle even if another request publishes a newer version of the path.
+        FileStream file;
+        try
         {
-            await WriteApiErrorAsync(
-                stream,
-                404,
-                "Not Found",
-                "file_not_found",
-                $"File '{relative}' was not found.",
-                "Check the relative file path or query upload status with ?upload-status=1.",
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
+            file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete,
+                _options.TransferBufferBytes, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            var missing = exception is FileNotFoundException or DirectoryNotFoundException;
+            await WriteApiErrorAsync(stream, missing ? 404 : 409, missing ? "Not Found" : "Conflict",
+                missing ? "file_not_found" : "file_unavailable", exception.Message,
+                "Check the relative path, file permissions, and ?upload-status=1 before retrying.",
+                false, cancellationToken).ConfigureAwait(false);
             return;
         }
 
-        var fileInfo = new FileInfo(path);
-        var start = 0L;
-        var end = fileInfo.Length - 1;
-        var partialResponse = false;
-
-        if (request.Headers.TryGetValue("Range", out var range) && TryParseRange(range, fileInfo.Length, out var parsedStart, out var parsedEnd))
+        await using (file)
         {
-            start = parsedStart;
-            end = parsedEnd;
-            partialResponse = true;
-        }
+            FileRange range;
+            try
+            {
+                range = FileRange.Parse(request.Headers.GetValueOrDefault("Range"), file.Length);
+            }
+            catch (InvalidDataException)
+            {
+                await WriteHeadersAsync(stream, 416, "Range Not Satisfiable", new Dictionary<string, string>
+                {
+                    ["Content-Range"] = $"bytes */{file.Length.ToString(CultureInfo.InvariantCulture)}",
+                    ["Content-Length"] = "0"
+                }, keepAlive, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
 
-        var length = fileInfo.Length == 0 ? 0 : end - start + 1;
-        var headers = new Dictionary<string, string>
-        {
-            ["Content-Type"] = "application/octet-stream",
-            ["Content-Length"] = length.ToString(),
-            ["Accept-Ranges"] = "bytes",
-            ["Content-Disposition"] = $"attachment; filename=\"{EscapeHeaderValue(fileInfo.Name)}\""
-        };
-        if (partialResponse)
-            headers["Content-Range"] = $"bytes {start}-{end}/{fileInfo.Length}";
+            var headers = new Dictionary<string, string>
+            {
+                ["Content-Type"] = "application/octet-stream",
+                ["Content-Length"] = range.Length.ToString(CultureInfo.InvariantCulture),
+                ["Accept-Ranges"] = "bytes",
+                ["Content-Disposition"] = $"attachment; filename=\"{EscapeHeaderValue(Path.GetFileName(path))}\""
+            };
+            if (range.Partial)
+            {
+                headers["Content-Range"] = $"bytes {range.Start}-{range.Start + range.Length - 1}/{file.Length}";
+            }
 
-        await WriteHeadersAsync(stream, partialResponse ? 206 : 200, partialResponse ? "Partial Content" : "OK", headers, keepAlive, cancellationToken).ConfigureAwait(false);
+            await WriteHeadersAsync(stream, range.Partial ? 206 : 200,
+                range.Partial ? "Partial Content" : "OK", headers, keepAlive, cancellationToken).ConfigureAwait(false);
+            if (request.Method != "HEAD" && range.Length > 0)
+            {
+                file.Position = range.Start;
+                await CopyBytesAsync(file, stream, range.Length, cancellationToken).ConfigureAwait(false);
+            }
 
-        if (request.Method == "HEAD" || length == 0)
-        {
             await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-            return;
         }
-
-        await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, _options.TransferBufferBytes, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        file.Seek(start, SeekOrigin.Begin);
-        await CopyBytesAsync(file, stream, length, cancellationToken).ConfigureAwait(false);
-        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task HandleFileUploadAsync(
-        Stream stream,
-        HttpRequest request,
-        string relative,
-        bool keepAlive,
-        CancellationToken cancellationToken)
+        Stream stream, HttpRequest request, string relative, bool keepAlive, CancellationToken cancellationToken)
     {
-        string target;
         try
         {
-            target = PathGuard.ResolveFile(
-                _paths.FileRoot,
-                relative);
-        }
-        catch (Exception ex) when (
-            ex is InvalidDataException or
-            UnauthorizedAccessException)
-        {
-            await WriteApiErrorAsync(
-                stream,
-                400,
-                "Bad Request",
-                "file_path_invalid",
-                ex.Message,
-                "Use a relative path under the configured file root. Absolute paths and traversal outside the file root are not allowed.",
-                false,
-                cancellationToken).ConfigureAwait(false);
-            return;
-        }
+            var target = ResolveTransferPath(relative);
+            var upload = ParseUploadRequest(request);
+            var receipt = await _uploads.ReceiveAsync(
+                stream, target, upload.Length, upload.Range, upload.ExpectedHash, upload.Id,
+                _options.TransferBufferBytes, cancellationToken).ConfigureAwait(false);
 
-        var gate = _uploadLocks.GetOrAdd(
-            target,
-            static _ => new SemaphoreSlim(1, 1));
-
-        if (!await gate.WaitAsync(
-                0,
-                cancellationToken).ConfigureAwait(false))
-        {
-            await WriteApiErrorAsync(
-                stream,
-                409,
-                "Conflict",
-                "upload_in_progress",
-                "Another upload is already writing this destination.",
-                "Wait for the current upload to finish or choose a different destination path.",
-                false,
-                cancellationToken,
-                new { path = relative }).ConfigureAwait(false);
-            return;
-        }
-
-        try
-        {
-            await HandleFileUploadCoreAsync(
-                stream,
-                request,
-                relative,
-                target,
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            gate.Release();
-            if (gate.CurrentCount == 1)
-                _uploadLocks.TryRemove(
-                    new KeyValuePair<string, SemaphoreSlim>(
-                        target,
-                        gate));
-        }
-    }
-
-    private async Task HandleFileUploadCoreAsync(
-        Stream stream,
-        HttpRequest request,
-        string relative,
-        string target,
-        bool keepAlive,
-        CancellationToken cancellationToken)
-    {
-        var contentLength = request.ContentLength;
-        if (contentLength is null)
-        {
-            await WriteApiErrorAsync(
-                stream,
-                411,
-                "Length Required",
-                "content_length_required",
-                "Content-Length is required for file uploads.",
-                "Send the exact body byte count in Content-Length. Chunked request encoding is not supported.",
-                false,
-                cancellationToken).ConfigureAwait(false);
-            return;
-        }
-        if (contentLength < 0)
-        {
-            await WriteApiErrorAsync(
-                stream,
-                400,
-                "Bad Request",
-                "content_length_invalid",
-                "Content-Length is invalid.",
-                "Send a non-negative decimal Content-Length matching the exact upload body size.",
-                false,
-                cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
-        string? expectedSha256 = null;
-        if (request.Headers.TryGetValue(
-                "X-Content-SHA256",
-                out var requestedHash))
-        {
-            expectedSha256 =
-                requestedHash.Trim().ToLowerInvariant();
-
-            if (expectedSha256.Length != 64 ||
-                !expectedSha256.All(Uri.IsHexDigit))
-            {
-                await WriteApiErrorAsync(
-                    stream,
-                    400,
-                    "Bad Request",
-                    "content_hash_invalid",
-                    "X-Content-SHA256 must be exactly 64 hexadecimal characters.",
-                    "Send the lowercase or uppercase SHA-256 digest of the complete final file, or omit the header if digest enforcement is not required.",
-                    false,
-                    cancellationToken).ConfigureAwait(false);
-                return;
-            }
-        }
-
-        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-
-        if (request.Headers.TryGetValue("Content-Range", out var contentRange))
-        {
-            if (!TryParseContentRange(contentRange, out var start, out var end, out var total) || end - start + 1 != contentLength)
-            {
-                await WriteApiErrorAsync(
-                    stream,
-                    400,
-                    "Bad Request",
-                    "content_range_invalid",
-                    "Content-Range must use 'bytes start-end/total' and the range length must match Content-Length.",
-                    "Query ?upload-status=1 for the current offset, then send the next sequential chunk using that offset.",
-                    false,
-                    cancellationToken).ConfigureAwait(false);
-                return;
-            }
-
-            var partial = target + ".partial";
-            var current = File.Exists(partial) ? new FileInfo(partial).Length : 0;
-            if (current != start)
-            {
-                await WriteApiErrorAsync(
-                    stream,
-                    409,
-                    "Conflict",
-                    "upload_offset_mismatch",
-                    $"Upload offset mismatch. The server expects byte offset {current}.",
-                    "Query ?upload-status=1 and resume from expectedOffset instead of retransmitting a different range.",
-                    false,
-                    cancellationToken,
-                    new { expectedOffset = current }).ConfigureAwait(false);
-                return;
-            }
-
-            await using (var file = new FileStream(partial, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Read, _options.TransferBufferBytes, FileOptions.Asynchronous | FileOptions.SequentialScan))
-            {
-                file.Seek(start, SeekOrigin.Begin);
-                await CopyBytesAsync(stream, file, contentLength.Value, cancellationToken).ConfigureAwait(false);
-                await file.FlushAsync(cancellationToken).ConfigureAwait(false);
-            }
-
-            var complete = end + 1 == total;
-            string? actualSha256 = null;
-
-            if (complete)
-            {
-                File.Move(
-                    partial,
-                    target,
-                    overwrite: true);
-
-                if (expectedSha256 is not null)
-                {
-                    actualSha256 =
-                        await CalculateSha256Async(
-                            target,
-                            cancellationToken)
-                        .ConfigureAwait(false);
-
-                    if (!actualSha256.Equals(
-                            expectedSha256,
-                            StringComparison.OrdinalIgnoreCase))
-                    {
-                        try { File.Delete(target); } catch { }
-
-                        await WriteApiErrorAsync(
-                            stream,
-                            422,
-                            "Unprocessable Content",
-                            "upload_hash_mismatch",
-                            "Uploaded file SHA-256 does not match X-Content-SHA256.",
-                            "Verify the source file/digest and upload the complete file again. The mismatched completed target was deleted.",
-                            false,
-                            cancellationToken,
-                            new
-                            {
-                                expectedSha256,
-                                actualSha256
-                            }).ConfigureAwait(false);
-                        return;
-                    }
-                }
-            }
-
-            await WriteJsonAsync(
-                stream,
-                complete ? 201 : 202,
-                complete ? "Created" : "Accepted",
-                new
+            await WriteJsonAsync(stream, receipt.Complete ? 201 : 202,
+                receipt.Complete ? "Created" : "Accepted", new
                 {
                     path = relative,
-                    complete,
-                    received = end + 1,
-                    total,
-                    sha256 = actualSha256
-                },
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-            return;
+                    complete = receipt.Complete,
+                    bytes = receipt.Received,
+                    received = receipt.Received,
+                    total = receipt.Total,
+                    uploadId = receipt.UploadId,
+                    sha256 = receipt.Sha256
+                }, keepAlive, cancellationToken).ConfigureAwait(false);
         }
-
-        var temporary = target + ".uploading";
-        try
+        catch (UploadFailure failure)
         {
-            await using (var file = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.Read, _options.TransferBufferBytes, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            var reason = failure.Status switch
             {
-                await CopyBytesAsync(stream, file, contentLength.Value, cancellationToken).ConfigureAwait(false);
-                await file.FlushAsync(cancellationToken).ConfigureAwait(false);
-            }
-            File.Move(
-                temporary,
-                target,
-                overwrite: true);
+                400 => "Bad Request",
+                411 => "Length Required",
+                422 => "Unprocessable Content",
+                _ => "Conflict"
+            };
+            await WriteApiErrorAsync(stream, failure.Status, reason, failure.Code, failure.Message,
+                failure.Hint, false, cancellationToken, failure.Details).ConfigureAwait(false);
+        }
+        catch (InvalidDataException exception)
+        {
+            await WriteApiErrorAsync(stream, 400, "Bad Request", "file_path_or_state_invalid", exception.Message,
+                "Use a relative file path. An unreadable resumable session can be replaced with a whole-file upload.",
+                false, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            await WriteApiErrorAsync(stream, 409, "Conflict", "upload_io_error", exception.Message,
+                "Check disk space, permissions, and upload status. A failed transfer does not replace the published file.",
+                false, cancellationToken).ConfigureAwait(false);
+        }
+    }
 
-            string? actualSha256 = null;
-            if (expectedSha256 is not null)
+    private string ResolveTransferPath(string relative)
+    {
+        var path = PathGuard.ResolveFile(_paths.FileRoot, relative);
+        var components = Path.GetRelativePath(_paths.FileRoot, path).Split(Path.DirectorySeparatorChar);
+        if (components.Any(part => part.Equals(FileUploadStore.StagingDirectoryName, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidDataException("The internal upload staging directory is not an API file path.");
+        }
+
+        return path;
+    }
+
+    private static UploadRequest ParseUploadRequest(HttpRequest request)
+    {
+        if (request.ContentLength is null)
+        {
+            throw new UploadFailure(411, "content_length_required", "Content-Length is required for uploads.",
+                "Send the exact body byte count. Chunked request encoding is not supported.");
+        }
+
+        var length = request.ContentLength.Value;
+        if (length < 0)
+        {
+            throw new UploadFailure(400, "content_length_invalid", "Content-Length cannot be negative.",
+                "Send a non-negative decimal byte count.");
+        }
+
+        var hash = request.Headers.GetValueOrDefault("X-Content-SHA256")?.Trim().ToLowerInvariant();
+        if (hash is not null && (hash.Length != 64 || !hash.All(Uri.IsHexDigit)))
+        {
+            throw new UploadFailure(400, "content_hash_invalid", "X-Content-SHA256 must contain 64 hexadecimal characters.",
+                "Use the SHA-256 digest of the complete final file, not the current chunk.");
+        }
+
+        var id = request.Headers.GetValueOrDefault("X-Upload-Id");
+        if (id is not null && !Guid.TryParseExact(id, "N", out _))
+        {
+            throw new UploadFailure(400, "upload_identity_invalid", "X-Upload-Id is invalid.",
+                "Copy uploadId from the initial 202 response or ?upload-status=1.");
+        }
+
+        UploadRange? range = null;
+        if (request.Headers.TryGetValue("Content-Range", out var value))
+        {
+            range = ParseUploadRange(value);
+            if (range is null || range.End - range.Start + 1 != length)
             {
-                actualSha256 =
-                    await CalculateSha256Async(
-                        target,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (!actualSha256.Equals(
-                        expectedSha256,
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    try { File.Delete(target); } catch { }
-
-                    await WriteJsonAsync(
-                        stream,
-                        422,
-                        "Unprocessable Content",
-                        new
-                        {
-                            error =
-                                "Uploaded file SHA-256 does not match X-Content-SHA256.",
-                            expectedSha256,
-                            actualSha256
-                        },
-                        false,
-                        cancellationToken).ConfigureAwait(false);
-                    return;
-                }
+                throw new UploadFailure(400, "content_range_invalid", "Content-Range does not match Content-Length.",
+                    "Use 'bytes start-end/total' for the next sequential chunk.");
             }
-
-            await WriteJsonAsync(
-                stream,
-                201,
-                "Created",
-                new
-                {
-                    path = relative,
-                    bytes = contentLength.Value,
-                    complete = true,
-                    sha256 = actualSha256
-                },
-                keepAlive,
-                cancellationToken).ConfigureAwait(false);
-        }
-        catch
-        {
-            try { File.Delete(temporary); } catch { }
-            throw;
-        }
-    }
-
-    private static async Task<string>
-        CalculateSha256Async(
-            string path,
-            CancellationToken cancellationToken)
-    {
-        await using var file = new FileStream(
-            path,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            1024 * 1024,
-            FileOptions.Asynchronous |
-            FileOptions.SequentialScan);
-
-        return Convert.ToHexString(
-            await SHA256.HashDataAsync(
-                file,
-                cancellationToken).ConfigureAwait(false))
-            .ToLowerInvariant();
-    }
-
-    private static bool TryParseRange(string value, long fileLength, out long start, out long end)
-    {
-        start = 0;
-        end = 0;
-        if (!value.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase) || fileLength <= 0)
-            return false;
-
-        var span = value.AsSpan(6);
-        var dash = span.IndexOf('-');
-        if (dash < 0)
-            return false;
-
-        var left = span[..dash];
-        var right = span[(dash + 1)..];
-        if (left.Length == 0)
-        {
-            if (!long.TryParse(right, out var suffix) || suffix <= 0)
-                return false;
-            suffix = Math.Min(suffix, fileLength);
-            start = fileLength - suffix;
-            end = fileLength - 1;
-            return true;
         }
 
-        if (!long.TryParse(left, out start) || start < 0 || start >= fileLength)
-            return false;
-        if (right.Length == 0)
-            end = fileLength - 1;
-        else if (!long.TryParse(right, out end) || end < start)
-            return false;
-
-        end = Math.Min(end, fileLength - 1);
-        return true;
+        return new UploadRequest(length, range, hash, id);
     }
 
-    private static bool TryParseContentRange(string value, out long start, out long end, out long total)
+    private static UploadRange? ParseUploadRange(string value)
     {
-        start = end = total = 0;
         if (!value.StartsWith("bytes ", StringComparison.OrdinalIgnoreCase))
-            return false;
-        var span = value.AsSpan(6);
-        var slash = span.IndexOf('/');
-        if (slash < 0)
-            return false;
-        var range = span[..slash];
-        var dash = range.IndexOf('-');
-        if (dash < 0)
-            return false;
-        return long.TryParse(range[..dash], out start) &&
-               long.TryParse(range[(dash + 1)..], out end) &&
-               long.TryParse(span[(slash + 1)..], out total) &&
-               start >= 0 && end >= start && total > end;
+        {
+            return null;
+        }
+
+        var pieces = value[6..].Split(['-', '/']);
+        if (pieces.Length != 3 ||
+            !long.TryParse(pieces[0], NumberStyles.None, CultureInfo.InvariantCulture, out var start) ||
+            !long.TryParse(pieces[1], NumberStyles.None, CultureInfo.InvariantCulture, out var end) ||
+            !long.TryParse(pieces[2], NumberStyles.None, CultureInfo.InvariantCulture, out var total) ||
+            start < 0 || end < start || total <= end)
+        {
+            return null;
+        }
+
+        return new UploadRange(start, end, total);
     }
 
     private static bool QueryContains(string query, string key, string value)
@@ -477,8 +248,13 @@ public sealed partial class EmbeddedHttpServer
         {
             var pair = item.Split('=', 2);
             if (pair.Length == 2 && Uri.UnescapeDataString(pair[0]) == key && Uri.UnescapeDataString(pair[1]) == value)
+            {
                 return true;
+            }
         }
+
         return false;
     }
+
+    private sealed record UploadRequest(long Length, UploadRange? Range, string? ExpectedHash, string? Id);
 }
