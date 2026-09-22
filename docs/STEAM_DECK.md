@@ -55,6 +55,8 @@ The runner attaches `perf record` to the xemu PID it launched. A diagnostic plan
 
 Use `CallGraph: "dwarf"` for ordinary release builds. A profiling build with `-fno-omit-frame-pointer` can use `CallGraph: "fp"` for cheaper and usually more dependable unwinding.
 
+For xemu translated-block attribution, launch xemu with `-jitdump`, set the perf diagnostic's `ClockId` to `1`, and post-process the resulting capture with `perf inject --jit`. Leave `ClockId` unset for ordinary captures so perf retains its host default clock.
+
 The diagnostic is intentionally marked as operator intervention because pause/resume and sampling alter execution. Use a separate uninstrumented run for performance acceptance.
 
 ## Cleanup checks

@@ -263,6 +263,40 @@ try
         return Task.CompletedTask;
     });
 
+    await Check("perf clock selection is explicit and opt-in", () =>
+    {
+        var defaultRecipe = new DiagnosticRecipe
+        {
+            Id = "perf-default",
+            Type = "perf",
+            Frequency = 997,
+            CallGraph = "fp"
+        };
+        var defaultArgs = DiagnosticHub.BuildPerfRecordArguments(42, defaultRecipe, "/tmp/default.data");
+        Assert(!defaultArgs.Contains("-k", StringComparer.Ordinal),
+            "Default perf recipe unexpectedly selected a clock ID.");
+
+        var jitRecipe = new DiagnosticRecipe
+        {
+            Id = "perf-jit",
+            Type = "perf",
+            Frequency = 997,
+            CallGraph = "fp",
+            ClockId = 1
+        };
+        jitRecipe.Validate();
+        var jitArgs = DiagnosticHub.BuildPerfRecordArguments(42, jitRecipe, "/tmp/jit.data");
+        var clockOption = jitArgs.IndexOf("-k");
+        Assert(clockOption >= 0 && clockOption + 1 < jitArgs.Count && jitArgs[clockOption + 1] == "1",
+            "ClockId 1 was not emitted as '-k 1'.");
+
+        jitRecipe.ClockId = -1;
+        var rejected = false;
+        try { jitRecipe.Validate(); } catch (InvalidDataException) { rejected = true; }
+        Assert(rejected, "A negative perf ClockId was accepted.");
+        return Task.CompletedTask;
+    });
+
     await Check("job package validates diagnostic references and ignores runtime package property", async () =>
     {
         var package = Path.Combine(root, "diagnostic-package");
