@@ -14,6 +14,8 @@ internal sealed record ArtifactInspection(bool Passed, string Detail);
 internal static class ArtifactInspector
 {
     internal const int MaximumTextBytes = 16 * 1024 * 1024;
+    internal const int MaximumImageBytes = 64 * 1024 * 1024;
+    internal const int MaximumDecodedImageBytes = 256 * 1024 * 1024;
 
     public static string ResolvePath(
         string scope,
@@ -81,6 +83,20 @@ internal static class ArtifactInspector
                     !text.Equals(requirement.EqualsText, StringComparison.Ordinal))
                 {
                     return new(false, "Artifact text does not exactly match the declared value.");
+                }
+            }
+
+            if (requirement.MinimumNonBlackPixelRatio is double minimumRatio)
+            {
+                if (length > MaximumImageBytes)
+                    return new(false, "PNG exceeds the 64 MiB image evaluation limit.");
+                file.Position = 0;
+                var actualRatio = await PngInspector.MeasureNonBlackPixelRatioAsync(
+                    file, cancellationToken).ConfigureAwait(false);
+                if (actualRatio < minimumRatio)
+                {
+                    return new(false,
+                        $"PNG has {actualRatio:P3} non-black pixels; expected at least {minimumRatio:P3}.");
                 }
             }
 

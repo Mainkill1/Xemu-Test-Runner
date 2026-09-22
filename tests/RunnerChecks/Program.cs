@@ -58,6 +58,44 @@ try
         report = await Preflight.CheckAsync(job, package, root, new PreflightOptions { MinimumFreeSpaceBytes = 0 }, CancellationToken.None);
         Assert(!report.Passed, "Wrong platform must block launch.");
     });
+    await Check("artifact checks reject blank screenshots when requested", async () =>
+    {
+        var directory = Path.Combine(root, "image-artifacts");
+        Directory.CreateDirectory(directory);
+        var black = Path.Combine(directory, "black.png");
+        var visible = Path.Combine(directory, "visible.png");
+        await File.WriteAllBytesAsync(black,
+        [
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+            0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+            0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+            0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41,
+            0x54, 0x78, 0x9c, 0x63, 0x60, 0x60, 0x60, 0x00,
+            0x00, 0x00, 0x04, 0x00, 0x01, 0xf6, 0x17, 0x38,
+            0x55, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+            0x4e, 0x44, 0xae, 0x42, 0x60, 0x82
+        ]);
+        FakeXemuHost.WritePng(visible);
+
+        var requirement = new ArtifactCheckDefinition
+        {
+            Scope = "result",
+            Path = "screenshots/frame.png",
+            MinimumNonBlackPixelRatio = 0.01
+        };
+        var blackResult = await ArtifactInspector.CheckAsync(requirement, black, CancellationToken.None);
+        Assert(!blackResult.Passed && blackResult.Detail.Contains("non-black", StringComparison.OrdinalIgnoreCase),
+            "An all-black PNG passed the declared image-content check.");
+
+        var visibleResult = await ArtifactInspector.CheckAsync(requirement, visible, CancellationToken.None);
+        Assert(visibleResult.Passed, visibleResult.Detail);
+
+        requirement.MinimumNonBlackPixelRatio = null;
+        var compatibilityResult = await ArtifactInspector.CheckAsync(requirement, black, CancellationToken.None);
+        Assert(compatibilityResult.Passed,
+            "Existing artifact contracts changed behavior without opting into image-content validation.");
+    });
     await Check("workspace lease excludes a second owner and can be reacquired", () =>
     {
         var workspace = Path.Combine(root, "lease");

@@ -41,6 +41,7 @@ public sealed class ArtifactCheckDefinition
     public string Path { get; set; } = "";
     public bool MustExist { get; set; } = true;
     public long MinimumBytes { get; set; }
+    public double? MinimumNonBlackPixelRatio { get; set; }
     public string? ExpectedSha256 { get; set; }
     public string? ContainsText { get; set; }
     public string? EqualsText { get; set; }

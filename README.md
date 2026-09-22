@@ -209,7 +209,8 @@ A job may declare correctness and evidence requirements:
         "Name": "final-frame",
         "Scope": "result",
         "Path": "screenshots/final.png",
-        "MinimumBytes": 1000
+        "MinimumBytes": 1000,
+        "MinimumNonBlackPixelRatio": 0.01
       }
     ],
     "ReportedMetrics": [
