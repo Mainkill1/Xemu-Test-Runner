@@ -539,6 +539,68 @@ try
         return Task.CompletedTask;
     });
 
+    await Check("terminal display loss leaves the engine authoritative", async () =>
+    {
+        var engineCompletion = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var guardedRun = RunCommand.WaitForEngineAfterTerminalFailureAsync(
+            () => Task.FromException(new IOException("console handle lost")),
+            engineCompletion.Task);
+
+        await Task.Delay(50);
+        Assert(
+            !guardedRun.IsCompleted,
+            "Recoverable display failure stopped waiting for the engine.");
+
+        engineCompletion.SetResult();
+        await guardedRun.WaitAsync(TimeSpan.FromSeconds(2));
+    });
+
+    await Check("engine failure survives terminal display loss", async () =>
+    {
+        var expected = new ApplicationException("engine failed");
+        var observed = false;
+
+        try
+        {
+            await RunCommand.WaitForEngineAfterTerminalFailureAsync(
+                () => Task.FromException(new IOException("console handle lost")),
+                Task.FromException(expected));
+        }
+        catch (ApplicationException ex) when (ReferenceEquals(ex, expected))
+        {
+            observed = true;
+        }
+
+        Assert(observed, "Engine failure was swallowed after display loss.");
+    });
+
+    await Check("terminal error reporting preserves the original failure", () =>
+    {
+        var expected = new ApplicationException("engine failed");
+        Exception? fallbackError = null;
+
+        RunCommand.ReportInteractiveFailure(
+            expected,
+            _ => throw new IOException("console handle lost"),
+            error => fallbackError = error);
+
+        Assert(
+            ReferenceEquals(fallbackError, expected),
+            "Fallback reporting did not receive the original engine failure.");
+        return Task.CompletedTask;
+    });
+
+    await Check("missing terminal fallback cannot terminate the runner", () =>
+    {
+        RunCommand.ReportInteractiveFailure(
+            new ApplicationException("engine failed"),
+            _ => throw new IOException("console handle lost"),
+            _ => throw new IOException("stderr handle lost"));
+        return Task.CompletedTask;
+    });
+
     await Check("one-shot runner processes at most one queued package", async () =>
     {
         var fixture = Path.Combine(root, "one-shot");
