@@ -7,7 +7,8 @@ internal static class GuestDiskFixture
 {
     public const int Size = 8 * 1024 * 1024;
     private const int Cluster = 4096;
-    private const int Data = 8192;
+    // ceil((Size / Cluster + 1) * sizeof(ushort), 4096) + superblock.
+    private const int Data = 12288;
 
     public static void Create(string path, string? content, bool qcow = false, bool cyclic = false)
     {
@@ -31,12 +32,12 @@ internal static class GuestDiskFixture
         if (!qcow) { File.WriteAllBytes(path, bytes); return; }
         const int block = 65536;
         var image = new byte[bytes.Length + 3 * block];
-        Encoding.ASCII.GetBytes("QFI\u00fb").CopyTo(image, 0);
-        image[3] = 0xfb;
+        image[0] = (byte)'Q'; image[1] = (byte)'F'; image[2] = (byte)'I'; image[3] = 0xfb;
         Be32(image, 4, 3); Be32(image, 20, 16); Be64(image, 24, Size);
         Be32(image, 36, 1); Be64(image, 40, block); Be32(image, 96, 4); Be32(image, 100, 104);
         Be64(image, block, 2 * block);
-        for (var i = 0; i < bytes.Length / block; i++) Be64(image, 2 * block + i * 8, (ulong)((3 + i) * block) | (1UL << 63));
+        for (var i = 0; i < bytes.Length / block; i++)
+            Be64(image, 2 * block + i * 8, ((ulong)(uint)(3 + i) * block) | (1UL << 63));
         bytes.CopyTo(image, 3 * block);
         File.WriteAllBytes(path, image);
     }
