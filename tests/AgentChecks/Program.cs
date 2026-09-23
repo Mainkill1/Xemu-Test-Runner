@@ -9,6 +9,7 @@ else
     ActionBodyChecks.Register(checks);
     RequestedTestChecks.Register(checks);
     HashResultChecks.Register(checks);
+    ReuseStressChecks.Register(checks);
 }
 var failures = 0;
 foreach (var (name, run) in checks)

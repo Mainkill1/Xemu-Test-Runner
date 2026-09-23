@@ -1,76 +1,73 @@
 # Xemu Test Runner
 
-A foreground Windows/Linux C#/.NET 10 test appliance with an embedded HTTP API. The runner owns the queue, launched xemu process, telemetry, controls and evidence. Agents operate it remotely through HTTP; no second service, database or remote shell is needed for normal testing.
+A foreground Windows/Linux .NET test appliance. One runner owns process execution, the queue, controls, telemetry and evidence. Agents operate the already-running tester over HTTP.
 
-## Agents: start here
+## Inspect the tests first
 
-Run `scripts/runner_api.py` on the **agent/build machine**, with Python 3.10 or later. Keep the adjacent `runner_transport.py` and `runner_workflows.py` files with it. There are no Python package dependencies.
-
-Set `XEMU_RUNNER_URL` once, or pass `--url http://tester:9368` before the command:
+Open `/tests` on the tester for the configuration catalog, full JSON viewer/download, named config upload and explicit Start buttons. The test-focused Python client provides the same workflow:
 
 ```sh
-python scripts/runner_api.py discover
-python scripts/runner_api.py tests
-python scripts/runner_api.py run smoke --revision <revision-from-tests> --id pr149-a --build ./candidate
-python scripts/runner_api.py wait pr149-a --max-wait 30
-python scripts/runner_api.py result pr149-a --require correctness
+python scripts/runner_tests.py list
+python scripts/runner_tests.py show smoke --out smoke.json
+python scripts/runner_tests.py config-upload smoke-custom ./edited.json --assets seed-smoke
 ```
 
-`run` above is a **local HTTP client command**, not a command executed on the tester. It expands the pinned test on the server, reuses unchanged files, uploads changed build slots, validates and submits the new attempt. No job.json or full test plan is required in the candidate directory. Each declared build slot must be present there; fixed workloads/config/seeds remain on the tester.
+Keep `runner_tests.py`, `runner_transport.py` and `runner_test_results.py` together on the agent/build machine. Python 3.10+ standard library only. Set `XEMU_RUNNER_URL` once, or pass global `--url http://tester:9368`. A bare test name must resolve to one revision; otherwise specify `NAME@FULL_REVISION`.
 
-Normal stdout is one compact JSON document. Progress is off by default. `--progress` opts into stderr messages; `--pretty` only changes formatting. `status --detail` and `discover --detail` explicitly request larger reference documents.
+Saving a configuration does not modify its source package and **never starts a test**. Asset source jobs supply the retained workloads/config/firmware/seeds. Each saved definition has an immutable content revision.
 
-A finished attempt is not necessarily correct. Read execution, correctness, evidence and comparison separately. `--require correctness` accepts only a completed execution with passed correctness. `--require eligible` requires comparison eligibility. Exit 0 without a gate means the requested client operation succeeded, not that the guest passed; gate failure is 2 and unavailable/not-evaluated evidence is 3.
-
-## Bake a test once
-
-Initially upload a complete package using the API client, then register it as a reusable test:
+## Upload once; start only when requested
 
 ```sh
-python scripts/runner_api.py submit ./complete-test-package --id seed-smoke --wait
-python scripts/runner_api.py bake smoke --from-job seed-smoke --description "Smoke workload"
-python scripts/runner_api.py tests
+python scripts/runner_tests.py upload ./candidate --exe xemu.exe --id build-149 --tests smoke smoke-custom
+python scripts/runner_tests.py start build-149-t001 build-149-t002
 ```
 
-Baking also accepts a fully uploaded draft or cancelled package. The returned SHA-256 revision pins the full plan, contracts and declared assets. A new revision never rewrites an older one. The default replaceable build slot is the executable; pass repeated `--build-file` arguments while baking to include required build DLLs/assets.
-
-After that, each attempt references only test ID/revision plus changed-build declarations. A 1,000-step plan remains on the tester. Payload reuse copies and verifies files locally; it does not share writable runtime disks between attempts. Keep the retained source package: this initial library uses it as the payload source, not an independent retention cache.
-
-For a fresh rerun of an existing package:
+The upload command stores the application and selected configurations without execution. To explicitly authorize execution in that same command, add `--start`:
 
 ```sh
-python scripts/runner_api.py retry pr149-a --id pr149-b --wait
+python scripts/runner_tests.py upload ./candidate --exe xemu.exe --id build-150 --tests smoke --start
+python scripts/runner_tests.py status build-150-t001
 ```
 
-Use a new ID for an intentional new attempt. After a lost response, rerun the identical request with the **same ID**; never manufacture a duplicate because a wait expired.
+An active test is not interrupted. Start requests are persisted and queued; preparation waits behind existing work before publishing to the established execution queue. Applications upload once and are reused across selected tests. Executable filenames can differ from the config's expected path; content hashes identify builds. Dependencies must still provide the declared build-slot paths.
 
-## Inspect only what is needed
+To select more tests against an already uploaded application, use `select APPLICATION_ID --id NEW_PREFIX --tests ...`; add `--start` only when execution is intended. A lost response is handled by inspecting/reusing the same IDs, not creating duplicate attempts. The multi-test helper stages every selection before starting them, but individual start requests are not an all-or-nothing transaction.
+
+Actual uploads still obey the active benchmark's transfer policy. Previously staged work can be queued while a benchmark runs; new bulk uploads may need to wait for the policy to permit them. No SSH fallback is used.
+
+## Results by executable hash
+
+The upload receipt includes its executable SHA-256. Finished API-owned attempts are indexed locally from canonical evidence at idle boundaries. Select a known measured reference explicitly:
 
 ```sh
-python scripts/runner_api.py result pr149-a --section failures
-python scripts/runner_api.py logs pr149-a --stream stderr --max-bytes 4096
-python scripts/runner_api.py collect pr149-a ./evidence --only assessment.json
+python scripts/runner_tests.py baseline KNOWN_EXECUTABLE_SHA256
+python scripts/runner_tests.py result CANDIDATE_EXECUTABLE_SHA256
+python scripts/runner_tests.py compare --a REFERENCE_SHA256 --b CANDIDATE_SHA256
+python scripts/runner_tests.py csv RUN_ID ./raw-metrics.csv
 ```
 
-Pass the returned log cursor to the next `logs --cursor` call for new bytes only. Collection defaults to assessment.json; `collect ... --all` is an explicit bulk operation. It follows every artifact page and refuses incomplete inventories. Receipts report counts/bytes/output directory, not hundreds of filenames. Artifact byte counts are checked; a result-content digest manifest is not currently provided.
+Normal result output is a small readable report calculated by the tester, with the pinned baseline applied by default. Global `--json` returns structured output. Raw sampler CSV is a separate download; derived comparison CSV is available with `compare ... --format csv --out comparison.csv`.
 
-Draft plans can be edited with `edit ID --json-file plan.json`, `--json '<object>'` or `--stdin`. Submit an existing draft with `submit-draft ID`. Withdraw only unclaimed queued work; clone/retry instead of editing live attempts or completed evidence.
+`GET /api/v1/compare?A=SHA&B=SHA` performs the comparison server-side. Omitting A uses the explicit baseline snapshot. Baselines do not drift when later runs of the same executable arrive. Different procedures/environments, failed repetitions, missing metrics and zero reference values do not become invented speedup claims. The displayed change is descriptive, not a statistical-significance claim.
 
-## Direct API reference
+A completed or archived process is not necessarily correct. Execution, correctness, evidence and comparison remain separate. An unconfigured correctness contract is not a pass. The lower-level client retains `result JOB_ID --require correctness` and `--require eligible` for explicit exit-code gates.
 
-Start with `GET /api/v1/agent?view=summary` for capability/version checks and focused help links. Missing deployed capabilities are an upgrade/configuration issue, not permission to bypass the runner through SSH.
+## Detailed protocols and operations
 
-| Task | Contract |
+| Topic | Reference |
 | --- | --- |
-| Draft/upload/validate/submit lifecycle | [Agent API](docs/AGENT-API.md) |
-| Small status, bounded waits and assessments | [Observations](docs/AGENT-OBSERVATIONS.md) |
-| Immutable pre-baked tests and payload reuse | [Test library](docs/AGENT-TEST-LIBRARY.md) |
-| Paged artifacts and incremental logs | [Evidence](docs/AGENT-EVIDENCE.md) |
-| Client commands and recovery | [Client](docs/AGENT-CLIENT.md) |
+| Named configs, application uploads and explicit queue requests | [Requested tests](docs/REQUESTED-TESTS.md) |
+| Saved hash results, comparison keys and baseline lifetime | [Hash results](docs/HASH-RESULTS.md) |
+| Draft/upload/validate/submit API | [Agent API](docs/AGENT-API.md) |
+| Lightweight job/assessment observations | [Observations](docs/AGENT-OBSERVATIONS.md) |
+| Original pinned package definitions/reuse | [Test library](docs/AGENT-TEST-LIBRARY.md) |
+| Paged evidence and incremental logs | [Evidence](docs/AGENT-EVIDENCE.md) |
+| Lower-level HTTP client | [Agent client](docs/AGENT-CLIENT.md) |
 
-The existing package-workflow OpenAPI is at `/api/v1/openapi.json`; the additive summary/library/evidence routes have focused help and the documents above. Full-schema coverage is not implied.
+The old `runner_api.py run`, `submit`, `retry` and `submit-draft` commands remain **explicit execution commands**. Use `runner_tests.py upload` for upload-only operation. Keep retained definition source packages for reuse; the library is not an independent binary-retention service. Keep run evidence for raw CSV links even when normalized baseline records are retained separately.
 
-## Operator bootstrap — on the tester, once
+## Operator bootstrap on the tester
 
 ```sh
 dotnet build src/XemuTestRunner/XemuTestRunner.csproj -c Release
@@ -79,18 +76,15 @@ dotnet run --project src/XemuTestRunner -- doctor
 dotnet run --project src/XemuTestRunner -- run --non-interactive
 ```
 
-Publish with `scripts/publish.ps1 -Rid win-x64` or `bash scripts/publish.sh linux-x64`. Leave the foreground runner running persistently. `--once` and `--one-shot` are finite local/operator modes, not the remote-agent workflow. A stopped process cannot restart itself through its own API; installation, startup, machine recovery and upgrades are separate operator tasks.
-
-The embedded listener defaults to port 9368 on the LAN. It has no built-in authentication or TLS: restrict it to the trusted test network. Benchmark policy may reject transfers, input, captures and diagnostics. Respect that response; do not retry the operation through a shell. Existing activity accounting detects overlap but does not promise scheduler-level zero interference.
-
-The pre-agent-refresh [operator/reference guide](OPERATOR-GUIDE.md) retains detailed configuration, job examples, controls, diagnostics and local CLI reference. Its local CLI/package-staging examples are **operator/development-only**, not instructions for agents to copy files or launch commands on remote testers. [Architecture](docs/ARCHITECTURE.md), [diagnostics](docs/DIAGNOSTICS.md), [Steam Deck](docs/STEAM_DECK.md), [validity contracts](docs/TRUSTWORTHY-EXPERIMENTS.md) and [validation coverage](docs/VALIDATION.md) remain available.
+Leave the foreground runner available. Installation/startup, stopped-machine recovery and upgrades remain operator tasks. Publish with `scripts/publish.ps1 -Rid win-x64` or `bash scripts/publish.sh linux-x64`. The listener defaults to port 9368, with no built-in authentication/TLS; use the trusted test network. The [operator guide](OPERATOR-GUIDE.md) retains local configuration, control and diagnostic reference.
 
 ## Verification
 
 ```sh
 dotnet run --project tests/RunnerChecks -c Release
 dotnet run --project tests/AgentChecks -c Release
-python -m unittest discover -s tests -p test_runner_api.py -v
+python -m unittest discover -s tests -p 'test_runner_api*.py' -v
+dotnet run --project tests/AgentChecks -c Release -- --client
 ```
 
-CI exercises Windows/Linux builds, regression/process fixtures, HTTP agent contracts, Python client contracts, publishing and existing browser fixtures. These checks are not a claim of real-game correctness, native GPU qualification, 10 GB+ network transfer validation or live-rig deployment.
+CI fixtures cover protocol and calculation behavior on Windows/Linux. They do not prove native xemu/game/GPU correctness, large-LAN throughput or absence of intermittent filesystem failures. Review exact PR verification and unresolved findings before deployment.

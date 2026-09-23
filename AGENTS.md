@@ -1,15 +1,17 @@
-# Remote tester operation
+# Test operation
 
-Use the already-running tester's HTTP API. Normal testing does not require SSH/RDP, remote command execution, queue-directory edits or raw result downloads. Do not bypass benchmark-policy refusals with shell access. Local repository development/build commands are separate from operating the tester.
+Operate the existing tester over HTTP. No SSH/remote process launch, queue-directory edits or policy bypass is part of normal testing. Operator bootstrap/upgrade/recovery is separate.
 
-Preferred entry point: run `scripts/runner_api.py` on the agent/build machine. Set XEMU_RUNNER_URL once. Start with `discover`, then `tests`. Use `run TEST --revision PIN --id NEW --build DIR` for a pre-baked test; the client expands the plan on the server and uploads changed build files only. Use `submit PACKAGE --id NEW` only when authoring an initial/custom package. `retry OLD --id NEW` intentionally repeats a package without another upload.
+Use scripts/runner_tests.py with runner_transport.py and runner_test_results.py beside it on the build/agent machine. Set XEMU_RUNNER_URL. First list and inspect saved configs. Config upload saves a named immutable revision; it never launches a test.
 
-Use `wait ID --max-wait 30` and `result ID` for normal observation. A wait expiry retains the same ID and does not cancel or repeat work. Held/blocked states require inspection, not blind polling or deleting locks. Check the four assessment outcomes; use --require correctness or --require eligible for an explicit gate. Never equate tested/exit zero/API ok with guest correctness.
+`upload DIR --exe EXE --id ID --tests ...` uploads one application and stores selected test requests only. Add --start to explicitly authorize execution, or call start with the returned request IDs later. `select APPLICATION --id PREFIX --tests ...` reuses an existing application and also defaults to no start. Active tests are not interrupted; requested work queues and waits for preparation/execution. Do not turn an upload request into a submit/run command.
 
-Responses are compact by default. Read detail only when needed. `logs ID` is bounded; its returned cursor reads subsequent bytes. `collect` defaults to assessment.json; --only selects files and --all explicitly requests every eligible artifact page. Do not download full evidence just to determine the outcome.
+Use complete test revisions when a name is ambiguous. Reuse identical IDs/inputs after a lost response; a changed application/test or intentional rerun needs a new identity. Multi-test starts are individual durable requests, not an atomic transaction.
 
-For direct HTTP, begin with GET /api/v1/agent?view=summary and follow focused help/actions. If a required capability is absent, report the deployed-version/configuration issue; do not invent a shell fallback. Reuse an identical request and ID after a lost response. A changed test definition/build request or intentional new attempt needs its own identity.
+The upload receipt provides the executable SHA-256. `result SHA` returns the tester's compact report against its explicit pinned baseline. `compare --a SHA --b SHA` delegates all comparison arithmetic to the tester; omit A for the pinned default. Never select a first/latest/fastest baseline implicitly. `baseline SHA` is an explicit pin write; baseline with no argument only reads.
 
-Plans and results are immutable while running/completed. Edit a draft with revision control, withdraw before queue claim, or clone to a fresh draft. Pin pre-baked test revisions; do not silently choose latest. Keep the baked definition's source package for payload reuse.
+Results are grouped by executable content, actual test procedure/fixed inputs, environment and metric contract. A hash is not permission to mix workloads or ignore failed repetitions. Inspect execution/correctness/evidence/comparison separately; tested/API success is not guest correctness. Missing or unindexed evidence is not a pass. Resolve index-status errors before asserting complete test coverage.
 
-The runner must already be running persistently. Bootstrap/initial launch, upgrades, stopped-machine recovery and operating-system administration remain separate operator tasks. The OPERATOR-GUIDE.md local staging/one-shot examples are not the remote agent workflow. Place a short reference to these instructions in the consuming xemu workspace so its agents see the same entry point.
+Use `csv RUN_ID OUTPUT` only for explicit raw data needs. Routine result/compare does not download raw CSV or process metrics on the agent. Lower-level runner_api.py provides detailed draft/control/evidence workflows and explicit correctness/eligibility exit gates. Its run/submit/retry commands intentionally execute, unlike upload/select.
+
+Honor benchmark transfer/control policy. Already-staged work can be queued without bulk transfer. Keep saved definition source packages and the original run evidence needed by raw artifact links. Configuration and result stores are local to the tester; no external database is required.
