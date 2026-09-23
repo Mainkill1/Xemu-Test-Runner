@@ -53,8 +53,7 @@ var checks = new List<(string, Func<Task>)>
     }),
     ("cold and seeded policies have distinct comparison identities", async () =>
     {
-        using var cold = new Fixture();
-        using var seeded = new Fixture();
+        using var cold = new Fixture(); using var seeded = new Fixture();
         var empty = Path.Combine(seeded.Package, "seed");
         Directory.CreateDirectory(empty);
         var digest = (await RunStateInventory.CaptureAsync(empty, 10, 1024, CancellationToken.None)).TreeSha256;
@@ -75,8 +74,7 @@ var checks = new List<(string, Func<Task>)>
     ("inventory limits report incomplete state instead of a false empty cache", async () =>
     {
         using var f = new Fixture();
-        var root = Path.Combine(f.Package, "many");
-        Directory.CreateDirectory(root);
+        var root = Path.Combine(f.Package, "many"); Directory.CreateDirectory(root);
         await File.WriteAllTextAsync(Path.Combine(root, "a"), "12345678");
         await File.WriteAllTextAsync(Path.Combine(root, "b"), "12345678");
         var inventory = await RunStateInventory.CaptureAsync(root, 1, 4, CancellationToken.None);
@@ -85,8 +83,7 @@ var checks = new List<(string, Func<Task>)>
     ("cache tree symlinks are refused without reading their targets", async () =>
     {
         using var f = new Fixture();
-        var root = Path.Combine(f.Package, "linked");
-        Directory.CreateDirectory(root);
+        var root = Path.Combine(f.Package, "linked"); Directory.CreateDirectory(root);
         try { File.CreateSymbolicLink(Path.Combine(root, "escape"), f.Config); }
         catch (UnauthorizedAccessException) when (OperatingSystem.IsWindows()) { Console.WriteLine("SKIP symbolic-link creation requires Windows privilege."); return; }
         var inventory = await RunStateInventory.CaptureAsync(root, 10, 1024 * 1024, CancellationToken.None);
@@ -112,7 +109,7 @@ var checks = new List<(string, Func<Task>)>
     {
         using var f = new Fixture();
         await File.AppendAllTextAsync(f.Config, "\n[sys.files]\nhdd_path = 'external-hdd.qcow2'\n");
-        await Fixture.Reject(async () => { await f.Prepare("cold"); });
+        await Fixture.Reject(async () => { await f.Prepare("cold", privateGuest: true); });
     }),
     ("different run directories do not change an otherwise identical state contract", async () =>
     {
@@ -143,10 +140,12 @@ sealed class Fixture : IDisposable
         File.WriteAllText(Path.Combine(Package, "xemu.bin"), "fixture-binary");
         File.WriteAllText(Config, "[perf]\nhard_fpu = true\n");
     }
-    public async Task<RunStorageSession> Prepare(string mode, bool shaders = true, string? seed = null, string? digest = null)
+    public async Task<RunStorageSession> Prepare(string mode, bool shaders = true, string? seed = null, string? digest = null, bool privateGuest = false)
     {
+        // These cache-only fixtures do not boot an Xbox or have guest images.
+        // The separate private-state check explicitly requires a private image.
         var json = JsonSerializer.Serialize(new { Id = "state-check", Executable = "xemu.bin", RuntimeState = new {
-            Isolation = new { CacheMode = mode, CacheShaders = shaders, DriverCache = "uncontrolled", SeedDirectory = seed, SeedSha256 = digest }
+            Isolation = new { CacheMode = mode, CacheShaders = shaders, DriverCache = "uncontrolled", SeedDirectory = seed, SeedSha256 = digest, RequirePrivateGuestState = privateGuest }
         }});
         var job = JsonSerializer.Deserialize<JobDefinition>(json, ConfigLoader.JsonOptions)!;
         return await RunStorageSession.PrepareAsync(job, Path.Combine(Package, "xemu.bin"), Package,
