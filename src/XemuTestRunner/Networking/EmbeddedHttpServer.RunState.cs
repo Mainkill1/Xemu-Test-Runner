@@ -46,6 +46,7 @@ public sealed partial class EmbeddedHttpServer
                         object? Brief(RunStateSnapshot? snapshot) => snapshot is null ? null : new
                         { snapshot.Complete, fileCount = snapshot.Files.Count, snapshot.Bytes, snapshot.TreeSha256 };
                         string? Clip(string? text) => text is null || text.Length <= 256 ? text : text[..253] + "...";
+                        var detail = "/api/v1/runs/" + Uri.EscapeDataString(id) + "/artifacts/diagnostics/run-state/report.json";
                         value = new
                         {
                             runId = id, available = true, report.Status, mode = report.CacheMode, report.CacheShaders,
@@ -53,13 +54,17 @@ public sealed partial class EmbeddedHttpServer
                             driver = new { policy = report.DriverCache, verified = report.DriverNamespaceVerified, explicitlyAccepted = report.AllowUncontrolledDriverCache },
                             paths = new { applicationCache = Clip(report.CacheDirectory), priorCache = Clip(report.PriorCacheDirectory),
                                 driverCache = Clip(report.DriverCacheDirectory), effectiveConfig = Clip(report.EffectiveConfigPath),
-                                openGlShaders = report.StoragePaths.GetValueOrDefault("openglShaders"), openGlReloadList = report.StoragePaths.GetValueOrDefault("openglReloadList") },
+                                openGlShaders = Clip(report.StoragePaths.GetValueOrDefault("openglShaders")), openGlReloadList = Clip(report.StoragePaths.GetValueOrDefault("openglReloadList")) },
                             before = Brief(report.Before), after = Brief(report.After), report.ConfigSha256,
                             report.EffectiveConfigSha256, report.ConfigAfterSha256,
                             uncontrolled = report.Uncontrolled.Take(8).ToArray(), issues = report.Issues.Take(8).ToArray(),
-                            detail = "/api/v1/runs/" + Uri.EscapeDataString(id) + "/artifacts/diagnostics/run-state/report.json",
-                            bundle = "/api/v1/runs/" + Uri.EscapeDataString(id) + "/diagnostics"
+                            detail, bundle = "/api/v1/runs/" + Uri.EscapeDataString(id) + "/diagnostics"
                         };
+                        // JSON escaping can make character-limited paths much
+                        // larger. Keep the compact answer bounded in bytes too.
+                        if (JsonSerializer.SerializeToUtf8Bytes(value, AgentJson).Length > 4096)
+                            value = new { runId = id, available = true, report.Status, mode = report.CacheMode, report.ComparisonReady,
+                                before = Brief(report.Before), after = Brief(report.After), truncated = true, detail };
                     }
                     catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException or InvalidDataException)
                     { value = new { runId = id, available = false, comparisonReady = false, code = "state_invalid" }; }
