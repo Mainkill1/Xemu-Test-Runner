@@ -6,7 +6,7 @@ from pathlib import Path
 import urllib.parse
 from runner_transport import ClientError, RunnerApi, run_url
 
-COMMANDS = {"result", "compare", "baseline", "index", "csv", "diagnostics"}
+COMMANDS = {"result", "compare", "baseline", "index", "csv", "diagnostics", "state"}
 
 
 def register(sub) -> None:
@@ -23,6 +23,8 @@ def register(sub) -> None:
     baseline.add_argument("sha256", nargs="?")
     index = sub.add_parser("index", help="Index existing canonical archived evidence; never execute a test.")
     index.add_argument("run_id")
+    state = sub.add_parser("state", help="Inspect cache policies, actual paths and before/after state summaries.")
+    state.add_argument("run_id")
     diagnostics = sub.add_parser("diagnostics", help="Read a crash/bundle summary; --out explicitly downloads its verified ZIP.")
     diagnostics.add_argument("run_id")
     diagnostics.add_argument("--out", type=Path)
@@ -38,6 +40,8 @@ def sha(value: str) -> str:
 
 
 def execute(api: RunnerApi, args):
+    if args.command == "state":
+        return api.json(run_url(args.run_id) + "/state")
     if args.command == "diagnostics":
         value = api.json(run_url(args.run_id) + "/diagnostics")
         if args.out is None:

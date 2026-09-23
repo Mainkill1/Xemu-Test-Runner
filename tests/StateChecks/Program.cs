@@ -5,6 +5,7 @@ using XemuTestRunner.Config;
 using XemuTestRunner.Queue;
 using XemuTestRunner.Runtime;
 
+if (args.Contains("--state-child")) return await ProcessStateChecks.Child(args);
 var checks = new List<(string, Func<Task>)>
 {
     ("cold start preserves old cache but does not expose it to the next run", async () =>
@@ -34,13 +35,13 @@ var checks = new List<(string, Func<Task>)>
     {
         using var f = new Fixture();
         var seed = Path.Combine(f.Package, "seed");
-        Directory.CreateDirectory(seed);
-        await File.WriteAllTextAsync(Path.Combine(seed, "warm.bin"), "warm-cache");
+        Directory.CreateDirectory(Path.Combine(seed, "cache"));
+        await File.WriteAllTextAsync(Path.Combine(seed, "cache", "warm.bin"), "warm-cache");
         var snapshot = await RunStateInventory.CaptureAsync(seed, 100, 1024 * 1024, CancellationToken.None);
         var session = await f.Prepare("seeded", seed: "seed", digest: snapshot.TreeSha256);
         Fixture.Require(session.Report.Before!.TreeSha256 == snapshot.TreeSha256, "Seeded bytes changed during materialization.");
         await File.WriteAllTextAsync(Path.Combine(f.Package, "cache", "warm.bin"), "changed-by-target");
-        Fixture.Require(await File.ReadAllTextAsync(Path.Combine(seed, "warm.bin")) == "warm-cache", "Target cache shares writable seed storage.");
+        Fixture.Require(await File.ReadAllTextAsync(Path.Combine(seed, "cache", "warm.bin")) == "warm-cache", "Target cache shares writable seed storage.");
         await session.CompleteAsync(true);
         Fixture.Require(session.Report.After!.TreeSha256 != snapshot.TreeSha256, "Final cache changes were not inventoried.");
     }),
@@ -54,19 +55,17 @@ var checks = new List<(string, Func<Task>)>
     ("cold and seeded policies have distinct comparison identities", async () =>
     {
         using var cold = new Fixture(); using var seeded = new Fixture();
-        var empty = Path.Combine(seeded.Package, "seed");
-        Directory.CreateDirectory(empty);
+        var empty = Path.Combine(seeded.Package, "seed"); Directory.CreateDirectory(empty);
         var digest = (await RunStateInventory.CaptureAsync(empty, 10, 1024, CancellationToken.None)).TreeSha256;
-        var a = await cold.Prepare("cold");
-        var b = await seeded.Prepare("seeded", seed: "seed", digest: digest);
+        var a = await cold.Prepare("cold"); var b = await seeded.Prepare("seeded", seed: "seed", digest: digest);
         Fixture.Require(a.Report.ContractSha256 != b.Report.ContractSha256, "Different initial-state contracts compare as identical.");
+        Fixture.Require(RunStateQualification.ComparisonKey("procedure", a.Report, true) != RunStateQualification.ComparisonKey("procedure", b.Report, true), "Result comparison ignored state identity.");
         await a.CompleteAsync(true); await b.CompleteAsync(true);
     }),
     ("inherited state and uncontrolled driver cache cannot claim clean qualification", async () =>
     {
         using var f = new Fixture();
-        var session = await f.Prepare("inherited");
-        await session.CompleteAsync(true);
+        var session = await f.Prepare("inherited"); await session.CompleteAsync(true);
         Fixture.Require(!session.Report.ComparisonReady, "Inherited state was qualified as controlled.");
         Fixture.Require(session.Report.Uncontrolled.Contains("driver-cache"), "Uncontrolled driver cache is hidden.");
         Fixture.Require(session.Report.Uncontrolled.Contains("os-page-cache"), "Application cache was confused with OS page cache.");
@@ -75,8 +74,7 @@ var checks = new List<(string, Func<Task>)>
     {
         using var f = new Fixture();
         var root = Path.Combine(f.Package, "many"); Directory.CreateDirectory(root);
-        await File.WriteAllTextAsync(Path.Combine(root, "a"), "12345678");
-        await File.WriteAllTextAsync(Path.Combine(root, "b"), "12345678");
+        await File.WriteAllTextAsync(Path.Combine(root, "a"), "12345678"); await File.WriteAllTextAsync(Path.Combine(root, "b"), "12345678");
         var inventory = await RunStateInventory.CaptureAsync(root, 1, 4, CancellationToken.None);
         Fixture.Require(!inventory.Complete && inventory.Issues.Count > 0, "Limited inventory implies complete state.");
     }),
@@ -95,12 +93,11 @@ var checks = new List<(string, Func<Task>)>
         Fixture.Require(!json.Contains("Isolation", StringComparison.OrdinalIgnoreCase), "Optional isolation changed all saved definition identities.");
         return Task.CompletedTask;
     }),
-    ("post-run state has a bounded summary and preserves changed effective config", async () =>
+    ("post-run state preserves changed effective config", async () =>
     {
         using var f = new Fixture();
         var session = await f.Prepare("cold");
-        await File.AppendAllTextAsync(session.Report.EffectiveConfigPath!, "\n# saved by application\n");
-        await session.CompleteAsync(true);
+        await File.AppendAllTextAsync(session.Report.EffectiveConfigPath!, "\n# saved by application\n"); await session.CompleteAsync(true);
         Fixture.Require(session.Report.ConfigAfterSha256 != session.Report.EffectiveConfigSha256, "Saved config changes were hidden.");
         Fixture.Require(File.Exists(Path.Combine(f.Result, "diagnostics", "run-state", "report.json")), "State metadata will not be included in diagnostics.");
         Fixture.Require(File.Exists(Path.Combine(f.Result, "diagnostics", "run-state", "config-after.toml")), "Changed configuration is not retained.");
@@ -117,8 +114,22 @@ var checks = new List<(string, Func<Task>)>
         var first = await a.Prepare("cold"); var second = await b.Prepare("cold");
         Fixture.Require(first.Report.ContractSha256 == second.Report.ContractSha256, "Absolute run paths leak into comparison identity.");
         await first.CompleteAsync(true); await second.CompleteAsync(true);
+    }),
+    ("OpenGL shaders and reload list are reset as well as Vulkan cache", async () =>
+    {
+        using var f = new Fixture();
+        Directory.CreateDirectory(Path.Combine(f.Package, "shaders", "1234"));
+        await File.WriteAllTextAsync(Path.Combine(f.Package, "shaders", "1234", "shader"), "previous-gl-binary");
+        await File.WriteAllTextAsync(Path.Combine(f.Package, "shader_cache_list"), "old-reload-list");
+        var session = await f.Prepare("cold");
+        Fixture.Require(!File.Exists(Path.Combine(f.Package, "shader_cache_list")) && !Directory.EnumerateFiles(Path.Combine(f.Package, "shaders"), "*", SearchOption.AllDirectories).Any(), "OpenGL cache leaked between cold attempts.");
+        Fixture.Require(session.Report.Before!.Files.Count == 0, "Cold combined inventory is not empty.");
+        await File.WriteAllTextAsync(Path.Combine(f.Package, "shader_cache_list"), "new-list");
+        await session.CompleteAsync(true);
+        Fixture.Require(session.Report.After!.Files.Any(file => file.Path == "shader_cache_list"), "OpenGL output is missing from the ledger.");
     })
 };
+ProcessStateChecks.Register(checks);
 var failures = 0;
 foreach (var (name, run) in checks)
 {
@@ -142,8 +153,6 @@ sealed class Fixture : IDisposable
     }
     public async Task<RunStorageSession> Prepare(string mode, bool shaders = true, string? seed = null, string? digest = null, bool privateGuest = false)
     {
-        // These cache-only fixtures do not boot an Xbox or have guest images.
-        // The separate private-state check explicitly requires a private image.
         var json = JsonSerializer.Serialize(new { Id = "state-check", Executable = "xemu.bin", RuntimeState = new {
             Isolation = new { CacheMode = mode, CacheShaders = shaders, DriverCache = "uncontrolled", SeedDirectory = seed, SeedSha256 = digest, RequirePrivateGuestState = privateGuest }
         }});
@@ -155,8 +164,7 @@ sealed class Fixture : IDisposable
     public static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
     public static async Task Reject(Func<Task> operation)
     {
-        try { await operation(); }
-        catch (InvalidDataException) { return; }
+        try { await operation(); } catch (InvalidDataException) { return; }
         throw new InvalidOperationException("Invalid state contract was accepted.");
     }
     public void Dispose() { if (Directory.Exists(Root)) Directory.Delete(Root, true); }

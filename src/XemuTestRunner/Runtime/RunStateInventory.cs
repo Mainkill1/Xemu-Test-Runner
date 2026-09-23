@@ -6,7 +6,7 @@ namespace XemuTestRunner.Runtime;
 public static class RunStateInventory
 {
     public static async Task<RunStateSnapshot> CaptureAsync(string root, int maximumFiles,
-        long maximumBytes, CancellationToken ct)
+        long maximumBytes, CancellationToken ct, IReadOnlyCollection<string>? topLevelNames = null)
     {
         if (maximumFiles < 1 || maximumBytes < 1) throw new ArgumentOutOfRangeException(nameof(maximumFiles));
         var files = new List<RunStateFile>();
@@ -26,6 +26,7 @@ public static class RunStateInventory
                 foreach (var path in Directory.EnumerateFileSystemEntries(directory.Path))
                 {
                     ct.ThrowIfCancellationRequested();
+                    if (directory.Depth == 0 && topLevelNames is not null && !topLevelNames.Contains(Path.GetFileName(path))) continue;
                     if (++visited > maximumFiles * 4 + 256) { issues.Add("entry_limit"); pending.Clear(); break; }
                     var relative = Path.GetRelativePath(root, path).Replace('\\', '/');
                     if (relative.Length > 512) { issues.Add("path_limit"); continue; }
@@ -67,12 +68,9 @@ public static class RunStateInventory
         catch (InvalidDataException) { issues.Add("invalid_or_changed_state"); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { issues.Add("state_unreadable"); }
         var sorted = files.OrderBy(value => value.Path, StringComparer.Ordinal).ToArray();
-        var identity = Hash(JsonSerializer.SerializeToUtf8Bytes(sorted));
-        return new(issues.Count == 0, identity, total, sorted, issues.OrderBy(value => value).ToArray());
+        return new(issues.Count == 0, Hash(JsonSerializer.SerializeToUtf8Bytes(sorted)), total, sorted, issues.OrderBy(value => value).ToArray());
     }
-
     public static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-
     public static void NoLinks(string path)
     {
         for (var current = Path.GetFullPath(path); !string.IsNullOrEmpty(current); current = Path.GetDirectoryName(current))
@@ -86,7 +84,6 @@ public static class RunStateInventory
             catch (DirectoryNotFoundException) { }
         }
     }
-
     internal static async Task CopyAsync(string source, string target, long expectedLength, string expectedHash, CancellationToken ct)
     {
         NoLinks(source); NoLinks(target);
