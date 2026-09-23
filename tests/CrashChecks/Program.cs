@@ -16,11 +16,23 @@ if (args.Length > 1 && args[0] == "--target")
         if (OperatingSystem.IsWindows()) Native.SetErrorMode(0x0002);
         Environment.FailFast("Intentional isolated crash fixture.");
     }
+    if (args[1] == "hold-pipe")
+    {
+        var child = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!)
+        {
+            UseShellExecute = false, ArgumentList = { "--target", "hang" }
+        })!;
+        await File.WriteAllTextAsync(args[2], child.Id.ToString());
+        child.Dispose();
+        return 0;
+    }
+    if (args[1] == "output") Console.Write(new string('x', 100000));
     if (args[1] == "hang") await Task.Delay(Timeout.Infinite);
     return args[1] == "exit139" ? 139 : 0;
 }
 
 var failures = 0;
+var checksRun = 0;
 var evidence = Environment.GetEnvironmentVariable("CRASH_CHECK_EVIDENCE") ?? Path.Combine(Path.GetTempPath(), "crash-checks-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(evidence);
 await Check("crash archives diagnostics beside executable and next queued test completes", async () =>
@@ -55,11 +67,13 @@ await Check("timeout termination remains timeout and does not block later work",
     Require(results.Single(value => value.GetProperty("job").GetString() == "job-0").GetProperty("status").GetString() == "timeout", "Runner kill was reclassified as a crash.");
     Require(Directory.GetDirectories(paths.Testing).Length == 0, "Stopped target retained queue ownership.");
 });
-Console.WriteLine($"Crash checks: {3 - failures}/3 passed. Evidence: {evidence}");
+await SupportChecks.RunAsync(Check);
+Console.WriteLine($"Crash checks: {checksRun - failures}/{checksRun} passed. Evidence: {evidence}");
 return failures == 0 ? 0 : 1;
 
 async Task Check(string name, Func<Task> run)
 {
+    checksRun++;
     try { await run(); Console.WriteLine("PASS " + name); }
     catch (Exception error) { failures++; Console.Error.WriteLine("FAIL " + name + ": " + error); }
 }
