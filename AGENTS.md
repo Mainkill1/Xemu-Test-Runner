@@ -15,3 +15,7 @@ Results are grouped by executable content, actual test procedure/fixed inputs, e
 Use `csv RUN_ID OUTPUT` only for explicit raw data needs. Routine result/compare does not download raw CSV or process metrics on the agent. Lower-level runner_api.py provides detailed draft/control/evidence workflows and explicit correctness/eligibility exit gates. Its run/submit/retry commands intentionally execute, unlike upload/select.
 
 Honor benchmark transfer/control policy. Already-staged work can be queued without bulk transfer. Keep saved definition source packages and the original run evidence needed by raw artifact links. Configuration and result stores are local to the tester; no external database is required.
+
+For crashes, use `runner_tests.py diagnostics RUN_ID` for one compact report. Add `--out FILE.zip` only for an explicit diagnostic download; the client verifies the ZIP SHA-256. The same ZIP is retained beside the archived executable. Missing dumps or failed collection do not make a crashed attempt pass and do not authorize a rerun. Let other already-requested tests proceed after the target is confirmed stopped. See docs/CRASH-REPORTS.md for provider prerequisites and bounds.
+
+Known remaining workflow gaps are recorded in docs/AGENT-WORKAROUND-AUDIT.md. Report missing batch/cancellation/retention capabilities rather than silently replacing them with queue-directory or shell manipulation.
