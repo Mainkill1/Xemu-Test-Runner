@@ -99,7 +99,8 @@ public sealed class RunnerEngine
         {
             Reliability = _config.Reliability,
             Activity = _activity,
-            Diagnostics = _diagnostics
+            Diagnostics = _diagnostics,
+            CrashDiagnostics = _config.Diagnostics
         };
         var serverTask = server.RunAsync(lifetime.Token);
 
@@ -308,6 +309,10 @@ public sealed class RunnerEngine
         bool exited = false;
         bool componentStuck = false;
         bool preserveTarget = false;
+        bool runnerTerminated = false;
+        CrashCapture? crashCapture = null;
+        CrashReport? crashReport = null;
+        NativeExitStatus? nativeExit = null;
         IReadOnlyList<string> gpuProviders = [];
         WorkstationStateSnapshot? workstationStart = null;
         RuntimeMaterialization? runtimeState = null;
@@ -580,6 +585,8 @@ public sealed class RunnerEngine
                         new IOException(finalClaimIssue.Code));
                 }
 
+                crashCapture = new CrashCapture(_config.Diagnostics, runId, package, executable,
+                    preflight.ExecutableSha256, resultDirectory, DateTimeOffset.UtcNow);
                 launch = await TargetLaunch.StartAsync(
                     _config.Diagnostics,
                     job,
@@ -607,7 +614,7 @@ public sealed class RunnerEngine
                         ct).ConfigureAwait(false);
                     await File.WriteAllTextAsync(
                         Path.Combine(resultDirectory, "stderr.log"),
-                        "RenderDoc bridge diagnostics are stored under diagnostics/_renderdoc-session/." + Environment.NewLine,
+                        "RenderDoc bridge diagnostics are stored under diagnostics/_renderdoc-session/.",
                         ct).ConfigureAwait(false);
                 }
 
@@ -741,7 +748,7 @@ public sealed class RunnerEngine
                     watchdog = watch;
                 }
 
-                var exitTask = process.WaitForExitAsync();
+                var exitTask = launch.WaitForExitAsync();
                 var cancelTask = Task.Delay(Timeout.Infinite, ct);
                 var timeoutTask = job.TimeoutSeconds > 0
                     ? _control.DelayTestTimeAsync(checked(job.TimeoutSeconds * 1000), tasksCts.Token)
@@ -771,7 +778,7 @@ public sealed class RunnerEngine
                     {
                         await exitTask.ConfigureAwait(false);
                         exited = true;
-                        exitCode = process.ExitCode;
+                        exitCode = launch?.ExitCode ?? process.ExitCode;
                         status = exitCode != 0
                             ? "failed"
                             : plan is not null && !plan.IsCompletedSuccessfully && !_control.QuitRequested
@@ -932,7 +939,10 @@ public sealed class RunnerEngine
                 }
 
                 if (!preserveTarget && !exited)
+                {
+                    runnerTerminated = true;
                     exited = await StopProcessAsync(process).ConfigureAwait(false);
+                }
 
                 if (preserveTarget)
                 {
@@ -942,7 +952,16 @@ public sealed class RunnerEngine
                 }
                 else if (exited)
                 {
-                    exitCode = process.ExitCode;
+                    // A native-exit supervisor may still be publishing its tiny
+                    // receipt after the target died during control initialization.
+                    if (launch is not null)
+                    {
+                        try { await launch.WaitForExitAsync().WaitAsync(TimeSpan.FromMilliseconds(_config.Reliability.ProcessExitTimeoutMs)).ConfigureAwait(false); }
+                        catch (TimeoutException ex) { detail = (detail ?? "") + " Exit receipt: " + ex.Message; }
+                        nativeExit = launch.NativeExit;
+                    }
+                    try { exitCode = launch?.ExitCode ?? process.ExitCode; }
+                    catch (InvalidOperationException) { detail = (detail ?? "") + " Native exit receipt unavailable."; }
                     attempt.Phase = "exited";
                     AttemptJournal.Write(package, attempt);
                 }
@@ -1064,6 +1083,16 @@ public sealed class RunnerEngine
             }
         }
 
+        if (crashCapture is not null)
+        {
+            _state.SetPhase("collecting_diagnostics");
+            crashReport = await crashCapture.CollectAsync(attempt.ProcessId, exitCode, nativeExit,
+                runnerTerminated, exited, status).ConfigureAwait(false);
+            if (crashReport.Crashed && status != "cancelled" &&
+                (!runnerTerminated || crashReport.Source is "windowsApplicationError" or "systemd-coredump"))
+                status = "crashed";
+        }
+
         assessment = RunAssessmentEvaluator.Evaluate(
             status,
             workloadEvaluation,
@@ -1087,6 +1116,8 @@ public sealed class RunnerEngine
             durationMs = (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds,
             processId = attempt.ProcessId,
             exitCode,
+            crash = crashReport,
+            diagnosticBundle = "diagnostic-bundle.json",
             launchMode = job?.LaunchMode,
             snapshotName = job?.SnapshotName,
             executable = job?.Executable,
@@ -1134,6 +1165,14 @@ public sealed class RunnerEngine
                 gpuProviders = metricSummary.GpuProviders
             }
         });
+
+        if (!started || exited)
+        {
+            // Sealing evidence is bounded best-effort work. It must not retain
+            // Testing ownership or replace the application's execution outcome.
+            _ = await DiagnosticArchive.CreateAsync(resultDirectory, package, job?.Executable,
+                runId, preflight?.ExecutableSha256, _config.Diagnostics.CrashReports).ConfigureAwait(false);
+        }
 
         if (job is not null &&
             !(started && !exited))
@@ -1305,7 +1344,7 @@ public sealed class RunnerEngine
 
         _preservedTarget = null;
         var processId = held.Process.Id;
-        var exitCode = held.Process.ExitCode;
+        var exitCode = held.Launch.ExitCode;
         _control.End();
 
         try

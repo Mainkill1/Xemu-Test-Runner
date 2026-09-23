@@ -69,6 +69,12 @@ public static class RunAssessmentEvaluator
                     ComparisonEligibility.Ineligible;
         }
 
+        if (execution == ExecutionOutcome.Crashed)
+        {
+            comparison = ComparisonEligibility.Ineligible;
+            reasons.Add("Native process crashed; performance comparison is ineligible.");
+        }
+
         return new RunAssessment(
             execution,
             workload.Correctness,
@@ -82,6 +88,7 @@ public static class RunAssessmentEvaluator
         string status) =>
         status.ToLowerInvariant() switch
         {
+            "crashed" => ExecutionOutcome.Crashed,
             "completed" =>
                 ExecutionOutcome.Completed,
             "failed" or

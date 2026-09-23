@@ -12,6 +12,10 @@ public sealed class TargetLaunch : IAsyncDisposable
     public string Mode { get; }
 
     private readonly bool _ownsProcess;
+    private PosixTarget? _posix;
+    public int ExitCode => (_posix?.Supervisor ?? Process).ExitCode;
+    public NativeExitStatus? NativeExit => _posix?.ReadExit();
+    public Task WaitForExitAsync() => (_posix?.Supervisor ?? Process).WaitForExitAsync();
 
     private TargetLaunch(
         Process process,
@@ -74,6 +78,15 @@ public sealed class TargetLaunch : IAsyncDisposable
         foreach (var variable in environment)
             startInfo.Environment[variable.Key] = variable.Value;
 
+        var helper = Path.Combine(AppContext.BaseDirectory, "tools", "runner_posix.py");
+        var python = ToolProcess.ResolveExecutable(diagnostics.PythonExecutable);
+        if (OperatingSystem.IsLinux() && diagnostics.CrashReports.PreserveNativeExitStatus &&
+            File.Exists(helper) && python is not null)
+        {
+            var native = await PosixTarget.StartAsync(python, helper, startInfo, resultDirectory, cancellationToken).ConfigureAwait(false);
+            return new TargetLaunch(native.Target, native.Supervisor.StandardOutput.BaseStream,
+                native.Supervisor.StandardError.BaseStream, null, "direct", false) { _posix = native };
+        }
         var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         if (!process.Start())
         {
@@ -94,6 +107,7 @@ public sealed class TargetLaunch : IAsyncDisposable
     {
         if (RenderDoc is not null)
             await RenderDoc.DisposeAsync().ConfigureAwait(false);
+        if (_posix is not null) await _posix.DisposeAsync().ConfigureAwait(false);
         if (_ownsProcess)
             Process.Dispose();
     }
