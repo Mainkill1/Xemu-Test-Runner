@@ -26,7 +26,7 @@ public sealed partial class EmbeddedHttpServer
         _options = options; _uiOptions = uiOptions; _paths = paths; _state = state;
         _queue = queue; _control = control; _requestStop = requestStop;
     }
-    public async Task RunAsync(CancellationToken cancellationToken)
+    private async Task RunHttpAsync(CancellationToken cancellationToken)
     {
         if (!_options.Enabled) return;
         _listener = new TcpListener(await ResolveBindAddressAsync(_options.BindAddress), _options.Port);
@@ -170,7 +170,6 @@ public sealed partial class EmbeddedHttpServer
                 case "/api/v1/xemu/resume":
                     if (!await EnsureOperationAllowedAsync(stream, "pause", keepAlive, ct))
                         return false;
-                    Activity.Mark("resume", null);
                     await HandleResumeAsync(stream, request, keepAlive, ct);
                     return true;
                 case "/api/v1/xemu/quit":
