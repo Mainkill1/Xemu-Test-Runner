@@ -1,11 +1,12 @@
 """Thin result commands: the tester, not this client, computes comparisons."""
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 import urllib.parse
 from runner_transport import ClientError, RunnerApi, run_url
 
-COMMANDS = {"result", "compare", "baseline", "index", "csv"}
+COMMANDS = {"result", "compare", "baseline", "index", "csv", "diagnostics"}
 
 
 def register(sub) -> None:
@@ -22,6 +23,9 @@ def register(sub) -> None:
     baseline.add_argument("sha256", nargs="?")
     index = sub.add_parser("index", help="Index existing canonical archived evidence; never execute a test.")
     index.add_argument("run_id")
+    diagnostics = sub.add_parser("diagnostics", help="Read a crash/bundle summary; --out explicitly downloads its verified ZIP.")
+    diagnostics.add_argument("run_id")
+    diagnostics.add_argument("--out", type=Path)
     csv = sub.add_parser("csv", help="Explicitly download a run's original metrics.csv.")
     csv.add_argument("run_id")
     csv.add_argument("output", type=Path)
@@ -34,6 +38,23 @@ def sha(value: str) -> str:
 
 
 def execute(api: RunnerApi, args):
+    if args.command == "diagnostics":
+        value = api.json(run_url(args.run_id) + "/diagnostics")
+        if args.out is None:
+            return value
+        bundle = value.get("bundle") or {}
+        digest = bundle.get("sha256")
+        if not bundle.get("href") or not digest or bundle.get("state") not in ("captured", "partial"):
+            raise ClientError("diagnostic_bundle_unavailable", "The ZIP is not finalized or collection failed.", "Read the diagnostic summary; this does not change the test outcome or rerun it.")
+        digest = sha(digest)
+        api.download(run_url(args.run_id) + "/artifacts/diagnostics.zip", args.out, bundle["bytes"])
+        actual = hashlib.sha256()
+        with args.out.open("rb") as archive:
+            for block in iter(lambda: archive.read(1024 * 1024), b""):
+                actual.update(block)
+        if actual.hexdigest() != digest:
+            raise ClientError("diagnostic_hash_mismatch", "Downloaded ZIP differs from the runner's finalized receipt.", "Keep the file for inspection or move it aside before retrying; no verified-download claim was made.")
+        return {"ok": True, "runId": args.run_id, "file": str(args.out), "bytes": bundle["bytes"], "sha256": digest, "bundleState": bundle["state"]}
     info = api.json("/api/v1/help?topic=build-results")
     if not isinstance(info, dict) or "executableHashResults" not in info.get("capabilities", []):
         raise ClientError("capability_missing", "The tester does not support executable-hash results.", "Deploy the matching runner version; no client-side comparison fallback is used.")

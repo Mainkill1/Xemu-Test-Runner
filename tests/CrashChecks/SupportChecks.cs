@@ -91,7 +91,8 @@ internal static class SupportChecks
                 Require(bundle.MirrorState == "captured" && bundle.BesideExecutable is not null, "ZIP was not mirrored.");
                 var data = await File.ReadAllBytesAsync(Path.Combine(results,"diagnostics.zip"));
                 Require(Convert.ToHexString(SHA256.HashData(data)).ToLowerInvariant() == bundle.Sha256, "ZIP digest is wrong.");
-                Require(data.SequenceEqual(await File.ReadAllBytesAsync(Path.Combine(package,bundle.BesideExecutable!))), "Mirror bytes differ.");
+                var mirrorBytes = await File.ReadAllBytesAsync(Path.Combine(package,bundle.BesideExecutable!));
+                Require(data.SequenceEqual(mirrorBytes), "Mirror bytes differ.");
                 using var zip = ZipFile.OpenRead(Path.Combine(results,"diagnostics.zip"));
                 Require(zip.GetEntry("crash/huge.core") is null, "Oversized core entered the ZIP.");
                 using var manifest = JsonDocument.Parse(zip.GetEntry("bundle-manifest.json")!.Open());
