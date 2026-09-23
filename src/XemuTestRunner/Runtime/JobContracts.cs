@@ -42,9 +42,19 @@ public sealed class ArtifactCheckDefinition
     public bool MustExist { get; set; } = true;
     public long MinimumBytes { get; set; }
     public double? MinimumNonBlackPixelRatio { get; set; }
+    public int NonBlackPixelThreshold { get; set; }
+    public ImageRegionDefinition? ImageRegion { get; set; }
     public string? ExpectedSha256 { get; set; }
     public string? ContainsText { get; set; }
     public string? EqualsText { get; set; }
+}
+
+public sealed class ImageRegionDefinition
+{
+    public double X { get; set; }
+    public double Y { get; set; }
+    public double Width { get; set; } = 1;
+    public double Height { get; set; } = 1;
 }
 
 public sealed class ReportedMetricDefinition

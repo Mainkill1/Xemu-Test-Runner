@@ -44,6 +44,7 @@ CorrectnessChecks and EvidenceRequirements use artifact checks with result/packa
 - existence
 - minimum byte size
 - minimum visible non-black pixel ratio for non-interlaced 8-bit PNGs
+- optional normalized PNG region and RGB brightness threshold
 - SHA-256
 - contains text
 - exact text
@@ -52,6 +53,12 @@ CorrectnessChecks and EvidenceRequirements use artifact checks with result/packa
 screenshots captured at a point where visible gameplay is required. The check
 fails closed for malformed or unsupported PNGs; jobs that do not declare it
 retain their existing artifact behavior.
+
+`ImageRegion` limits the pixel ratio to normalized `X`, `Y`, `Width`, and
+`Height` coordinates. `NonBlackPixelThreshold` changes the match from any
+nonzero RGB channel to any RGB channel greater than the declared 0–255 value.
+Use both when a whole-image non-black check could confuse a menu, loading
+screen, or dialog with the intended gameplay state.
 
 ReportedMetrics extracts finite numeric values from JSON artifacts using dot-separated object-property paths. These measurements feed the compare command.
 

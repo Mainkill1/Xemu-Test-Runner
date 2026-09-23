@@ -210,7 +210,14 @@ A job may declare correctness and evidence requirements:
         "Scope": "result",
         "Path": "screenshots/final.png",
         "MinimumBytes": 1000,
-        "MinimumNonBlackPixelRatio": 0.01
+        "MinimumNonBlackPixelRatio": 0.01,
+        "NonBlackPixelThreshold": 192,
+        "ImageRegion": {
+          "X": 0.17,
+          "Y": 0.08,
+          "Width": 0.15,
+          "Height": 0.25
+        }
       }
     ],
     "ReportedMetrics": [
@@ -226,6 +233,15 @@ A job may declare correctness and evidence requirements:
   }
 }
 ```
+
+Image regions use normalized coordinates. By default the ratio covers the
+whole image and counts every visible pixel with any nonzero RGB channel.
+
+Set `NonBlackPixelThreshold` from 0 through 255 to count a pixel only when at
+least one RGB channel is greater than the threshold. Combining a threshold
+with `ImageRegion` lets a correctness check require a bright HUD or status
+area instead of accepting any non-blank menu. Both options require
+`MinimumNonBlackPixelRatio`, so existing jobs retain their prior behavior.
 
 Plan steps can mark the exact measurement interval:
 

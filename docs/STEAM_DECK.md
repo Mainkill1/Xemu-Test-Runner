@@ -60,6 +60,8 @@ missing, incomplete, or workload-declared blank image.
 Adjust `-video_size` when the desktop resolution differs. X11 root capture may
 produce an all-black image for an XWayland Vulkan window; use a
 `MinimumNonBlackPixelRatio` correctness assertion to reject that evidence. Use
+`ImageRegion` and `NonBlackPixelThreshold` when the test must distinguish a
+specific gameplay HUD from another visible state such as a menu. Use
 RenderDoc for a renderer-frame capture; a desktop PNG does not expose draw
 state.
 
