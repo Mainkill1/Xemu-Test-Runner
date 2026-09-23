@@ -1,4 +1,6 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -116,6 +118,43 @@ try
         var compatibilityResult = await ArtifactInspector.CheckAsync(requirement, black, CancellationToken.None);
         Assert(compatibilityResult.Passed,
             "Existing artifact contracts changed behavior without opting into image-content validation.");
+    });
+    await Check("artifact checks support thresholded image regions", async () =>
+    {
+        var directory = Path.Combine(root, "image-region-artifacts");
+        Directory.CreateDirectory(directory);
+        var image = Path.Combine(directory, "regions.png");
+        WriteRgbPng(image, 4, 2, (x, _) => x switch
+        {
+            0 => (255, 255, 255),
+            1 or 3 => (100, 100, 100),
+            _ => (0, 0, 0)
+        });
+
+        var requirement = new ArtifactCheckDefinition
+        {
+            Scope = "result",
+            Path = "screenshots/frame.png",
+            MinimumNonBlackPixelRatio = 0.5,
+            NonBlackPixelThreshold = 200,
+            ImageRegion = new ImageRegionDefinition
+            {
+                X = 0,
+                Y = 0,
+                Width = 0.5,
+                Height = 1
+            }
+        };
+        var brightLeft = await ArtifactInspector.CheckAsync(
+            requirement, image, CancellationToken.None);
+        Assert(brightLeft.Passed, brightLeft.Detail);
+
+        requirement.ImageRegion.X = 0.5;
+        var darkRight = await ArtifactInspector.CheckAsync(
+            requirement, image, CancellationToken.None);
+        Assert(!darkRight.Passed &&
+               darkRight.Detail.Contains("region", StringComparison.OrdinalIgnoreCase),
+            "A region without pixels above the declared threshold passed.");
     });
     await Check("workspace lease excludes a second owner and can be reacquired", () =>
     {
@@ -1015,6 +1054,52 @@ static int AllocateTcpPort()
     listener.Start();
     try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
     finally { listener.Stop(); }
+}
+
+static void WriteRgbPng(
+    string path,
+    int width,
+    int height,
+    Func<int, int, (byte Red, byte Green, byte Blue)> pixel)
+{
+    using var file = File.Create(path);
+    file.Write([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+    var header = new byte[13];
+    BinaryPrimitives.WriteInt32BigEndian(header, width);
+    BinaryPrimitives.WriteInt32BigEndian(header.AsSpan(4), height);
+    header[8] = 8;
+    header[9] = 2;
+    WritePngChunk(file, "IHDR", header);
+
+    using var raw = new MemoryStream();
+    for (var y = 0; y < height; y++)
+    {
+        raw.WriteByte(0);
+        for (var x = 0; x < width; x++)
+        {
+            var value = pixel(x, y);
+            raw.WriteByte(value.Red);
+            raw.WriteByte(value.Green);
+            raw.WriteByte(value.Blue);
+        }
+    }
+    raw.Position = 0;
+    using var compressed = new MemoryStream();
+    using (var zlib = new ZLibStream(compressed, CompressionLevel.SmallestSize, true))
+        raw.CopyTo(zlib);
+    WritePngChunk(file, "IDAT", compressed.ToArray());
+    WritePngChunk(file, "IEND", []);
+}
+
+static void WritePngChunk(Stream stream, string type, byte[] data)
+{
+    Span<byte> length = stackalloc byte[4];
+    BinaryPrimitives.WriteInt32BigEndian(length, data.Length);
+    stream.Write(length);
+    stream.Write(Encoding.ASCII.GetBytes(type));
+    stream.Write(data);
+    stream.Write([0, 0, 0, 0]);
 }
 
 static async Task<JsonDocument> WaitForActiveRunAsync(HttpClient client, TimeSpan timeout)
