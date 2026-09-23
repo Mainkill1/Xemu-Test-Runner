@@ -18,6 +18,7 @@ else
     GuestHddChecks.Register(checks);
     GuestPipelineChecks.Register(checks);
     GuestStorageChecks.Register(checks);
+    GuestSchemaChecks.Register(checks);
 }
 var failures = 0;
 foreach (var (name, run) in checks)

@@ -4,7 +4,7 @@ namespace XemuTestRunner.Runtime;
 
 /// <summary>Opt-in extraction of the current attempt's guest result, never a general disk-management command.</summary>
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed class GuestHddResultsDefinition
+public sealed class GuestHddResultsDefinition : IJsonOnDeserialized
 {
     public string Image { get; set; } = "";
     public long PartitionOffsetBytes { get; set; }
@@ -13,6 +13,9 @@ public sealed class GuestHddResultsDefinition
     public string ExpectedResults { get; set; } = "";
     public string ExpectedResultsSha256 { get; set; } = "";
     public int MaximumResultBytes { get; set; } = 16 * 1024 * 1024;
+
+    // Validate at API/config load time, not only after an expensive run.
+    void IJsonOnDeserialized.OnDeserialized() => Validate();
 
     public void Validate()
     {
