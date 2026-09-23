@@ -11,7 +11,8 @@ internal static class HumanWorkflowChecks
         checks.Add(("short build references resolve on the server without changing stored hashes", async () =>
         {
             await using var host = new AgentFixture();
-            var a = Digest("known"), b = Digest("candidate");
+            var a = Digest("known");
+            var b = Digest("candidate");
             Seed(host, a, "a", 100); Seed(host, b, "b", 80);
             var result = await host.Json($"/api/v1/compare?A={a[..12].ToUpperInvariant()}&B={b[..12]}");
             Require(result.GetProperty("a").GetString() == a && result.GetProperty("b").GetString() == b, "Short aliases replaced canonical identities.");
