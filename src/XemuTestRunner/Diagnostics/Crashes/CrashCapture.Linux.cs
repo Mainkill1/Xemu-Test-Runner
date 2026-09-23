@@ -52,7 +52,11 @@ public sealed partial class CrashCapture
         if (int.TryParse(Field(found, "COREDUMP_SIGNAL"), out var signal))
         {
             var fatal = signal is 3 or 4 or 5 or 6 or 7 or 8 or 11 or 24 or 25 or 31;
-            if (fatal) report = report with { Crashed = true, Source = "systemd-coredump", Code = CrashClassification.SignalName(signal) };
+            if (fatal)
+            {
+                _confirmedSource = "systemd-coredump"; _confirmedCode = CrashClassification.SignalName(signal);
+                report = report with { Crashed = true, Source = _confirmedSource, Code = _confirmedCode };
+            }
         }
         if (!_options.CollectDumps) { _dump = "notRequested"; return report; }
         var core = Path.Combine(_directory, "xemu.core");

@@ -18,9 +18,9 @@ internal sealed class PosixTarget : IAsyncDisposable
     {
         if (_exit is not null) return _exit;
         var file = Path.Combine(_root, "exit-native.json");
-        if (!File.Exists(file) || new FileInfo(file).Length > 4096) return null;
         try
         {
+            if (!File.Exists(file) || new FileInfo(file).Length > 4096) return null;
             var value = JsonSerializer.Deserialize<NativeExitStatus>(File.ReadAllText(file), ConfigLoader.JsonOptions);
             if (value is null || value.Identity != _identity || value.Pid != Target.Id ||
                 (value.Signal is null) == (value.ExitCode is null) || value.Signal is <= 0 or > 64 || value.ExitCode is < 0 or > 255)
@@ -60,8 +60,6 @@ internal sealed class PosixTarget : IAsyncDisposable
             using var document = JsonDocument.Parse(await File.ReadAllTextAsync(ready, deadline.Token).ConfigureAwait(false));
             if (document.RootElement.GetProperty("identity").GetString() != identity) throw new InvalidDataException("Native launch identity mismatch.");
             target = Process.GetProcessById(document.RootElement.GetProperty("pid").GetInt32());
-            // The child is still blocked on a private pipe. Observe its start
-            // identity before permitting exec, including immediate-start crashes.
             _ = target.StartTime;
             await File.WriteAllTextAsync(Path.Combine(root, "start"), "1", deadline.Token).ConfigureAwait(false);
             return new PosixTarget(supervisor, target, root, identity);

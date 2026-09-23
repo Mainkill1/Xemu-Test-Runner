@@ -97,35 +97,48 @@ internal static class ToolProcess
         if (!process.Start())
             throw new InvalidOperationException($"Failed to start diagnostic tool: {resolved}");
 
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(timeoutMs);
-
+        var stdoutTask = ReadBoundedAsync(process.StandardOutput, timeout.Token);
+        var stderrTask = ReadBoundedAsync(process.StandardError, timeout.Token);
         try
         {
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            // Exiting the tool does not guarantee EOF: descendants may inherit
+            // its output handles. The same deadline covers exit and both pipes.
+            await Task.WhenAll(process.WaitForExitAsync(timeout.Token), stdoutTask, stderrTask)
+                .WaitAsync(timeout.Token).ConfigureAwait(false);
+            return new(resolved, args, process.ExitCode, await stdoutTask.ConfigureAwait(false),
+                await stderrTask.ConfigureAwait(false), Stopwatch.GetElapsedTime(started));
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
-            throw new TimeoutException($"Diagnostic tool exceeded {timeoutMs} ms: {resolved}");
+            throw new TimeoutException($"Diagnostic tool or output drain exceeded {timeoutMs} ms: {resolved}");
         }
-        catch
+        finally
         {
-            try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
-            throw;
+            timeout.Cancel();
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+            catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+            try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); }
+            catch (Exception error) when (error is TimeoutException or InvalidOperationException) { }
+            process.StandardOutput.Dispose(); process.StandardError.Dispose();
+            try { await Task.WhenAll(stdoutTask, stderrTask).WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); }
+            catch (Exception error) when (error is OperationCanceledException or IOException or ObjectDisposedException or TimeoutException or InvalidDataException) { }
         }
+    }
 
-        var stdout = await stdoutTask.ConfigureAwait(false);
-        var stderr = await stderrTask.ConfigureAwait(false);
-        return new(
-            resolved,
-            args,
-            process.ExitCode,
-            stdout,
-            stderr,
-            Stopwatch.GetElapsedTime(started));
+    private static async Task<string> ReadBoundedAsync(StreamReader reader, CancellationToken ct)
+    {
+        const int maximumCharacters = 4 * 1024 * 1024;
+        var text = new StringBuilder(); var buffer = new char[16384];
+        while (true)
+        {
+            var count = await reader.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false);
+            if (count == 0) return text.ToString();
+            if (count > maximumCharacters - text.Length)
+                throw new InvalidDataException("Diagnostic text output exceeds 4 Mi characters; retain large captures as files instead.");
+            text.Append(buffer, 0, count);
+        }
     }
 
     public static async Task<LongRunningTool> StartLongRunningAsync(

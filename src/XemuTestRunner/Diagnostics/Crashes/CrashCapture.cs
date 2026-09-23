@@ -17,6 +17,7 @@ public sealed partial class CrashCapture
     private readonly List<string> _frames = [];
     private string _dump = "unavailable", _analysis = "unavailable";
     private bool _osReport;
+    private string? _confirmedSource, _confirmedCode;
 
     public CrashCapture(DiagnosticsOptions diagnostics, string runId, string package, string executable,
         string? sha256, string resultDirectory, DateTimeOffset startedUtc)
@@ -67,6 +68,8 @@ public sealed partial class CrashCapture
         { report = report with { Capture = "timedOut", Dump = _dump, Analysis = _analysis, Issues = [.. _issues.Take(10), "capture_deadline"] }; }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or ArgumentException or InvalidOperationException or System.Xml.XmlException or System.Security.SecurityException)
         { report = report with { Capture = "failed", Dump = _dump, Analysis = _analysis, Issues = [.. _issues.Take(10), Clip(error.Message)] }; }
+        if (_confirmedSource is not null)
+            report = report with { Crashed = true, Source = _confirmedSource, Code = _confirmedCode };
         // A reporting failure must not replace the primary execution result.
         try
         {

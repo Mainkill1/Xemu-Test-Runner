@@ -33,7 +33,11 @@ public sealed partial class CrashCapture
                     _osReport = true;
                     await File.WriteAllTextAsync(Path.Combine(_directory, "windows-event.xml"), item.ToString(), ct).ConfigureAwait(false);
                     if (data.TryGetValue("ExceptionCode", out var code))
-                        report = report with { Crashed = true, Source = "windowsApplicationError", Code = "0x" + code.Replace("0x", "", StringComparison.OrdinalIgnoreCase).ToUpperInvariant() };
+                    {
+                        _confirmedSource = "windowsApplicationError";
+                        _confirmedCode = "0x" + code.Replace("0x", "", StringComparison.OrdinalIgnoreCase).ToUpperInvariant();
+                        report = report with { Crashed = true, Source = _confirmedSource, Code = _confirmedCode };
+                    }
                     if (data.TryGetValue("ModuleName", out var module)) _frames.Add("Faulting module: " + Clip(module));
                     if (data.TryGetValue("FaultingOffset", out var offset)) _frames.Add("Faulting offset: " + Clip(offset));
                 }
