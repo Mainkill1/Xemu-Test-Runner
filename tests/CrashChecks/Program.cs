@@ -71,7 +71,7 @@ async Task<(RunnerPaths Paths, List<JsonElement> Results, RunnerEngine Engine)> 
     var config = new RunnerConfig
     {
         Workspace = "workspace",
-        Queue = new QueueOptions { PackageStabilityMs = 50, ScanIntervalMs = 25 },
+        Queue = new QueueOptions { PackageStabilityMs = 100, ScanIntervalMs = 25 },
         Http = new HttpOptions { Enabled = false },
         Monitoring = new MonitoringOptions { Enabled = false },
         XemuControl = new XemuControlOptions { Enabled = false },
