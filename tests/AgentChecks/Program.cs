@@ -13,6 +13,7 @@ else
     RequestedTestChecks.Register(checks);
     HashResultChecks.Register(checks);
     ReuseStressChecks.Register(checks);
+    BuildIndexRecoveryChecks.Register(checks);
 }
 var failures = 0;
 foreach (var (name, run) in checks)

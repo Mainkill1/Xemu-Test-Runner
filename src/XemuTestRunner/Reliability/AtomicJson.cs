@@ -22,7 +22,7 @@ public static class AtomicJson
                 file.Flush(flushToDisk: true);
             }
             stage = "publish replacement";
-            File.Move(temporary, path, overwrite: true);
+            Publish(temporary, path);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -36,6 +36,29 @@ public static class AtomicJson
                 try { File.Delete(temporary); }
                 catch (IOException) { }
                 catch (UnauthorizedAccessException) { }
+            }
+        }
+    }
+
+    private static void Publish(string temporary, string path)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                File.Move(temporary, path, overwrite: true);
+                return;
+            }
+            catch (Exception error) when (
+                OperatingSystem.IsWindows() && attempt < 6 &&
+                error is IOException or UnauthorizedAccessException &&
+                (error.HResult & 0xffff) is 5 or 32 or 33)
+            {
+                // Only retry publication of this already-written document.
+                // Never repeat a job, upload, callback or validation operation.
+                // Six delays total 630 ms; persistent access denial still fails
+                // with the old complete destination and original error intact.
+                Thread.Sleep(10 << attempt);
             }
         }
     }
