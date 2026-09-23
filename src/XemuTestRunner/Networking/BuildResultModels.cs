@@ -9,8 +9,6 @@ internal sealed record BuildDelta(string Test, string TestKey, string Context, s
     int NA, int NB, double? A, double? B, double? ChangePercent, string Verdict,
     string Direction = "neutral", BuildStatistics? StatsA = null, BuildStatistics? StatsB = null)
 {
-    // Existing ChangePercent retains B/A - 1. Improvement is a separate,
-    // direction-aware value: lower timings improve when their value decreases.
     public double? ImprovementPercent => A > 0 && ChangePercent.HasValue
         ? Direction == "lower" ? -ChangePercent.Value : Direction == "higher" ? ChangePercent.Value : null
         : null;
@@ -35,7 +33,10 @@ internal sealed record BuildStatistics(int Count, double Mean, double Median, do
         var median = count % 2 == 1 ? values[count / 2] : values[count / 2 - 1] / 2 + values[count / 2] / 2;
         var scale = values.Max(value => Math.Abs(value));
         var normalizedMean = scale == 0 ? 0 : values.Average(value => value / scale);
-        var mean = normalizedMean * scale;
+        var sum = values.Sum();
+        // Preserve ordinary sum/count arithmetic; scale only when a finite
+        // collection's sum overflows. Scaling every mean needlessly rounds 110.
+        var mean = double.IsFinite(sum) ? sum / count : normalizedMean * scale;
         double? deviation = count < 2 ? null : scale == 0 ? 0 :
             Math.Sqrt(values.Sum(value => Math.Pow(value / scale - normalizedMean, 2)) / (count - 1)) * scale;
         if (deviation.HasValue && !double.IsFinite(deviation.Value)) deviation = null;

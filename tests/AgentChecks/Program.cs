@@ -16,6 +16,7 @@ else
     BuildIndexRecoveryChecks.Register(checks);
     AbReportChecks.Register(checks);
     GuestHddChecks.Register(checks);
+    GuestPipelineChecks.Register(checks);
 }
 var failures = 0;
 foreach (var (name, run) in checks)
