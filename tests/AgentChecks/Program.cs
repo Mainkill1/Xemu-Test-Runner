@@ -1,6 +1,9 @@
 var checks = new List<(string Name, Func<Task> Run)>();
 if (args.Contains("--client", StringComparer.Ordinal))
+{
     ClientChecks.Register(checks);
+    RequestedClientChecks.Register(checks);
+}
 else
 {
     ObservationChecks.Register(checks);
