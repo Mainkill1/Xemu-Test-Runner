@@ -4,8 +4,6 @@ namespace XemuTestRunner.Networking;
 
 public sealed partial class EmbeddedHttpServer
 {
-    // This dispatcher materializes explicitly authorized requests. It never
-    // launches a process: the established JobQueue/RunnerEngine still does that.
     private async Task RunRequestedTestsAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
@@ -15,7 +13,10 @@ public sealed partial class EmbeddedHttpServer
                 var state = _state.Snapshot();
                 if (state.Phase == "idle" && state.CurrentJob is null && state.QueueIssue is null && !_control.HasActiveSession &&
                     !HasVisiblePackage(_paths.Pending) && !HasVisiblePackage(_paths.Testing))
+                {
+                    AgentJobs.IndexArchivedBuildResults(ct);
                     await AgentJobs.DispatchRequestedTestAsync(ct).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
@@ -38,8 +39,8 @@ public sealed partial class EmbeddedHttpServer
         if (request.Path == "/api/v1/help" && GetQueryValue(request.Query, "topic") == "test-workflow" && request.Method == "GET")
         {
             await WriteAgentJsonAsync(stream, new {
-                version = 1, capabilities = new[] { "namedConfigs", "requestedTests", "uploadOnly" },
-                configs = "/api/v1/test-configs", viewer = "/tests", requests = "/api/v1/test-runs",
+                version = 1, capabilities = new[] { "namedConfigs", "requestedTests", "uploadOnly", "executableHashResults", "pinnedBaseline", "serverComparison" },
+                configs = "/api/v1/test-configs", viewer = "/tests", requests = "/api/v1/test-runs", results = "/api/v1/help?topic=build-results",
                 start = "POST /api/v1/test-runs/{id}/start", rule = "Uploads never start tests. Explicit start persists intent and queues behind current work."
             }, cancellationToken: ct).ConfigureAwait(false);
             return false;
