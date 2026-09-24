@@ -48,14 +48,16 @@ internal sealed partial class AgentJobStore
         var keys = new HashSet<(string, string, string)>();
         if (result.TryGetProperty("workload", out var workload) && workload.TryGetProperty("Measurements", out var measurements) && measurements.ValueKind == JsonValueKind.Array)
         {
-            if (measurements.GetArrayLength() > 256) throw new InvalidDataException("Too many reported metrics.");
+            // Guest suites expose several statistics per leaf. Keep a real
+            // bound, but do not truncate a complete 149-record guest workload.
+            if (measurements.GetArrayLength() > 4096) throw new InvalidDataException("Too many reported metrics (maximum 4096).");
             foreach (var item in measurements.EnumerateArray())
             {
                 var name = Text(item, "Name");
                 var unit = Text(item, "Unit");
                 var direction = Text(item, "Direction");
                 if (name.Length is < 1 or > 128 || unit.Length > 64 || direction is not ("lower" or "higher" or "neutral") ||
-                    !item.TryGetProperty("Value", out var value) || !value.TryGetDouble(out var number) || !double.IsFinite(number) ||
+                    !item.TryGetProperty("Value", out var value) || value.ValueKind != JsonValueKind.Number || !value.TryGetDouble(out var number) || !double.IsFinite(number) ||
                     !keys.Add((name, unit, direction)))
                 { issues.Add("metric_invalid_or_duplicate"); continue; }
                 metrics.Add(new(name, number, unit, direction));
@@ -87,8 +89,6 @@ internal sealed partial class AgentJobStore
         var buildKey = HashJson(source.Request.Files.Where(file => buildPaths.Contains(file.Path, StringComparer.Ordinal))
             .Select(file => new { path = file.Path == exe ? "@executable" : file.Path, file.Length, sha256 = file.Sha256.ToLowerInvariant() })
             .OrderBy(file => file.path, StringComparer.Ordinal).ToArray());
-        // Compare actual executed procedures and fixed inputs. Display names,
-        // attempt IDs and candidate digest slots are intentionally not workload.
         job.Id = "test";
         job.Tags.Clear();
         job.Executable = "@executable";
