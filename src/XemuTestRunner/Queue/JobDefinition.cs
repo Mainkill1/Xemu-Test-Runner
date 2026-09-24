@@ -184,6 +184,24 @@ public sealed class JobDefinition
                 throw new InvalidDataException(
                     "Workload artifact MinimumNonBlackPixelRatio must be between 0 and 1.");
 
+            if (artifact.NonBlackPixelThreshold is < 0 or > 255)
+                throw new InvalidDataException(
+                    "Workload artifact NonBlackPixelThreshold must be between 0 and 255.");
+
+            if ((artifact.NonBlackPixelThreshold != 0 || artifact.ImageRegion is not null) &&
+                artifact.MinimumNonBlackPixelRatio is null)
+                throw new InvalidDataException(
+                    "Workload artifact image thresholds and regions require MinimumNonBlackPixelRatio.");
+
+            if (artifact.ImageRegion is { } region &&
+                (!double.IsFinite(region.X) || !double.IsFinite(region.Y) ||
+                 !double.IsFinite(region.Width) || !double.IsFinite(region.Height) ||
+                 region.X < 0 || region.Y < 0 ||
+                 region.Width <= 0 || region.Height <= 0 ||
+                 region.X + region.Width > 1 || region.Y + region.Height > 1))
+                throw new InvalidDataException(
+                    "Workload artifact ImageRegion must be a positive normalized rectangle within the image.");
+
             if (!string.IsNullOrWhiteSpace(artifact.ExpectedSha256) &&
                 (artifact.ExpectedSha256.Length != 64 ||
                  !artifact.ExpectedSha256.All(Uri.IsHexDigit)))

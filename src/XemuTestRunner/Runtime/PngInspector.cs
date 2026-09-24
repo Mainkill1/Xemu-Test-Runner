@@ -10,8 +10,26 @@ internal static class PngInspector
 
     internal static async Task<double> MeasureNonBlackPixelRatioAsync(
         Stream stream,
+        ImageRegionDefinition? imageRegion,
+        int threshold,
         CancellationToken cancellationToken)
     {
+        if (threshold is < 0 or > 255)
+            throw new ArgumentOutOfRangeException(
+                nameof(threshold), "RGB threshold must be between 0 and 255.");
+        if (imageRegion is { } declaredRegion &&
+            (!double.IsFinite(declaredRegion.X) ||
+             !double.IsFinite(declaredRegion.Y) ||
+             !double.IsFinite(declaredRegion.Width) ||
+             !double.IsFinite(declaredRegion.Height) ||
+             declaredRegion.X < 0 || declaredRegion.Y < 0 ||
+             declaredRegion.Width <= 0 || declaredRegion.Height <= 0 ||
+             declaredRegion.X + declaredRegion.Width > 1 ||
+             declaredRegion.Y + declaredRegion.Height > 1))
+            throw new ArgumentException(
+                "Image region must be a positive normalized rectangle within the image.",
+                nameof(imageRegion));
+
         var signature = new byte[8];
         await stream.ReadExactlyAsync(signature, cancellationToken).ConfigureAwait(false);
         if (!signature.AsSpan().SequenceEqual(Signature))
@@ -94,6 +112,13 @@ internal static class PngInspector
 
         var previous = new byte[stride];
         var current = new byte[stride];
+        var region = imageRegion ?? new ImageRegionDefinition();
+        var left = Math.Clamp((int)Math.Floor(region.X * width), 0, width - 1);
+        var top = Math.Clamp((int)Math.Floor(region.Y * height), 0, height - 1);
+        var right = Math.Clamp(
+            (int)Math.Ceiling((region.X + region.Width) * width), left + 1, width);
+        var bottom = Math.Clamp(
+            (int)Math.Ceiling((region.Y + region.Height) * height), top + 1, height);
         long nonBlack = 0;
         var offset = 0;
         for (var row = 0; row < height; row++)
@@ -103,15 +128,24 @@ internal static class PngInspector
             offset += stride;
             Unfilter(current, previous, bytesPerPixel, filter);
 
-            for (var x = 0; x < stride; x += bytesPerPixel)
+            if (row < top || row >= bottom)
             {
+                (previous, current) = (current, previous);
+                continue;
+            }
+
+            for (var column = left; column < right; column++)
+            {
+                var x = column * bytesPerPixel;
                 var visible = bytesPerPixel switch
                 {
-                    1 => current[x] != 0,
-                    2 => current[x + 1] != 0 && current[x] != 0,
-                    3 => (current[x] | current[x + 1] | current[x + 2]) != 0,
+                    1 => current[x] > threshold,
+                    2 => current[x + 1] != 0 && current[x] > threshold,
+                    3 => Math.Max(current[x],
+                             Math.Max(current[x + 1], current[x + 2])) > threshold,
                     4 => current[x + 3] != 0 &&
-                        (current[x] | current[x + 1] | current[x + 2]) != 0,
+                        Math.Max(current[x],
+                            Math.Max(current[x + 1], current[x + 2])) > threshold,
                     _ => false
                 };
                 if (visible) nonBlack++;
@@ -120,7 +154,7 @@ internal static class PngInspector
             (previous, current) = (current, previous);
         }
 
-        return nonBlack / (double)checked((long)width * height);
+        return nonBlack / (double)checked((long)(right - left) * (bottom - top));
     }
 
     private static void Unfilter(byte[] row, byte[] previous, int bytesPerPixel, byte filter)

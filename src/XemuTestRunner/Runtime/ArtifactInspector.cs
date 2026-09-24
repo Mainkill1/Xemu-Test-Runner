@@ -92,11 +92,15 @@ internal static class ArtifactInspector
                     return new(false, "PNG exceeds the 64 MiB image evaluation limit.");
                 file.Position = 0;
                 var actualRatio = await PngInspector.MeasureNonBlackPixelRatioAsync(
-                    file, cancellationToken).ConfigureAwait(false);
+                    file, requirement.ImageRegion,
+                    requirement.NonBlackPixelThreshold,
+                    cancellationToken).ConfigureAwait(false);
                 if (actualRatio < minimumRatio)
                 {
+                    var target = requirement.ImageRegion is null ? "PNG" : "PNG region";
                     return new(false,
-                        $"PNG has {actualRatio:P3} non-black pixels; expected at least {minimumRatio:P3}.");
+                        $"{target} has {actualRatio:P3} non-black pixels above RGB threshold " +
+                        $"{requirement.NonBlackPixelThreshold}; expected at least {minimumRatio:P3}.");
                 }
             }
 

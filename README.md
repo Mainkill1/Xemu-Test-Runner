@@ -70,6 +70,7 @@ A completed or archived process is not necessarily correct. Execution, correctne
 | Named configs, application uploads and explicit queue requests | [Requested tests](docs/REQUESTED-TESTS.md) |
 | Saved hash results, comparison keys and baseline lifetime | [Hash results](docs/HASH-RESULTS.md) |
 | Automatic guest HDD extraction and A/B statistics | [Guest results](docs/GUEST-HDD-RESULTS.md) |
+| Gameplay image regions, thresholds, and Deck capture limits | [Trustworthy experiments](docs/TRUSTWORTHY-EXPERIMENTS.md) and [Steam Deck](docs/STEAM_DECK.md) |
 | Draft/upload/validate/submit API | [Agent API](docs/AGENT-API.md) |
 | Lightweight job/assessment observations | [Observations](docs/AGENT-OBSERVATIONS.md) |
 | Original pinned package definitions/reuse | [Test library](docs/AGENT-TEST-LIBRARY.md) |
