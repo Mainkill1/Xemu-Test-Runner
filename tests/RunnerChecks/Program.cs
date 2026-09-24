@@ -210,6 +210,48 @@ try
             "An explicitly correctness-scoped screenshot stopped gating correctness.");
     });
 
+    await Check("screenshot context relates guest progress to the last controller input", async () =>
+    {
+        var directory = Path.Combine(root, "screenshot-input-context");
+        Directory.CreateDirectory(directory);
+        var progress = Path.Combine(directory, "guest-frames.log");
+        await File.WriteAllTextAsync(progress,
+            "timestamp_us=1000000 frame=100 delta_us=16667\n");
+        var context = new XemuTestRunner.Control.ScreenshotDiagnosticContext(directory);
+        var inputBefore = context.SampleGuest();
+        var inputStart = Stopwatch.GetTimestamp();
+        await Task.Delay(2);
+        await File.AppendAllTextAsync(progress,
+            "timestamp_us=1100000 frame=106 delta_us=16667\n");
+        var inputEnd = Stopwatch.GetTimestamp();
+        var inputAfter = context.SampleGuest();
+        context.RecordInput("A", 100, inputStart, inputEnd, inputBefore, inputAfter);
+
+        await File.AppendAllTextAsync(progress,
+            "timestamp_us=1300000 frame=118 delta_us=16667\n");
+        var captureGuest = context.SampleGuest();
+        var captureStart = Stopwatch.GetTimestamp();
+        var document = context.BuildScreenshot(
+            "screenshots/frame.png",
+            "diagnostic",
+            true,
+            "qmp",
+            captureStart,
+            captureStart,
+            captureGuest,
+            captureGuest,
+            null);
+
+        Assert(document.LastInput?.Button == "A",
+            "Screenshot context lost the last controller input.");
+        Assert(document.SinceLastInput?.GuestFrames == 12,
+            "Screenshot context did not calculate guest-frame distance from the last input.");
+        Assert(document.SinceLastInput?.GuestUs == 200000,
+            "Screenshot context did not calculate guest-time distance from the last input.");
+        Assert(document.SinceLastInput?.HostMs is >= 0,
+            "Screenshot context did not retain host-time distance from the last input.");
+    });
+
     await Check("workspace lease excludes a second owner and can be reacquired", () =>
     {
         var workspace = Path.Combine(root, "lease");

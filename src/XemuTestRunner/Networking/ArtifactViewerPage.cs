@@ -44,10 +44,12 @@ function contextField(label,value){const box=document.createElement('div'),stron
 function guestText(point){if(!point)return 'Unavailable';return 'frame '+Number(point.frame).toLocaleString()+' · guest '+twoDecimals(Number(point.timestampUs)/1e6)+' s';}
 async function loadImageContext(selected,signal){
  try{
-  const response=await fetch(selected.url+'.context.json',{cache:'no-store',redirect:'error',signal});
+  const response=await fetch(selected.url+'.context.json',{cache:'no-store',redirect:'error',signal,headers:{Range:'bytes=0-65536'}});
   if(response.status===404)return;
   if(!response.ok)return;
-  const raw=await response.text();if(raw.length>65536)return;
+  const preview=await boundedRead(response,65536);
+  if(preview.bytes.length>65536||!preview.ended&&response.status!==206)return;
+  const raw=new TextDecoder('utf-8').decode(preview.bytes);
   const value=JSON.parse(raw),panel=$('imageContext');panel.replaceChildren();
   panel.append(contextField('Purpose',(value.purpose||'diagnostic').replace(/^./,c=>c.toUpperCase())));
   panel.append(contextField('Segment',value.segment||'None'));
