@@ -28,9 +28,12 @@ internal sealed partial class AgentJobStore
     {
         var path = RequestedPath(request.Id);
         if (request.Id == request.ApplicationJobId) throw new InvalidDataException("Test request and application need distinct IDs.");
-        _ = ReadTest(request.TestId, request.Revision);
+        var baked = ReadTest(request.TestId, request.Revision);
         var app = ReadDocument(request.ApplicationJobId);
         RequireStableSource(Locate(request.ApplicationJobId).State);
+        // Reject a misleading selection before it is saved or started. Recheck
+        // during materialization as persisted requests may predate this guard.
+        ValidateApplicationPayload(baked.Definition, app.Request);
         request = request with { Revision = request.Revision.ToLowerInvariant() };
         var identity = HashJson(request);
         lock (_requestedGate)
@@ -57,8 +60,6 @@ internal sealed partial class AgentJobStore
         var value = ReadJson<RequestedTest>(path);
         if (value.Request is null || value.Request.Id != id || value.Identity != HashJson(value.Request))
             throw new InvalidDataException("Test request identity is invalid.");
-        // Only already-authorized requests are reconciled. An ordinary upload
-        // cannot acquire execution intent from an unrelated package location.
         if (value.StartRequestedUtc is null || value.State == "cancelled") return value;
         var location = Locate(id);
         if (location.State is "queued" or "testing" or "tested")
@@ -81,6 +82,7 @@ internal sealed partial class AgentJobStore
         applicationJobId = value.Request.ApplicationJobId, value.RunId,
         startRequested = value.StartRequestedUtc is not null, value.CreatedUtc, value.StartRequestedUtc,
         value.ErrorCode, value.Error,
+        application = "/api/v1/applications/" + Uri.EscapeDataString(value.Request.ApplicationJobId),
         job = File.Exists(System.IO.Path.Combine(Home(value.Request.Id), "request.json")) ? Url(value.Request.Id) + "?view=summary" : null,
         result = value.RunId is null ? null : "/api/v1/runs/" + Uri.EscapeDataString(value.RunId) + "?view=summary"
     };
@@ -95,8 +97,7 @@ internal sealed partial class AgentJobStore
     {
         if (!Directory.Exists(RequestedRoot)) return [];
         RejectLinkedDirectory(RequestedRoot);
-        return Directory.EnumerateFiles(RequestedRoot, "*.json")
-            .Select(path => ReadRequestedTest(System.IO.Path.GetFileNameWithoutExtension(path))).ToArray();
+        return Directory.EnumerateFiles(RequestedRoot, "*.json").Select(path => ReadRequestedTest(System.IO.Path.GetFileNameWithoutExtension(path))).ToArray();
     }
 
     public RequestedTest RequestTestStart(string id)
@@ -131,8 +132,7 @@ internal sealed partial class AgentJobStore
         RequestedTest? next;
         lock (_requestedGate)
         {
-            next = ReadRequestedTests().Where(value => value.StartRequestedUtc is not null &&
-                    value.State is "queued" or "preparing" or "waitingForUpload")
+            next = ReadRequestedTests().Where(value => value.StartRequestedUtc is not null && value.State is "queued" or "preparing" or "waitingForUpload")
                 .OrderBy(value => value.StartRequestedUtc).ThenBy(value => value.Request.Id, StringComparer.Ordinal).FirstOrDefault();
             if (next is null || !_preparingRequests.Add(next.Request.Id)) return;
             AtomicJson.Write(RequestedPath(next.Request.Id), next with { State = "preparing" });
@@ -151,15 +151,12 @@ internal sealed partial class AgentJobStore
                 await Task.Delay(50, ct).ConfigureAwait(false);
                 operation = GetOperation(next.Request.Id) ?? throw new InvalidDataException("Missing submission receipt.");
             }
-            if (operation.State != "completed")
-                throw new InvalidDataException(operation.Error ?? "Submission failed.");
+            if (operation.State != "completed") throw new InvalidDataException(operation.Error ?? "Submission failed.");
             SaveRequestedState(next, "queuedForExecution");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or ArgumentException or AgentRequestException)
         {
-            // Publication wins over a lost receipt. Never retry an executable
-            // attempt merely because a metadata write was interrupted.
             if (Locate(next.Request.Id).State is "queued" or "testing" or "tested") SaveRequestedState(next, "queuedForExecution");
             else SaveRequestedState(next, "failed", error is AgentRequestException request ? request.Code : "test_preparation_failed", error.Message);
         }
@@ -168,8 +165,7 @@ internal sealed partial class AgentJobStore
 
     private void SaveRequestedState(RequestedTest request, string state, string? code = null, string? error = null)
     {
-        lock (_requestedGate)
-            AtomicJson.Write(RequestedPath(request.Request.Id), request with { State = state, ErrorCode = code, Error = error });
+        lock (_requestedGate) AtomicJson.Write(RequestedPath(request.Request.Id), request with { State = state, ErrorCode = code, Error = error });
     }
 
     private async Task<bool> MaterializeRequestedTestAsync(RequestedTest request, CancellationToken ct)
@@ -181,6 +177,7 @@ internal sealed partial class AgentJobStore
         using var assetLease = definition.SourceJobId == input.ApplicationJobId ? null : Reserve(definition.SourceJobId);
         var application = ReadDocument(input.ApplicationJobId);
         if (application.CreationHash != request.ApplicationIdentity) throw new InvalidDataException("Application identity changed.");
+        ValidateApplicationPayload(definition, application.Request);
         var applicationLocation = Locate(input.ApplicationJobId);
         var assetLocation = Locate(definition.SourceJobId);
         RequireStableSource(applicationLocation.State);
@@ -205,13 +202,13 @@ internal sealed partial class AgentJobStore
             var status = _uploads.GetStatus(copy.Source);
             if (!status.Complete || status.Partial || status.Length != copy.File.Length) return false;
         }
-        var executableFile = copies.Single(copy => copy.File.Path == executable).File;
-        job.ExpectedExecutableSha256 = executableFile.Sha256;
+        job.ExpectedExecutableSha256 = copies.Single(copy => copy.File.Path == executable).File.Sha256;
         foreach (var identity in job.Inputs)
         {
             var path = RelativeInput(assetLocation.Package, identity.Path);
             if (definition.BuildFiles.Contains(path, StringComparer.Ordinal)) identity.ExpectedSha256 = copies.Single(copy => copy.File.Path == path).File.Sha256;
         }
+        PinEmulatorInput(job, copies.Select(copy => copy.File).ToArray());
         Create(new AgentJobRequest(input.Id, job, copies.Select(copy => copy.File).OrderBy(file => file.Path, StringComparer.Ordinal).ToArray()));
         if (Locate(input.Id).State != "draft") return true;
         using var targetLease = Reserve(input.Id);
@@ -221,10 +218,12 @@ internal sealed partial class AgentJobStore
             ct.ThrowIfCancellationRequested();
             await using var source = new FileStream(copy.Source, FileMode.Open, FileAccess.Read, FileShare.Read,
                 _bufferBytes, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            var path = ResolveFile(target, copy.File.Path);
-            await _uploads.ReceiveAsync(source, path, copy.File.Length, null, copy.File.Sha256, null, _bufferBytes, ct).ConfigureAwait(false);
+            await _uploads.ReceiveAsync(source, ResolveFile(target, copy.File.Path), copy.File.Length, null, copy.File.Sha256, null, _bufferBytes, ct).ConfigureAwait(false);
             if (OperatingSystem.IsLinux() && copy.File.Executable)
+            {
+                var path = ResolveFile(target, copy.File.Path);
                 File.SetUnixFileMode(path, File.GetUnixFileMode(path) | UnixFileMode.UserExecute);
+            }
         }
         return true;
     }
