@@ -89,7 +89,7 @@ internal static class DiskAssetApiChecks
                 job = new { id = "legacy-seed", executable = "xemu.bin", timeoutSeconds = 10 },
                 files = new[]
                 {
-                    new { path = "xemu.bin", length = 7, sha256 = Digest("fixture"), executable = true },
+                    new { path = "xemu.bin", length = 7L, sha256 = Digest("fixture"), executable = true },
                     new { path = "seeds/xbox_hdd.qcow2", length = bytes.LongLength, sha256 = sha, executable = false }
                 }
             });
