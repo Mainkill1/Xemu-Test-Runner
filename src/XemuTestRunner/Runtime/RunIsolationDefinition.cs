@@ -3,6 +3,14 @@ using System.Text.Json.Serialization;
 namespace XemuTestRunner.Runtime;
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed class ReadOnlyAssetDefinition
+{
+    public string Field { get; set; } = "";
+    public string AssetId { get; set; } = "";
+    public string ExpectedSha256 { get; set; } = "";
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class RunIsolationDefinition : IJsonOnDeserialized
 {
     public string CacheMode { get; set; } = "cold";
@@ -15,33 +23,49 @@ public sealed class RunIsolationDefinition : IJsonOnDeserialized
     public int MaximumFiles { get; set; } = 4096;
     public long MaximumBytes { get; set; } = 256L * 1024 * 1024;
     public int DeadlineSeconds { get; set; } = 15;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<ReadOnlyAssetDefinition>? ReadOnlyAssets { get; set; }
 
     void IJsonOnDeserialized.OnDeserialized() => Validate();
 
     public void Validate()
     {
-        if (CacheMode is not ("cold" or "seeded" or "inherited"))
-            throw new InvalidDataException("Isolation.CacheMode must be cold, seeded or inherited.");
-        if (DriverCache is not ("uncontrolled" or "mesa" or "nvidia-gl"))
-            throw new InvalidDataException("Isolation.DriverCache must be uncontrolled, mesa or nvidia-gl.");
+        if (CacheMode is not ("cold" or "seeded" or "inherited")) throw new InvalidDataException("Isolation.CacheMode must be cold, seeded or inherited.");
+        if (DriverCache is not ("uncontrolled" or "mesa" or "nvidia-gl")) throw new InvalidDataException("Isolation.DriverCache must be uncontrolled, mesa or nvidia-gl.");
         if (CacheMode == "seeded")
         {
-            if (string.IsNullOrWhiteSpace(SeedDirectory) || Path.IsPathRooted(SeedDirectory) ||
-                SeedDirectory.Contains('\\') || SeedDirectory.Contains(':') ||
-                SeedDirectory.Split('/').Any(part => part is "" or "." or "..") ||
-                SeedSha256 is null || SeedSha256.Length != 64 || !SeedSha256.All(Uri.IsHexDigit))
+            if (string.IsNullOrWhiteSpace(SeedDirectory) || Path.IsPathRooted(SeedDirectory) || SeedDirectory.Contains('\\') || SeedDirectory.Contains(':') ||
+                SeedDirectory.Split('/').Any(part => part is "" or "." or "..") || SeedSha256 is null || SeedSha256.Length != 64 || !SeedSha256.All(Uri.IsHexDigit))
                 throw new InvalidDataException("Seeded cache needs a package-relative SeedDirectory and full SeedSha256 tree identity.");
         }
-        else if (SeedDirectory is not null || SeedSha256 is not null)
-            throw new InvalidDataException("Cache seed fields are only valid with CacheMode=seeded.");
+        else if (SeedDirectory is not null || SeedSha256 is not null) throw new InvalidDataException("Cache seed fields are only valid with CacheMode=seeded.");
         if (MaximumFiles is < 1 or > 16384 || MaximumBytes is < 1 or > 2147483648L || DeadlineSeconds is < 1 or > 60)
             throw new InvalidDataException("Isolation bounds: 1..16384 files, 1..2147483648 bytes, 1..60 seconds.");
+        if (ReadOnlyAssets is not null)
+        {
+            if (ReadOnlyAssets.Count is < 1 or > 3 || ReadOnlyAssets.Any(asset => asset is null) ||
+                ReadOnlyAssets.Select(asset => asset.Field).Distinct(StringComparer.Ordinal).Count() != ReadOnlyAssets.Count)
+                throw new InvalidDataException("ReadOnlyAssets requires 1..3 distinct input fields.");
+            foreach (var asset in ReadOnlyAssets)
+                if (asset.Field is not ("bootrom_path" or "flashrom_path" or "dvd_path") || !DiskAssetCatalog.IsValidId(asset.AssetId) ||
+                    asset.ExpectedSha256 is null || asset.ExpectedSha256.Length != 64 || !asset.ExpectedSha256.All(Uri.IsHexDigit))
+                    throw new InvalidDataException("ReadOnlyAssets must pin a bootrom_path, flashrom_path or dvd_path catalog ID and full SHA-256. HDD/EEPROM must remain private.");
+        }
     }
 }
 
 public sealed record RunStateFile(string Path, long Bytes, string Sha256);
-public sealed record RunStateSnapshot(bool Complete, string TreeSha256, long Bytes,
-    IReadOnlyList<RunStateFile> Files, IReadOnlyList<string> Issues);
+public sealed record RunStateSnapshot(bool Complete, string TreeSha256, long Bytes, IReadOnlyList<RunStateFile> Files, IReadOnlyList<string> Issues);
+public sealed class ReadOnlyAssetReport
+{
+    public string Field { get; set; } = "";
+    public string AssetId { get; set; } = "";
+    public string Path { get; set; } = "";
+    public long Bytes { get; set; }
+    public string ExpectedSha256 { get; set; } = "";
+    public string BeforeSha256 { get; set; } = "";
+    public string? AfterSha256 { get; set; }
+}
 
 public sealed class RunStorageReport
 {
@@ -70,6 +94,8 @@ public sealed class RunStorageReport
     public List<string> Uncontrolled { get; set; } = ["os-page-cache", "driver-cache"];
     public List<string> Issues { get; set; } = [];
     public IReadOnlyList<RuntimeFileMaterialization> RuntimeSeeds { get; set; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<ReadOnlyAssetReport>? ReadOnlyAssets { get; set; }
     public Dictionary<string, string> StoragePaths { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> CacheEnvironment { get; set; } = new(StringComparer.Ordinal);
     public List<string> Limitations { get; set; } = [
