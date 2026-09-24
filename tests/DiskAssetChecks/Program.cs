@@ -128,6 +128,31 @@ try
         Require((document.RootElement.GetProperty("detail").GetString() ?? "").Contains("SHA-256", StringComparison.OrdinalIgnoreCase), "Hash failure is not visible.");
     });
 
+    await Check("startup refuses a cleanup receipt whose run ID does not match its result directory", async () =>
+    {
+        var fixture = Path.Combine(root, "forged-recovery");
+        var (config, paths) = await SetupAsync(fixture);
+        var otherRuntime = Path.Combine(paths.Workspace, "Runtime", "other-run");
+        Directory.CreateDirectory(otherRuntime);
+        var disk = Path.Combine(otherRuntime, "xbox_hdd.qcow2");
+        await File.WriteAllTextAsync(disk, "must-survive");
+        var forgedResult = Path.Combine(paths.Results, "forged-run");
+        Directory.CreateDirectory(forgedResult);
+        await File.WriteAllTextAsync(Path.Combine(forgedResult, "runtime-cleanup.json"), JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1,
+            runId = "other-run",
+            state = "pending",
+            targetStopped = true,
+            evidenceFinalized = true,
+            runtimeDirectory = otherRuntime,
+            files = new[] { new { assetId = "xiso-empty-v1", path = "xbox_hdd.qcow2", retention = "deleteAfterEvidence", deleted = false } }
+        }, ConfigLoader.JsonOptions));
+        var engine = new RunnerEngine(config, paths);
+        await engine.RunAsync(once: true, CancellationToken.None);
+        Require(File.Exists(disk), "A receipt in one result directory deleted another run's runtime disk.");
+    });
+
     await Check("startup retries only an authorized pending transient cleanup", async () =>
     {
         var fixture = Path.Combine(root, "recovery");
@@ -160,7 +185,7 @@ finally
     try { Directory.Delete(root, true); } catch { }
 }
 
-Console.WriteLine($"Disk asset checks: {4 - failures}/4 passed.");
+Console.WriteLine($"Disk asset checks: {5 - failures}/5 passed.");
 return failures == 0 ? 0 : 1;
 
 async Task<(RunnerConfig Config, RunnerPaths Paths)> SetupAsync(string fixture)
