@@ -43,10 +43,17 @@ public sealed class WorkloadContract
     public List<ReportedMetricDefinition> ReportedMetrics { get; set; } = [];
     public int MinimumMetricSamples { get; set; }
     public bool RequirePlanCompletion { get; set; } = true;
-
-    // Omitting null preserves canonical serialization of previously baked tests.
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public GuestHddResultsDefinition? GuestHddResults { get; set; }
+
+    private PerformanceAnalysisDefinition? _analysis;
+    // Do not add serialized defaults to existing immutable test revisions.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PerformanceAnalysisDefinition? Analysis
+    {
+        get => _analysis;
+        set { value?.Validate(); _analysis = value; }
+    }
 }
 
 public sealed class ArtifactCheckDefinition
@@ -104,7 +111,6 @@ public sealed class OperationPolicyDefinition
     public bool? AllowPauseResume { get; set; }
     public bool? AllowDiagnostics { get; set; }
     public bool? AllowBulkTransfers { get; set; }
-
     [JsonIgnore]
     public bool IsBenchmark => Mode.Equals("benchmark", StringComparison.OrdinalIgnoreCase);
     public bool PreviewAllowed => AllowPreview ?? !IsBenchmark;

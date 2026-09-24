@@ -26,15 +26,19 @@ internal sealed partial class AgentJobStore
             throw Conflict("run_not_archived", "Only a finalized archived API-owned attempt can be indexed.", "Wait for its current owner to archive it. Do not index a running or held result.");
         var source = ReadDocument(jobId);
         var job = JobDefinition.LoadPackage(location.Package);
-        var sha = BuildResultStore.Sha(Text(result, "executableSha256"));
+        // Launch evidence continues to identify the actual launched program.
+        // Build history may use a separately verified native emulator payload.
+        var launchHash = BuildResultStore.Sha(Text(result, "executableSha256"));
         var exe = RelativeInput(location.Package, job.Executable);
         var declaration = source.Request.Files.SingleOrDefault(file => file.Path == exe)
             ?? throw new InvalidDataException("Executable is missing from its immutable manifest.");
-        if (!sha.Equals(declaration.Sha256, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Result executable hash differs from the declared build.");
+        if (!launchHash.Equals(declaration.Sha256, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Result executable hash differs from the declared launcher.");
         var validation = Validation(jobId);
         var input = BuildResultStore.Read<JsonElement>(catalog.Resolve(runId, "input-manifest.json"));
-        if (Text(input, "JobId") != jobId || !sha.Equals(Text(input, "ExecutableSha256"), StringComparison.OrdinalIgnoreCase))
+        if (Text(input, "JobId") != jobId || !launchHash.Equals(Text(input, "ExecutableSha256"), StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Run input identity does not match the result.");
+        var payload = EmulatorPayloadPath(job, source.Request.Files);
+        var buildHash = VerifiedEmulatorHash(job, source.Request.Files, input, launchHash);
         var planBytes = File.ReadAllBytes(Path.Combine(location.Package, "job.json"));
         if (Convert.ToHexString(SHA256.HashData(planBytes)).ToLowerInvariant() != Text(input, "JobManifestSha256").ToLowerInvariant())
             throw new InvalidDataException("Archived job configuration differs from the executed configuration.");
@@ -42,7 +46,7 @@ internal sealed partial class AgentJobStore
         if (!assessment.Available || assessment.Outcome is null) throw new InvalidDataException("Cannot index an unavailable or malformed assessment: " + assessment.Code);
         var outcome = assessment.Outcome;
         var issues = new List<string>();
-        if (validation?.Passed != true || !sha.Equals(validation.ExecutableSha256, StringComparison.OrdinalIgnoreCase)) issues.Add("payload_validation_missing");
+        if (validation?.Passed != true || !launchHash.Equals(validation.ExecutableSha256, StringComparison.OrdinalIgnoreCase)) issues.Add("payload_validation_missing");
         if (outcome.Execution != "completed" || outcome.Correctness != "passed" || outcome.Evidence != "complete" || outcome.Comparison != "eligible")
             issues.Add("assessment_ineligible");
         RunStorageReport? storage = null;
@@ -52,14 +56,11 @@ internal sealed partial class AgentJobStore
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or JsonException) { issues.Add("state_evidence_invalid"); }
             if (storage?.ComparisonReady != true) issues.Add("state_not_qualified");
         }
-        else if (job.Operations.IsBenchmark && File.Exists(catalog.Resolve(runId, "diagnostics/run-state/report.json")))
-            issues.Add("benchmark_state_unmanaged");
+        else if (job.Operations.IsBenchmark && File.Exists(catalog.Resolve(runId, "diagnostics/run-state/report.json"))) issues.Add("benchmark_state_unmanaged");
         var metrics = new List<BuildMetric>();
         var keys = new HashSet<(string, string, string)>();
         if (result.TryGetProperty("workload", out var workload) && workload.TryGetProperty("Measurements", out var measurements) && measurements.ValueKind == JsonValueKind.Array)
         {
-            // Guest suites expose several statistics per leaf. Keep a real
-            // bound, but do not truncate a complete 149-record guest workload.
             if (measurements.GetArrayLength() > 4096) throw new InvalidDataException("Too many reported metrics (maximum 4096).");
             foreach (var item in measurements.EnumerateArray())
             {
@@ -83,13 +84,14 @@ internal sealed partial class AgentJobStore
             intervalMs = hasMonitoring && monitoring.TryGetProperty("intervalMs", out var interval) ? (int?)interval.GetInt32() : null,
             gpuProviders = hasMonitoring && monitoring.TryGetProperty("gpuProviders", out var providers) ? providers : JsonSerializer.SerializeToElement(Array.Empty<string>()) });
         var tag = job.Tags.SingleOrDefault(value => value.StartsWith("test-definition:", StringComparison.Ordinal));
-        IReadOnlyList<string> buildPaths = [exe];
+        IReadOnlyList<string> buildPaths = DefaultBuildSlots(job, source.Request.Files);
         var testLabel = job.Arguments.FirstOrDefault() ?? "custom";
         if (tag is not null)
         {
             var components = tag["test-definition:".Length..].Split('@');
             if (components.Length != 2) throw new InvalidDataException("Invalid test provenance.");
             buildPaths = ReadTest(components[0], components[1]).Definition.BuildFiles;
+            RequireEmulatorBuildSlot(job, source.Request.Files, buildPaths);
             testLabel = components[0];
         }
         var buildKey = HashJson(source.Request.Files.Where(file => buildPaths.Contains(file.Path, StringComparer.Ordinal))
@@ -105,8 +107,10 @@ internal sealed partial class AgentJobStore
         job.Environment = job.Environment.OrderBy(item => item.Key, StringComparer.Ordinal).ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
         var testKey = HashJson(new { job, fixedFiles = source.Request.Files.Where(file => !buildPaths.Contains(file.Path, StringComparer.Ordinal))
             .OrderBy(file => file.Path, StringComparer.Ordinal).Select(file => new { file.Path, file.Length, sha256 = file.Sha256.ToLowerInvariant() }).ToArray() });
+        // A launcher change is a procedure change, not a free native-build factor.
+        if (payload != exe) testKey = HashJson(new { procedure = testKey, launchSha256 = launchHash });
         testKey = RunStateQualification.ComparisonKey(testKey, storage, job.RuntimeState.Isolation is not null);
-        var record = new BuildRunRecord(runId, sha, testKey, environmentKey, buildKey, testLabel, outcome, issues.Count == 0,
+        var record = new BuildRunRecord(runId, buildHash, testKey, environmentKey, buildKey, testLabel, outcome, issues.Count == 0,
             issues.Distinct().ToArray(), metrics.OrderBy(metric => metric.Name, StringComparer.Ordinal).ThenBy(metric => metric.Unit, StringComparer.Ordinal).ToArray(),
             "/api/v1/runs/" + Uri.EscapeDataString(runId) + "/artifacts/metrics.csv");
         BuildResults.Save(record);
