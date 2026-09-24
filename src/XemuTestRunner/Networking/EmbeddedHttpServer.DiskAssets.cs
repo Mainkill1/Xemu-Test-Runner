@@ -117,10 +117,13 @@ public sealed partial class EmbeddedHttpServer
         {
             if (!await EnsureOperationAllowedAsync(stream, "bulk_transfer", false, ct).ConfigureAwait(false))
                 return false;
-            if (catalog.IsReady(manifest))
-                throw new AgentRequestException(409, "disk_asset_immutable", "This asset content is already published.",
-                    "Create a new asset ID for different content.");
             var body = await ReadAgentBodyAsync<DiskAssetImportRequest>(stream, request, ct).ConfigureAwait(false);
+            if (catalog.IsReady(manifest))
+            {
+                await WriteAgentJsonAsync(stream, DiskAssetView(catalog, manifest), cancellationToken: ct)
+                    .ConfigureAwait(false);
+                return false;
+            }
             var sourceJob = AgentJobs.Get(body.SourceJobId);
             if (sourceJob.State is not ("draft" or "tested" or "cancelled"))
                 throw new AgentRequestException(409, "disk_asset_source_busy",
