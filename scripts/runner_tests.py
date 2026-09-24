@@ -36,15 +36,28 @@ def catalog(api: RunnerApi) -> list[dict]:
     return values
 
 
-def selection(api: RunnerApi, selectors: list[str]) -> list[tuple[str, str]]:
+def selection(api: RunnerApi, selectors: list[str], allow_short: bool = False) -> list[tuple[str, str]]:
     available = None
     selected = []
     for selector in selectors:
         if "@" in selector:
             name, revision = selector.rsplit("@", 1)
-            if len(revision) != 64 or any(ch not in "0123456789abcdefABCDEF" for ch in revision):
-                raise ClientError("revision_invalid", "Use a complete SHA-256 test revision after @.")
-            api.json("/api/v1/tests/" + urllib.parse.quote(name, safe="") + "/" + revision)
+            minimum = 12 if allow_short else 64
+            if not minimum <= len(revision) <= 64 or any(ch not in "0123456789abcdefABCDEF" for ch in revision):
+                raise ClientError("revision_invalid", "Use 12..64 hexadecimal characters after @ on a short-reference server; otherwise use the full SHA-256.")
+            revision = revision.lower()
+            encoded_name = urllib.parse.quote(name, safe="")
+            if len(revision) < 64:
+                # The server alone decides uniqueness. Persist and return its
+                # canonical digest, never the display handle or a first match.
+                resolved = api.json("/api/v1/test-configs/" + encoded_name + "/" + revision)
+                full = resolved.get("revision") if isinstance(resolved, dict) else None
+                if not isinstance(full, str) or len(full) != 64 or any(ch not in "0123456789abcdefABCDEF" for ch in full) or not full.lower().startswith(revision):
+                    raise ClientError("reference_resolution_invalid", "The server did not return a matching full test revision.", "Inspect the same named configuration; no selection was saved or started.")
+                revision = full.lower()
+            else:
+                # Preserve compatibility with older full-digest APIs.
+                api.json("/api/v1/tests/" + encoded_name + "/" + revision)
         else:
             available = catalog(api) if available is None else available
             matches = [item for item in available if item["id"] == selector]
@@ -104,7 +117,7 @@ def parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("list")
     show = sub.add_parser("show")
-    show.add_argument("test", help="NAME or NAME@REVISION")
+    show.add_argument("test", help="NAME or NAME@REVISION; short revisions require server support.")
     show.add_argument("--out", type=Path)
     config = sub.add_parser("config-upload")
     config.add_argument("name")
@@ -139,10 +152,11 @@ def execute(args) -> dict | str:
     info = api.json("/api/v1/help?topic=test-workflow")
     if not isinstance(info, dict) or "requestedTests" not in info.get("capabilities", []):
         raise ClientError("capability_missing", "The tester does not support explicit test requests.", "Deploy the matching runner version; upload is not replaced with submit.")
+    allow_short = "shortReferences" in info.get("capabilities", [])
     if command == "list":
         return {"tests": catalog(api)}
     if command == "show":
-        name, revision = selection(api, [args.test])[0]
+        name, revision = selection(api, [args.test], allow_short=allow_short)[0]
         value = api.json("/api/v1/test-configs/" + urllib.parse.quote(name, safe="") + "/" + revision)
         job = value["definition"]["job"]
         if args.out:
@@ -160,7 +174,7 @@ def execute(args) -> dict | str:
     if command in ("upload", "select"):
         if len(args.id) > 54 or len(args.tests) > 256:
             raise ClientError("selection_limit", "Use an ID up to 54 characters and at most 256 selected tests.")
-        selected = selection(api, args.tests)
+        selected = selection(api, args.tests, allow_short=allow_short)
         if args.start and not selected:
             raise ClientError("tests_required", "--start requires at least one explicitly selected test.")
         sha = upload_application(api, args.directory.resolve(), args.exe, args.id) if command == "upload" else None
