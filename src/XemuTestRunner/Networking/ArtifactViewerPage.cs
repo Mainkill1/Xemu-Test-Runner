@@ -54,7 +54,16 @@ async function boundedRead(response,limit){
 }
 async function fetchPreview(url,limit,signal){
  const response=await fetch(url,{cache:'no-store',redirect:'error',signal,headers:{Range:'bytes=0-'+limit}});
- if(!response.ok){const failure=await boundedRead(response,65536);const text=new TextDecoder().decode(failure.bytes);let message=text;try{const error=JSON.parse(text);message=(error.code||response.status)+': '+(error.error||error.hint||'Preview unavailable.');}catch{}throw Error(message.slice(0,2048));}
+ if(!response.ok){
+  const failure=await boundedRead(response,65536),text=new TextDecoder().decode(failure.bytes);let error=null;
+  try{error=JSON.parse(text);}catch{}
+  // The existing server rejects all ranges on an empty file. Its explicit
+  // fileLength=0 receipt is an empty preview, not a retry or download request.
+  if(response.status===416&&error?.code==='range_invalid'&&error.details?.fileLength===0)
+   return {bytes:new Uint8Array(),partial:false,total:0};
+  const message=error?(error.code||response.status)+': '+(error.error||error.hint||'Preview unavailable.'):text;
+  throw Error(message.slice(0,2048));
+ }
  const range=response.headers.get('Content-Range');let total=null,expected=null;
  if(response.status===206){const match=/^bytes 0-(\d+)\/(\d+)$/.exec(range||'');if(!match){await response.body?.cancel();throw Error('Invalid partial-content response; preview was not trusted.');}expected=Number(match[1])+1;total=Number(match[2]);if(expected>total||expected>limit+1){await response.body?.cancel();throw Error('Unexpected artifact range.');}}
  else{const length=response.headers.get('Content-Length');if(length!==null)total=expected=Number(length);}
@@ -137,10 +146,11 @@ function showCsv(){
   const parsed=parseCsv(sourceText,$('delimiter').value==='tab'?'\t':$('delimiter').value,sourcePartial);csvRows=parsed.rows;
   const header=$('headers').checked;const width=Math.max(0,...csvRows.map(row=>row.length));
   columnNames=Array.from({length:width},(_,i)=>header?(csvRows[0]?.[i]||'Column '+columnLetter(i)):'Column '+columnLetter(i));
-  gridRows=csvRows.slice(header?1:0).map((values,index)=>({values,index:index+(header?2:1)}));
+  const dataRows=csvRows.slice(header?1:0);
+  gridRows=dataRows.slice(0,MAX_ROWS).map((values,index)=>({values,index:index+(header?2:1)}));
   $('textPanel').hidden=true;$('csvPanel').hidden=false;pageIndex=0;sortColumn=-1;
   let message=baseMessage+' CSV grid: '+gridRows.length+' loaded data rows.';
-  if(parsed.limited)message+=' Partial row preview: row limit reached.';
+  if(parsed.limited||dataRows.length>MAX_ROWS)message+=' Partial row preview: row limit reached.';
   if(sourcePartial)message+=' Any unfinished trailing record was omitted.';
   if(gridRows.some(row=>row.values.length!==width))message+=' Uneven row widths; missing cells are displayed empty.';
   status(message);renderGrid();

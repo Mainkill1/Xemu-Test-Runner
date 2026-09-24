@@ -4,8 +4,10 @@ Artifact requests use the same ranged download URLs as production. Fixtures
 cover rendering, bounds, hostile content, original precision and explicit export.
 """
 from pathlib import Path
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import base64
 import re
+import threading
 import unittest
 from urllib.parse import quote, urlsplit
 from playwright.sync_api import sync_playwright
@@ -56,7 +58,6 @@ class ViewerChecks(unittest.TestCase):
                 value = request.request.headers.get('range')
                 if value and not ignore_range:
                     if not content:
-                        # Match the existing C# FileRange contract for size zero.
                         return request.fulfill(status=416, json={
                             'code':'range_invalid', 'error':'The requested byte range cannot be satisfied.',
                             'details': {'fileLength': 0}})
@@ -174,14 +175,50 @@ class ViewerChecks(unittest.TestCase):
         self.assertEqual(self.downloads, [])
 
     def test_original_download_is_explicit_and_byte_exact(self):
+        # Use real HTTP for Chromium's download subsystem, not route.fulfill.
+        # Intercepted downloads can bypass the page route and be cancelled.
         original = b'name,value\r\nexample,1.155700000000001\r\n'
-        self.open('metrics.csv', original)
-        self.assertEqual(self.downloads, [])
-        with self.page.expect_download() as pending:
-            self.page.locator('#download').click()
-        download = pending.value
-        self.assertEqual(Path(download.path()).read_bytes(), original)
-        self.assertEqual(len(self.downloads), 1)
+        document = embedded('ArtifactViewerPage.cs').encode()
+        requests = []
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+            def do_GET(self):
+                requests.append((self.path, self.headers.get('Range')))
+                if self.path.startswith('/results/view?'):
+                    body, content_type = document, 'text/html; charset=utf-8'
+                    self.send_response(200)
+                elif self.path == '/api/v1/runs/run-1/artifacts/metrics.csv':
+                    body, content_type = original, 'application/octet-stream'
+                    partial = self.headers.get('Range') is not None
+                    self.send_response(206 if partial else 200)
+                    if partial:
+                        self.send_header('Content-Range', f'bytes 0-{len(body)-1}/{len(body)}')
+                    self.send_header('Content-Disposition', 'attachment; filename="metrics.csv"')
+                else:
+                    self.send_error(404)
+                    return
+                self.send_header('Content-Type', content_type)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            self.page.goto(f'http://127.0.0.1:{server.server_port}/results/view?run=run-1&file=metrics.csv')
+            self.page.wait_for_selector('#grid tbody tr')
+            self.assertEqual(self.downloads, [])
+            with self.page.expect_download() as pending:
+                self.page.locator('#download').click()
+            download = pending.value
+            self.assertEqual(Path(download.path()).read_bytes(), original)
+            self.assertEqual(len(self.downloads), 1)
+            self.assertEqual(sum(path.endswith('/metrics.csv') and value is None for path, value in requests), 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=5)
 
     def test_traversal_is_rejected_before_an_artifact_read(self):
         self.open('../outside.json', '{}')
