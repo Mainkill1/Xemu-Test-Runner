@@ -5,12 +5,17 @@ internal static class AgentReferenceResolver
 {
     public const int MaximumEntries = 10000;
 
-    public static string Resolve(string? reference, IReadOnlyList<string> candidates)
+    public static string ValidateSyntax(string? reference)
     {
         if (reference is null || reference.Length is < 12 or > 64 || !reference.All(Uri.IsHexDigit))
             throw new AgentRequestException(400, "reference_invalid", "A reference must contain 12..64 hexadecimal characters.",
                 "Copy an unambiguous reference or the complete SHA-256 from the relevant catalog.");
-        reference = reference.ToLowerInvariant();
+        return reference.ToLowerInvariant();
+    }
+
+    public static string Resolve(string? reference, IReadOnlyList<string> candidates)
+    {
+        reference = ValidateSyntax(reference);
         var matches = candidates.Where(value => value.StartsWith(reference, StringComparison.Ordinal)).Take(2).ToArray();
         if (matches.Length == 0)
             throw new AgentRequestException(404, "reference_not_found", "That reference is not present in this catalog.",
@@ -63,10 +68,16 @@ internal static class AgentReferenceResolver
 internal sealed partial class AgentJobStore
 {
     private string BuildCatalogRoot => System.IO.Path.Combine(_paths.Results, ".build-results");
-    public string ResolveBuildReference(string? reference) => AgentReferenceResolver.Resolve(reference,
-        AgentReferenceResolver.Catalog(BuildCatalogRoot, true));
-    public string ResolveTestReference(string id, string? reference) => AgentReferenceResolver.Resolve(reference,
-        AgentReferenceResolver.Catalog(TestHome(id), false));
+    public string ResolveBuildReference(string? reference)
+    {
+        reference = AgentReferenceResolver.ValidateSyntax(reference);
+        return AgentReferenceResolver.Resolve(reference, AgentReferenceResolver.Catalog(BuildCatalogRoot, true));
+    }
+    public string ResolveTestReference(string id, string? reference)
+    {
+        reference = AgentReferenceResolver.ValidateSyntax(reference);
+        return AgentReferenceResolver.Resolve(reference, AgentReferenceResolver.Catalog(TestHome(id), false));
+    }
 
     public object ListBuilds(int offset, int limit)
     {

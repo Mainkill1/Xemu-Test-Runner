@@ -68,8 +68,12 @@ public sealed partial class EmbeddedHttpServer
             var format = GetQueryValue(request.Query, "format") ?? "json";
             if (format is not ("json" or "markdown" or "csv")) throw new InvalidDataException("format must be json, markdown or csv.");
             var a = GetQueryValue(request.Query, "A");
-            var b = AgentJobs.ResolveBuildReference(GetQueryValue(request.Query, "B"));
+            var b = AgentReferenceResolver.ValidateSyntax(GetQueryValue(request.Query, "B"));
+            // Reject malformed input on either side before looking up either
+            // catalog entry. A missing valid B must not mask an invalid A as 404.
+            if (a is not null) a = AgentReferenceResolver.ValidateSyntax(a);
             if (a is not null) a = AgentJobs.ResolveBuildReference(a);
+            b = AgentJobs.ResolveBuildReference(b);
             var result = AgentJobs.BuildResults.Compare(a, b, format == "csv");
             if (format == "json") await WriteAgentJsonAsync(stream, result, cancellationToken: ct).ConfigureAwait(false);
             else await WriteBuildTextAsync(stream, format == "csv" ? BuildResultFormatting.Csv(result) : BuildResultFormatting.Markdown(result), format, ct).ConfigureAwait(false);
