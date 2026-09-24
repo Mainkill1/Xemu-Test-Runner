@@ -1,86 +1,151 @@
 # Xemu Test Runner
 
-A foreground Windows/Linux .NET test appliance. One runner owns process execution, the queue, controls, telemetry and evidence. Agents operate the already-running tester over HTTP.
+Run repeatable xemu tests on a Windows or Linux tester over HTTP. The tester owns the queue, xemu process, measurements and evidence. Your agent uploads a build, chooses saved tests and reads the results.
 
-## Inspect the tests first
+**Upload does not start a test. Start explicitly. Wait until it finishes. Download raw evidence only when needed.**
 
-Open `/tests` on the tester for the configuration catalog, full JSON viewer/download, named config upload and explicit Start buttons. The test-focused Python client provides the same workflow:
+## Connect from the agent/build machine
+
+The tester must already be running; [operator setup](#operator-setup-on-the-tester) is separate from running tests remotely.
+
+Use Python 3.10 or later. No Python packages need installing. Keep these files from the **same checkout** together in `scripts/`:
+
+```text
+runner_tests.py          Commands for normal test operation
+runner_transport.py      HTTP and resumable file transfers
+runner_test_results.py   Result, comparison and diagnostic commands
+runner_wait.py           Quiet completion waiting and read reconnects
+```
+
+Set the tester address once. In PowerShell:
+
+```powershell
+$env:XEMU_RUNNER_URL = "http://tester:9368"
+```
+
+Or in a POSIX shell:
+
+```sh
+export XEMU_RUNNER_URL="http://tester:9368"
+```
+
+Run the examples below from the repository root. Global options such as `--url` and `--json` go **before** the command. `python scripts/runner_tests.py --help` lists commands; append `--help` to any command for its arguments.
+
+## Run a saved test
+
+### 1. Inspect what will run
+
+Open `/tests` on the tester for the browser catalog and configuration viewer, or use:
 
 ```sh
 python scripts/runner_tests.py list
+python scripts/runner_tests.py show smoke
+```
+
+`smoke` is an example: choose a name returned by your tester. When a name has multiple saved revisions, use `NAME@FULL_REVISION` to select one explicitly.
+
+### 2. Upload and select, without starting
+
+```sh
+python scripts/runner_tests.py upload ./candidate --exe xemu.exe --id build-149 --tests smoke
+```
+
+The directory contains the application and required build dependencies, not another full test plan or workload tree. The receipt includes the executable SHA-256 and selected request IDs, such as `build-149-t001`. One uploaded application can serve several tests.
+
+### 3. Start, then wait for completion
+
+```sh
+python scripts/runner_tests.py start build-149-t001
+python scripts/runner_tests.py wait build-149-t001
+```
+
+Start queues the request behind existing work. Wait follows the **same request with no overall time limit**, quietly reconnecting after transient connection failures. It prints the final assessment or a problem requiring attention. No timer or duration estimate is needed.
+
+For small progress replies instead of silence:
+
+```sh
+python scripts/runner_tests.py wait build-149-t001 --updates
+```
+
+`status` returns immediately. Waiting on an unstarted selection reports `start_required`; it never starts it. Interrupting the client does not cancel the tester. See [completion waiting](docs/COMPLETION-WAIT.md).
+
+To upload and explicitly authorize execution in one command, use `--start`:
+
+```sh
+python scripts/runner_tests.py upload ./candidate --exe xemu.exe --id build-150 --tests smoke --start
+```
+
+Reuse identical IDs and inputs after a lost response. Use new IDs for intentional new attempts. Multi-test starts are separate durable requests, not an atomic batch. New bulk uploads can be refused during a benchmark; already-staged work can still be queued.
+
+## Use the right identifier
+
+| Identifier | Where it comes from | Used for |
+| --- | --- | --- |
+| Test name + revision | `list` | Choosing an immutable configuration. |
+| Application ID | Your upload `--id`, e.g. `build-149` | Reusing the uploaded build with `select`. |
+| Test request ID | Upload/select receipt, e.g. `build-149-t001` | `start`, `status`, `wait`. |
+| Run ID | A started request's status/final reply | `diagnostics`, `state`, `csv`. |
+| Executable SHA-256 | Upload receipt | `result`, `baseline`, `compare`; filenames do not identify builds. |
+
+A **test revision hash** pins configuration. An **executable hash** identifies application bytes. They are not interchangeable.
+
+## Read results and compare builds
+
+Replace the uppercase placeholders with complete executable hashes:
+
+```sh
+python scripts/runner_tests.py result CANDIDATE_SHA256
+python scripts/runner_tests.py baseline KNOWN_GOOD_SHA256
+python scripts/runner_tests.py compare --b CANDIDATE_SHA256
+python scripts/runner_tests.py compare --a REFERENCE_SHA256 --b CANDIDATE_SHA256
+```
+
+The tester calculates the readable reports. Setting a baseline is an explicit write that freezes the currently indexed reference results; later runs do not move the pin. Omitting `--a` uses that baseline. No baseline is selected automatically.
+
+**Finished does not mean passed.** Check execution, correctness, evidence and comparison separately. Failed or incompatible attempts do not become speedup claims. Comparison tables end with direction-aware **Improvement %**; details are in [hash results](docs/HASH-RESULTS.md). Hash reports cover indexed archived attempts, so resolve indexing errors before claiming complete coverage.
+
+Raw data stays optional:
+
+```sh
+python scripts/runner_tests.py diagnostics RUN_ID
+python scripts/runner_tests.py state RUN_ID
+python scripts/runner_tests.py diagnostics RUN_ID --out diagnostics.zip
+python scripts/runner_tests.py csv RUN_ID ./metrics.csv
+```
+
+`diagnostics` reads a small crash/bundle report; only `--out` downloads its verified ZIP. A confirmed crash stays `crashed`, and other requested tests can proceed after ownership is released and the attempt is archived. Successful runs do not create failure-labeled screenshots.
+
+## Save configurations and reuse disks
+
+```sh
 python scripts/runner_tests.py show smoke --out smoke.json
 python scripts/runner_tests.py config-upload smoke-custom ./edited.json --assets seed-smoke
 ```
 
-Keep `runner_tests.py`, `runner_transport.py` and `runner_test_results.py` together on the agent/build machine. Python 3.10+ standard library only. Set `XEMU_RUNNER_URL` once, or pass global `--url http://tester:9368`. A bare test name must resolve to one revision; otherwise specify `NAME@FULL_REVISION`.
+Edit the downloaded configuration and save it under a new name. `seed-smoke` is an existing retained API package supplying the required assets. Saving never runs a test. [Requested tests](docs/REQUESTED-TESTS.md) explains configuration authoring and application reuse.
 
-Saving a configuration does not modify its source package and **never starts a test**. Asset source jobs supply the retained workloads/config/firmware/seeds. Each saved definition has an immutable content revision.
+Large HDDs belong in the [disk catalog](docs/DISK-ASSETS.md), not every test package. Managed runtime HDDs default to deletion **after confirmed exit and evidence collection**. Snapshot carriers are currently copied intact; small snapshot overlays are not implemented. [Guest HDD extraction](docs/GUEST-HDD-RESULTS.md) collects configured FATX results without downloading or mounting the disk.
 
-## Upload once; start only when requested
+Cache history is also test input. Use an explicit [run-state policy](docs/RUN-STATE.md); cold application caches do not mean cold driver or OS caches. Retain source assets needed by saved tests and run evidence needed by raw-download links.
 
-```sh
-python scripts/runner_tests.py upload ./candidate --exe xemu.exe --id build-149 --tests smoke smoke-custom
-python scripts/runner_tests.py start build-149-t001 build-149-t002
-```
+## Direct HTTP and deeper reference
 
-The upload command stores the application and selected configurations without execution. To explicitly authorize execution in that same command, add `--start`:
+Start with `GET /api/v1/health` for liveness and `GET /api/v1/agent?view=summary` for the deployed capabilities. Completion waits use `GET /api/v1/test-runs/{id}/wait` with no query parameters. Hash comparison uses `GET /api/v1/compare?A={hash}&B={hash}`.
 
-```sh
-python scripts/runner_tests.py upload ./candidate --exe xemu.exe --id build-150 --tests smoke --start
-python scripts/runner_tests.py status build-150-t001
-```
-
-An active test is not interrupted. Start requests are persisted and queued; preparation waits behind existing work before publishing to the established execution queue. Applications upload once and are reused across selected tests. Executable filenames can differ from the config's expected path; content hashes identify builds. Dependencies must still provide the declared build-slot paths.
-
-To select more tests against an already uploaded application, use `select APPLICATION_ID --id NEW_PREFIX --tests ...`; add `--start` only when execution is intended. A lost response is handled by inspecting/reusing the same IDs, not creating duplicate attempts. The multi-test helper stages every selection before starting them, but individual start requests are not an all-or-nothing transaction.
-
-Actual uploads still obey the active benchmark's transfer policy. Previously staged work can be queued while a benchmark runs; new bulk uploads may need to wait for the policy to permit them. No SSH fallback is used.
-
-## Results by executable hash
-
-The upload receipt includes its executable SHA-256. Finished API-owned attempts are indexed locally from canonical evidence at idle boundaries. Select a known measured reference explicitly:
-
-```sh
-python scripts/runner_tests.py baseline KNOWN_EXECUTABLE_SHA256
-python scripts/runner_tests.py result CANDIDATE_EXECUTABLE_SHA256
-python scripts/runner_tests.py compare --a REFERENCE_SHA256 --b CANDIDATE_SHA256
-python scripts/runner_tests.py csv RUN_ID ./raw-metrics.csv
-```
-
-Normal result output is a small readable report calculated by the tester, with the pinned baseline applied by default. Global `--json` returns structured output. Raw sampler CSV is a separate download; derived comparison CSV is available with `compare ... --format csv --out comparison.csv`.
-
-`GET /api/v1/compare?A=SHA&B=SHA` performs the comparison server-side. Omitting A uses the explicit baseline snapshot. Baselines do not drift when later runs of the same executable arrive. Different procedures/environments, failed repetitions, missing metrics and zero reference values do not become invented speedup claims. The displayed change is descriptive, not a statistical-significance claim.
-
-Reports include A/B medians, means, ranges and attempt counts, with **Improvement % as the final column** in each section and in comparison CSV. Positive means better for the declared metric direction; a runtime dropping from 100 to 80 is reported as +20% time reduction. JSON additionally provides sample standard deviations. Incomparable/neutral results have no invented improvement percentage.
-
-## Guest results inside the HDD
-
-A saved test can enable `Workload.GuestHddResults` to collect `xemu_perf_tests/results.txt` automatically from its private FATX HDD after confirmed process exit, before runtime cleanup. The runner reads only the configured path and its allocation chain; no mount, whole-disk conversion, SSH or agent-side HDD download is needed.
-
-Raw and self-contained QCOW2 v2/v3 images are supported. The test definition pins the partition geometry, clean runtime seed and expected guest result file. The adapter preserves original guest bytes, validates record IDs/work/checksums, and calculates per-leaf mean/median/min/max/p95. These metrics enter the same baseline/A/B API in separate XISO sections. Unsupported image features, stale seeds and partial/wrong guest output fail explicitly.
-
-Configure this once in the test library using [Guest HDD results](docs/GUEST-HDD-RESULTS.md). Uploading a candidate still does not start anything; the extraction is post-processing of an already-authorized execution. It is not a new guest completion detector.
-
-A completed or archived process is not necessarily correct. Execution, correctness, evidence and comparison remain separate. An unconfigured correctness contract is not a pass. The lower-level client retains `result JOB_ID --require correctness` and `--require eligible` for explicit exit-code gates.
-
-## Detailed protocols and operations
-
-| Topic | Reference |
+| Need | Reference |
 | --- | --- |
-| Shared Xbox HDD assets and transient runtime disks | [Disk assets](docs/DISK-ASSETS.md) |
-| Named configs, application uploads and explicit queue requests | [Requested tests](docs/REQUESTED-TESTS.md) |
-| Saved hash results, comparison keys and baseline lifetime | [Hash results](docs/HASH-RESULTS.md) |
-| Automatic guest HDD extraction and A/B statistics | [Guest results](docs/GUEST-HDD-RESULTS.md) |
-| Gameplay image regions, thresholds, and Deck capture limits | [Trustworthy experiments](docs/TRUSTWORTHY-EXPERIMENTS.md) and [Steam Deck](docs/STEAM_DECK.md) |
-| Draft/upload/validate/submit API | [Agent API](docs/AGENT-API.md) |
-| Lightweight job/assessment observations | [Observations](docs/AGENT-OBSERVATIONS.md) |
-| Original pinned package definitions/reuse | [Test library](docs/AGENT-TEST-LIBRARY.md) |
-| Paged evidence and incremental logs | [Evidence](docs/AGENT-EVIDENCE.md) |
-| Lower-level HTTP client | [Agent client](docs/AGENT-CLIENT.md) |
+| Understand or change the implementation | [Code guide](docs/CODE-GUIDE.md) |
+| Drafts, uploads, validation and submission | [Agent API](docs/AGENT-API.md) |
+| Small status replies and selected evidence | [Observations](docs/AGENT-OBSERVATIONS.md), [evidence](docs/AGENT-EVIDENCE.md) |
+| Crash collection and ZIP retention | [Crash reports](docs/CRASH-REPORTS.md) |
+| Correctness contracts and Linux capture limits | [Experiment contracts](docs/TRUSTWORTHY-EXPERIMENTS.md), [Steam Deck](docs/STEAM_DECK.md) |
+| Advanced client and initial package authoring | [Lower-level client](docs/AGENT-CLIENT.md), [test library](docs/AGENT-TEST-LIBRARY.md) |
 
-The old `runner_api.py run`, `submit`, `retry` and `submit-draft` commands remain **explicit execution commands**. Use `runner_tests.py upload` for upload-only operation. Keep retained definition source packages for reuse; the library is not an independent binary-retention service. Keep run evidence for raw CSV links even when normalized baseline records are retained separately.
+The lower-level `runner_api.py run`, `submit`, `retry` and `submit-draft` commands **authorize execution**. They are not substitutes for upload-only `runner_tests.py upload`.
 
-## Operator bootstrap on the tester
+## Operator setup on the tester
+
+From a source checkout with the .NET SDK selected by `global.json`:
 
 ```sh
 dotnet build src/XemuTestRunner/XemuTestRunner.csproj -c Release
@@ -89,15 +154,6 @@ dotnet run --project src/XemuTestRunner -- doctor
 dotnet run --project src/XemuTestRunner -- run --non-interactive
 ```
 
-Leave the foreground runner available. Installation/startup, stopped-machine recovery and upgrades remain operator tasks. Publish with `scripts/publish.ps1 -Rid win-x64` or `bash scripts/publish.sh linux-x64`. The listener defaults to port 9368, with no built-in authentication/TLS; use the trusted test network. The [operator guide](OPERATOR-GUIDE.md) retains local configuration, control and diagnostic reference.
+Leave the runner running. Installation, upgrades and stopped-machine recovery are operator tasks, not per-test agent steps. Publish with `scripts/publish.ps1 -Rid win-x64` or `bash scripts/publish.sh linux-x64`. The listener has no built-in authentication/TLS; restrict it to the trusted test network. See the [operator guide](OPERATOR-GUIDE.md).
 
-## Verification
-
-```sh
-dotnet run --project tests/RunnerChecks -c Release
-dotnet run --project tests/AgentChecks -c Release
-python -m unittest discover -s tests -p 'test_runner_api*.py' -v
-dotnet run --project tests/AgentChecks -c Release -- --client
-```
-
-CI fixtures cover protocol and calculation behavior on Windows/Linux. They do not prove native xemu/game/GPU correctness, large-LAN throughput or absence of intermittent filesystem failures. Review exact PR verification and unresolved findings before deployment.
+Development checks and where to add regression tests are in the [code guide](docs/CODE-GUIDE.md). CI fixtures verify software contracts; they are not real-game, GPU or large-transfer qualification.
