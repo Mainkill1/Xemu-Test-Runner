@@ -22,6 +22,10 @@ def respond(method, path, body, headers):
         return 200, {"items": [], "nextOffset": None, "storedBytes": 0}, {}
     if route == "/api/v1/disk-assets/shared":
         return 200, {"id": "shared", "kind": "xiso-seed", "ready": True}, {}
+    if route == "/api/v1/jobs/legacy":
+        return 200, {"files": [{"path": "seeds/xbox_hdd.qcow2", "length": 12, "sha256": "c" * 64}]}, {}
+    if route == "/api/v1/disk-assets/imported/import":
+        return 200, {"id": "imported", "kind": "xiso-seed", "ready": True, "sha256": "c" * 64}, {}
     if route == "/api/v1/disk-assets/shared/content" and method == "GET":
         return 200, {"complete": False, "partial": False, "length": 0}, {}
     if route == "/api/v1/disk-assets/shared/content" and method == "PUT":
@@ -47,6 +51,15 @@ class DiskAssetClientChecks(unittest.TestCase):
                             for method, path, _, _ in calls))
         self.assertFalse(any("/start" in path or "/submit" in path or "/test-runs" in path
                              for _, path, _, _ in calls))
+
+    def test_disk_import_uses_existing_job_declaration_without_downloading_content(self):
+        with fixture(respond) as (origin, calls):
+            result = self.run_client(origin, "disk-import", "imported", "--from-job", "legacy",
+                                     "--path", "seeds/xbox_hdd.qcow2", "--kind", "xiso-seed")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(any(path == "/api/v1/disk-assets/imported/import" for _, path, _, _ in calls))
+        self.assertFalse(any(method == "PUT" for method, _, _, _ in calls))
+        self.assertFalse(any("/artifacts/" in path or "/files/" in path for _, path, _, _ in calls))
 
     def test_disk_list_is_a_single_catalog_read(self):
         with fixture(respond) as (origin, calls):
