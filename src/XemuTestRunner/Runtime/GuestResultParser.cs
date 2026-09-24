@@ -40,8 +40,12 @@ internal static class GuestResultParser
             if (kind is not ("leaf" or "group")) throw new InvalidDataException("Unsupported guest record kind: " + kind);
             var baselineMetadata = Metadata(baseline);
             var candidateMetadata = Metadata(candidate);
-            var correct = FixedFields.All(field => baseline.TryGetProperty(field, out var a) && candidate.TryGetProperty(field, out var b) && Scalar(a) == Scalar(b));
+            var correct = FixedFields.All(field => baseline.TryGetProperty(field, out var a) && candidate.TryGetProperty(field, out var b) &&
+                Scalar(a) is { } expectedValue && expectedValue == Scalar(b));
             correct &= NoFailure(baseline) && NoFailure(candidate) && NoFailure(baselineMetadata) && NoFailure(candidateMetadata);
+            // A PASS elsewhere cannot replace a reference-required oracle at its
+            // original path. Encoded metadata is checked after decoding as well.
+            correct &= RequiredOutcomesMatch(baseline, candidate) && RequiredOutcomesMatch(baselineMetadata, candidateMetadata);
             var checkedHashes = 0;
             foreach (var field in HashFields)
             {
@@ -64,6 +68,12 @@ internal static class GuestResultParser
                 summaries.Add(new(id, kind, correct, 0, null, null, null, null, null));
                 continue;
             }
+            // Schema 1's absent annotations mean microseconds/lower-is-better.
+            // Explicit incompatible annotations must not be relabelled as us.
+            ValidateTiming(baseline);
+            ValidateTiming(candidate);
+            ValidateTiming(baselineMetadata);
+            ValidateTiming(candidateMetadata);
             if (!candidate.TryGetProperty("raw_results", out var samples) || samples.ValueKind != JsonValueKind.Array ||
                 !candidate.TryGetProperty("sample_count", out var declared) || !declared.TryGetInt32(out var count) ||
                 count < 1 || count > 262144 || count != samples.GetArrayLength() || (sampleBudget -= count) < 0)
@@ -147,17 +157,65 @@ internal static class GuestResultParser
     }
     private static bool IsFalse(JsonElement value, string name) => value.ValueKind == JsonValueKind.Object &&
         value.TryGetProperty(name, out var item) && item.ValueKind == JsonValueKind.False;
+
+    private static void ValidateTiming(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.Object) return;
+        if (value.TryGetProperty("unit", out var unit) &&
+            (unit.ValueKind != JsonValueKind.String || unit.GetString() is not ("us" or "microseconds")))
+            throw new InvalidDataException("Guest schema 1 timing unit must be microseconds.");
+        if (value.TryGetProperty("direction", out var direction) &&
+            (direction.ValueKind != JsonValueKind.String || direction.GetString() is not ("lower" or "lower_is_better")))
+            throw new InvalidDataException("Guest schema 1 timing direction must be lower-is-better.");
+    }
+
+    private static bool RequiredOutcomesMatch(JsonElement expected, JsonElement actual)
+    {
+        if (expected.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in expected.EnumerateObject())
+            {
+                JsonElement found = default;
+                var present = actual.ValueKind == JsonValueKind.Object && actual.TryGetProperty(property.Name, out found);
+                if (property.Name is "outcome" or "oracle_status")
+                {
+                    if (!present || !IsPass(property.Value) || !IsPass(found)) return false;
+                }
+                else if (!RequiredOutcomesMatch(property.Value, found)) return false;
+            }
+        }
+        else if (expected.ValueKind == JsonValueKind.Array)
+        {
+            var index = 0;
+            foreach (var item in expected.EnumerateArray())
+            {
+                var found = actual.ValueKind == JsonValueKind.Array && index < actual.GetArrayLength() ? actual[index] : default;
+                if (!RequiredOutcomesMatch(item, found)) return false;
+                index++;
+            }
+        }
+        return true;
+    }
+
+    private static bool IsPass(JsonElement value) => value.ValueKind == JsonValueKind.String &&
+        string.Equals(value.GetString(), "PASS", StringComparison.OrdinalIgnoreCase);
+
     private static bool NoFailure(JsonElement value)
     {
-        if (value.ValueKind != JsonValueKind.Object) return true;
-        foreach (var property in value.EnumerateObject())
+        if (value.ValueKind == JsonValueKind.Object)
         {
-            if (property.Name is "outcome" or "oracle_status")
+            foreach (var property in value.EnumerateObject())
             {
-                if (property.Value.ValueKind != JsonValueKind.String || !string.Equals(property.Value.GetString(), "PASS", StringComparison.OrdinalIgnoreCase)) return false;
+                if (property.Name is "outcome" or "oracle_status")
+                {
+                    if (!IsPass(property.Value)) return false;
+                }
+                if (!NoFailure(property.Value)) return false;
             }
-            if (property.Value.ValueKind == JsonValueKind.Object && !NoFailure(property.Value)) return false;
         }
+        else if (value.ValueKind == JsonValueKind.Array)
+            foreach (var item in value.EnumerateArray())
+                if (!NoFailure(item)) return false;
         return true;
     }
 }
