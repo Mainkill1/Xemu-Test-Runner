@@ -5,10 +5,9 @@ cover rendering, bounds, hostile content, original precision and explicit export
 """
 from pathlib import Path
 import base64
-import json
 import re
 import unittest
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import quote, urlsplit
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,7 +54,12 @@ class ViewerChecks(unittest.TestCase):
                     return request.fulfill(status=409, json={'code':'operation_blocked', 'error':'Benchmark transfer policy blocks preview.'})
                 headers = {'Accept-Ranges':'bytes', 'Content-Disposition':'attachment; filename="fixture"'}
                 value = request.request.headers.get('range')
-                if value and not ignore_range and content:
+                if value and not ignore_range:
+                    if not content:
+                        # Match the existing C# FileRange contract for size zero.
+                        return request.fulfill(status=416, json={
+                            'code':'range_invalid', 'error':'The requested byte range cannot be satisfied.',
+                            'details': {'fileLength': 0}})
                     first, last = map(int, re.fullmatch(r'bytes=(\d+)-(\d+)', value).groups())
                     last = min(last, len(content) - 1)
                     headers['Content-Range'] = f'bytes {first}-{last}/{len(content)}'
@@ -76,8 +80,8 @@ class ViewerChecks(unittest.TestCase):
         self.assertEqual(self.page.evaluate('number(1.1557)'), '1.16')
         self.assertEqual(self.page.evaluate('number(null)'), '-')
         self.assertEqual(self.page.evaluate('number(-0.00001)'), '0.00')
-        self.assertIn("number(m.CollectorDurationMs)", raw[2])
-        self.assertIn("pct(m.CollectorDutyPercent)", raw[2])
+        self.assertIn('number(m.CollectorDurationMs)', raw[2])
+        self.assertIn('pct(m.CollectorDutyPercent)', raw[2])
 
     def test_csv_grid_handles_quoted_fields_sort_filter_and_exact_values(self):
         self.open('metrics.csv', 'name,value,note\r\nalpha,1.1557,"quoted, field"\r\nbeta,10.231139999999998,"line one\nline two"\r\ngamma,2.3456,"say ""hello"""\r\n')
@@ -127,8 +131,8 @@ class ViewerChecks(unittest.TestCase):
         self.open('diagnostics/report.html', '<script>window.compromised=true</script><img src=x onerror=alert(1)>')
         self.assertIn('<script>', self.page.locator('#text').inner_text())
         self.assertIsNone(self.page.evaluate('window.compromised'))
-        self.open('data.csv', 'field,value\n=HYPERLINK("bad"),5\n')
-        # Invalid CSV is shown as raw text with an error, never executed/repaired.
+        self.open('data.csv', 'field,value\n"=HYPERLINK(""bad"")",5\n')
+        self.assertIn('=HYPERLINK("bad")', self.page.locator('#grid').inner_text())
         self.assertIsNone(self.page.evaluate('window.compromised'))
 
     def test_truncated_text_is_explicit_and_download_remains_optional(self):
@@ -155,6 +159,64 @@ class ViewerChecks(unittest.TestCase):
         self.open('invalid.json', '{"unfinished":')
         self.assertIn('invalid', self.page.locator('#status').inner_text().lower())
         self.assertIn('unfinished', self.page.locator('#text').inner_text())
+
+    def test_empty_log_uses_explicit_zero_length_range_receipt_without_retry(self):
+        self.open('stdout.log', b'')
+        self.assertEqual(self.page.locator('#status').get_attribute('data-state'), 'ready')
+        self.assertIn('0 bytes of 0', self.page.locator('#status').inner_text())
+        self.assertEqual(self.page.locator('#text').inner_text(), '')
+        self.assertEqual(sum('/artifacts/' in path for _, path, _ in self.calls), 1)
+
+    def test_proxy_ignoring_range_still_has_a_bounded_partial_preview(self):
+        self.open('stdout.log', 'x' * (2 * 1024 * 1024), ignore_range=True)
+        self.assertIn('partial', self.page.locator('#status').inner_text().lower())
+        self.assertLessEqual(len(self.page.locator('#text').inner_text()), 1024*1024)
+        self.assertEqual(self.downloads, [])
+
+    def test_original_download_is_explicit_and_byte_exact(self):
+        original = b'name,value\r\nexample,1.155700000000001\r\n'
+        self.open('metrics.csv', original)
+        self.assertEqual(self.downloads, [])
+        with self.page.expect_download() as pending:
+            self.page.locator('#download').click()
+        download = pending.value
+        self.assertEqual(Path(download.path()).read_bytes(), original)
+        self.assertEqual(len(self.downloads), 1)
+
+    def test_traversal_is_rejected_before_an_artifact_read(self):
+        self.open('../outside.json', '{}')
+        self.assertEqual(self.page.locator('#status').get_attribute('data-state'), 'error')
+        self.assertEqual(sum('/artifacts/' in path for _, path, _ in self.calls), 0)
+
+    def test_row_limit_remains_bounded_without_a_header(self):
+        self.open('many.csv', 'value\n' + '1.1557\n' * 10001)
+        self.page.locator('#headers').uncheck()
+        self.assertIn('10000 matching loaded rows', self.page.locator('#pageInfo').inner_text())
+        self.assertIn('row limit', self.page.locator('#status').inner_text())
+
+    def test_evidence_selection_reads_once_and_missing_assessment_is_not_completed(self):
+        document = embedded('EvidencePage.cs')
+        def route(request):
+            path = urlsplit(request.request.url).path
+            self.calls.append((request.request.method, path, request.request.headers))
+            if path == '/results':
+                return request.fulfill(body=document, content_type='text/html')
+            if path == '/api/v1/runs':
+                return request.fulfill(json=[{'RunId':'run-1', 'Result':{'job':'fixture', 'status':'completed'}}])
+            if path == '/api/v1/runs/run-1':
+                return request.fulfill(json={'available':False, 'outcome':None, 'code':'assessment_missing'})
+            if path == '/api/v1/runs/run-1/artifacts':
+                return request.fulfill(json={'items':[{'path':'report.json','bytes':2}], 'nextCursor':None, 'complete':True})
+            return request.fulfill(status=404)
+        self.page.route('**/*', route)
+        self.page.goto('http://runner.test/results')
+        self.page.locator('#runs button').click()
+        self.page.wait_for_selector('#artifacts a')
+        self.assertEqual(sum(path == '/api/v1/runs/run-1' for _, path, _ in self.calls), 1)
+        self.assertEqual(sum(path == '/api/v1/runs/run-1/artifacts' for _, path, _ in self.calls), 1)
+        self.assertIn('unavailable', self.page.locator('#summary').inner_text())
+        self.assertNotIn('completed', self.page.locator('#summary').inner_text())
+        self.assertFalse(self.errors, self.errors)
 
 
 if __name__ == '__main__':
