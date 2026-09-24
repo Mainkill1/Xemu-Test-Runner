@@ -106,12 +106,21 @@ class RunnerApi:
                     return
                 if total == 0:
                     headers = {"Content-Type": "application/octet-stream", "X-Content-SHA256": sha256}
-                    with self.open(path, "PUT", b"", headers) as response:
-                        receipt = json.loads(response.read(65536))
-                    if not receipt.get("complete"):
-                        raise ClientError("publication_unconfirmed", "Zero-byte upload was not published.",
-                                          "Inspect upload status and retry the same identity.")
-                    return
+                    try:
+                        with self.open(path, "PUT", b"", headers) as response:
+                            receipt = json.loads(response.read(65536))
+                        failures = 0
+                        if not receipt.get("complete"):
+                            raise ClientError("publication_unconfirmed", "Zero-byte upload was not published.",
+                                              "Inspect upload status and retry the same identity.")
+                        return
+                    except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+                        failures += 1
+                        if failures >= 4:
+                            raise ClientError("upload_interrupted", "Upload did not finish.",
+                                              "Rerun the identical command with the SAME ID and unchanged local file.") from error
+                        time.sleep(failures)
+                        continue
                 offset = int(status["length"]) if status["partial"] else 0
                 if offset < 0 or offset > total:
                     raise ClientError("upload_offset_invalid", "Server returned an invalid committed upload offset.")
