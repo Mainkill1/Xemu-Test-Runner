@@ -11,6 +11,8 @@ public sealed partial class EmbeddedHttpServer
             await ConsumeAgentActionBodyAsync(stream, request, ct).ConfigureAwait(false);
             var application = await TryApplicationIdentityRouteAsync(stream, request, ct).ConfigureAwait(false);
             if (application.HasValue) return application.Value;
+            var performance = await TryPerformanceRouteAsync(stream, request, ct).ConfigureAwait(false);
+            if (performance.HasValue) return performance.Value;
             var disks = await TryDiskAssetRoutesAsync(stream, request, ct).ConfigureAwait(false);
             if (disks.HasValue) return disks.Value;
             var state = await TryRunStateRouteAsync(stream, request, ct).ConfigureAwait(false);

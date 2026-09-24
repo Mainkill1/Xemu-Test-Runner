@@ -1,15 +1,21 @@
-"""Thin result commands: the tester, not this client, computes comparisons."""
+"""Thin report commands. The tester owns analysis; the client only renders its response."""
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 from pathlib import Path
 import urllib.parse
 from runner_transport import ClientError, RunnerApi, run_url
 
-COMMANDS = {"result", "compare", "baseline", "index", "csv", "diagnostics", "state"}
+COMMANDS = {"result", "compare", "baseline", "index", "csv", "diagnostics", "state", "performance", "connect"}
 
 
 def register(sub) -> None:
+    sub.add_parser("connect", help="Check HTTP access from this agent machine; identify accidental loopback use.")
+    performance = sub.add_parser("performance", help="Read the runner's saved CPU/cadence/frame-tail analysis; no raw download.")
+    performance.add_argument("run_id")
+    performance.add_argument("--format", choices=("json", "markdown"))
+    performance.add_argument("--out", type=Path)
     result = sub.add_parser("result", help="Compact stored results with the default baseline comparison.")
     result.add_argument("sha256")
     result.add_argument("--format", choices=("json", "markdown"))
@@ -39,7 +45,47 @@ def sha(value: str) -> str:
     return value.lower()
 
 
+def _connect(api: RunnerApi) -> dict:
+    try:
+        info = api.json("/api/v1/agent?view=summary")
+    except (OSError, ValueError) as error:
+        raise ClientError("runner_unreachable", str(error)[:512],
+                          "Run connect on the agent/build machine against the tester's LAN URL. Check routing, listener bind and firewall; do not substitute SSH execution.") from error
+    if not isinstance(info, dict) or info.get("api") != "xemu-test-runner":
+        raise ClientError("runner_identity_invalid", "The HTTP endpoint is not the expected tester.")
+    hostname = urllib.parse.urlsplit(api.url).hostname or ""
+    try:
+        loopback = ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        loopback = hostname.lower() == "localhost" or hostname.lower().endswith(".localhost")
+    return {"reachable": True, "runner": api.url, "version": info.get("version"),
+            "instance": info.get("instance"), "capabilities": info.get("capabilities", []),
+            "loopback": loopback,
+            "hint": "This reaches the local machine. Remote agents must use the tester's LAN address, not run this helper through SSH." if loopback else
+                    "HTTP works from this agent machine. Use this URL for upload/select/wait/report; no remote shell is needed."}
+
+
+def _report(api: RunnerApi, args, path: str, format_name: str, limit: int):
+    if format_name == "json" and args.out is None:
+        return api.json(path)
+    with api.open(path) as response:
+        data = response.read(limit + 1)
+    if len(data) > limit:
+        raise ClientError("report_too_large", "Server report exceeds the client response limit.")
+    text = data.decode("utf-8")
+    if args.out:
+        with args.out.open("x", encoding="utf-8", newline="") as output:
+            output.write(text)
+        return {"file": str(args.out), "bytes": len(data), "format": format_name}
+    return text
+
+
 def execute(api: RunnerApi, args):
+    if args.command == "connect":
+        return _connect(api)
+    if args.command == "performance":
+        format_name = args.format or ("json" if args.json else "markdown")
+        return _report(api, args, run_url(args.run_id) + "/performance?format=" + format_name, format_name, 65536)
     if args.command == "state":
         return api.json(run_url(args.run_id) + "/state")
     if args.command == "diagnostics":
@@ -83,15 +129,4 @@ def execute(api: RunnerApi, args):
         path = "/api/v1/compare?" + urllib.parse.urlencode(query)
     else:
         path = "/api/v1/build-results/" + sha(args.sha256) + "?" + urllib.parse.urlencode(query)
-    if format_name == "json" and args.out is None:
-        return api.json(path)
-    with api.open(path) as response:
-        data = response.read(8 * 1024 * 1024 + 1)
-    if len(data) > 8 * 1024 * 1024:
-        raise ClientError("report_too_large", "Server report exceeds the client response limit.")
-    text = data.decode("utf-8")
-    if args.out:
-        with args.out.open("x", encoding="utf-8", newline="") as output:
-            output.write(text)
-        return {"file": str(args.out), "bytes": len(data), "format": format_name}
-    return text
+    return _report(api, args, path, format_name, 8 * 1024 * 1024)
