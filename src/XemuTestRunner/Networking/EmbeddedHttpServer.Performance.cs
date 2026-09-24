@@ -11,7 +11,8 @@ public sealed partial class EmbeddedHttpServer
 {
     private sealed record PerformanceCleanup(string State, int Files, int DeletedFiles, bool? HddDeleted);
     private sealed record PerformanceView(bool Available, string RunId, string? Code, PerformanceReport? Analysis,
-        AgentOutcome? Outcome, string? ExecutableSha256, PerformanceCleanup Cleanup, string Detail);
+        AgentOutcome? Outcome, string? ExecutableSha256, string? LaunchExecutableSha256, string? IdentityCode,
+        PerformanceCleanup Cleanup, string Detail);
 
     private async Task<bool?> TryPerformanceRouteAsync(Stream stream, HttpRequest request, CancellationToken ct)
     {
@@ -45,14 +46,10 @@ public sealed partial class EmbeddedHttpServer
         if (report is not null && (report.SchemaVersion != 1 || report.Sources is null || report.Errors is null))
             throw new InvalidDataException("Saved performance report is invalid.");
         var outcome = _assessmentReader.Read(_paths.Results, id).Outcome;
-        string? executable = null;
+        var identity = new RecordedEmulatorIdentity(null, null, "executable_identity_missing");
         var manifestPath = catalog.Resolve(id, "input-manifest.json");
         if (File.Exists(manifestPath))
-        {
-            var manifest = ReadPerformanceDocument<JsonElement>(manifestPath, 1024 * 1024);
-            if (TryPerformanceProperty(manifest, "ExecutableSha256", out var digest) && digest.ValueKind == JsonValueKind.String)
-                executable = digest.GetString();
-        }
+            identity = RecordedEmulatorIdentity.Read(ReadPerformanceDocument<JsonElement>(manifestPath, 1024 * 1024));
         var cleanup = new PerformanceCleanup("unavailable", 0, 0, null);
         var cleanupPath = catalog.Resolve(id, "runtime-cleanup.json");
         if (File.Exists(cleanupPath))
@@ -67,7 +64,8 @@ public sealed partial class EmbeddedHttpServer
             }
         }
         var view = new PerformanceView(report is not null, id, report is null ? "analysis_not_recorded" : null,
-            report, outcome, executable, cleanup, $"/api/v1/runs/{Uri.EscapeDataString(id)}?view=summary");
+            report, outcome, identity.Sha256, identity.LaunchSha256, identity.Code, cleanup,
+            $"/api/v1/runs/{Uri.EscapeDataString(id)}?view=summary");
         if (format == "json") await WriteAgentJsonAsync(stream, view, cancellationToken: ct).ConfigureAwait(false);
         else await WriteBuildTextAsync(stream, FormatPerformance(view), "markdown", ct).ConfigureAwait(false);
         return false;
@@ -79,26 +77,27 @@ public sealed partial class EmbeddedHttpServer
         if (file.Length > limit) throw new InvalidDataException("Performance metadata exceeds its read bound.");
         return JsonSerializer.Deserialize<T>(file, ConfigLoader.JsonOptions) ?? throw new InvalidDataException("Performance metadata is empty.");
     }
-
     private static bool TryPerformanceProperty(JsonElement element, string name, out JsonElement value)
     {
         if (element.ValueKind == JsonValueKind.Object)
             foreach (var property in element.EnumerateObject())
                 if (property.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) { value = property.Value; return true; }
-        value = default;
-        return false;
+        value = default; return false;
     }
-
     private static string FormatPerformance(PerformanceView value)
     {
         static string N(double n) => n.ToString("0.00", CultureInfo.InvariantCulture);
         var text = new StringBuilder();
         text.AppendLine($"Run {value.RunId} | execution={value.Outcome?.Execution ?? "unavailable"} | correctness={value.Outcome?.Correctness ?? "unavailable"} | evidence={value.Outcome?.Evidence ?? "unavailable"} | comparison={value.Outcome?.Comparison ?? "unavailable"}");
         text.AppendLine($"Executable: {value.ExecutableSha256 ?? "unavailable"}; cleanup={value.Cleanup.State}; deleted={value.Cleanup.DeletedFiles}/{value.Cleanup.Files}");
-        if (value.Analysis is not { } report) { text.AppendLine("No saved analysis. Add Workload.Analysis to a new test revision before running; this GET does not scan raw files."); return text.ToString(); }
+        if (value.LaunchExecutableSha256 != value.ExecutableSha256) text.AppendLine("Launcher: " + value.LaunchExecutableSha256);
+        if (value.IdentityCode is not null) text.AppendLine("Identity: " + value.IdentityCode);
+        if (value.Analysis is not { } report)
+        {
+            text.AppendLine("No saved analysis. Add Workload.Analysis to a new test revision before running; this GET does not scan raw files."); return text.ToString();
+        }
         text.AppendLine($"Profile {report.ProfileSha256[..12]} | segment={report.Profile.Segment} | complete={report.Complete}");
-        text.AppendLine("| Metric | Value | Samples / exposure |");
-        text.AppendLine("|---|---:|---|");
+        text.AppendLine("| Metric | Value | Samples / exposure |"); text.AppendLine("|---|---:|---|");
         if (report.Monitoring is { } monitor)
         {
             text.AppendLine($"| CPU mean / median | {N(monitor.Cpu.Mean)} / {N(monitor.Cpu.Median)} core % | {monitor.Cpu.Count} samples; {monitor.MissingCpuSamples} missing |");
