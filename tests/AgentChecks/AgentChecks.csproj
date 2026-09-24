@@ -5,5 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
-  <ItemGroup><ProjectReference Include="../../src/XemuTestRunner/XemuTestRunner.csproj" /></ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/XemuTestRunner/XemuTestRunner.csproj" />
+    <Compile Include="../RunnerChecks/FakeXemuHost.cs" Link="Fixtures/FakeXemuHost.cs" />
+  </ItemGroup>
 </Project>
