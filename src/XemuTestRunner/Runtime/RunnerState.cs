@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using XemuTestRunner.Monitoring;
 using XemuTestRunner.Queue;
 using XemuTestRunner.Workstation;
@@ -33,14 +34,13 @@ public sealed class RunnerState
     public void SetWorkstationState(WorkstationStateSnapshot workstation) { lock (_gate) _workstation = workstation; }
     public bool HasActiveJob { get { lock (_gate) return _currentJob is not null; } }
 
-    public void BeginJob(
-        string jobId,
-        string runId,
-        int processId,
-        OperationPolicyDefinition? operations = null)
+    public void BeginJob(string jobId, string runId, int processId, OperationPolicyDefinition? operations = null)
     {
         lock (_gate)
         {
+            // The claim succeeded. Publish ownership and retire its old queue
+            // condition together so observers cannot inherit a predecessor issue.
+            _queueIssue = null;
             _phase = "running";
             _currentJob = jobId;
             _runId = runId;
@@ -53,11 +53,7 @@ public sealed class RunnerState
 
     public void SetLatestMetric(MetricSample sample) { lock (_gate) _latestMetric = sample; }
 
-    public void EndJob(
-        string result,
-        string? jobId = null,
-        string? resultDirectory = null,
-        bool? failed = null)
+    public void EndJob(string result, string? jobId = null, string? resultDirectory = null, bool? failed = null)
     {
         lock (_gate)
         {
@@ -66,14 +62,8 @@ public sealed class RunnerState
             _lastFinishedUtc = DateTimeOffset.UtcNow;
             _lastResultDirectory = resultDirectory;
             _jobsFinished++;
-            var countsAsFailure =
-                failed ??
-                !result.Equals(
-                    "completed",
-                    StringComparison.OrdinalIgnoreCase);
-
-            if (countsAsFailure)
-                _failedJobs++;
+            var countsAsFailure = failed ?? !result.Equals("completed", StringComparison.OrdinalIgnoreCase);
+            if (countsAsFailure) _failedJobs++;
             _phase = "idle";
             _currentJob = null;
             _runId = null;
@@ -89,50 +79,27 @@ public sealed class RunnerState
         lock (_gate)
         {
             var uptime = DateTimeOffset.UtcNow - _startedUtc;
-
-            return new RunnerStateSnapshot(
-                _startedUtc,
-                uptime,
-                (long)uptime.TotalMilliseconds,
-                _phase,
-                _currentJob,
-                _runId,
-                _processId,
-                _jobStartedUtc,
-                _latestMetric,
-                _queue,
-                _httpEndpoint,
-                _lastJob,
-                _lastResult,
-                _lastFinishedUtc,
-                _workstation,
-                _queueIssue,
-                _jobsFinished,
-                _failedJobs,
-                _lastResultDirectory,
-                _operations);
+            return new RunnerStateSnapshot(_startedUtc, uptime, (long)uptime.TotalMilliseconds,
+                _phase, _currentJob, _runId, _processId, _jobStartedUtc, _latestMetric, _queue,
+                _httpEndpoint, _lastJob, _lastResult, _lastFinishedUtc, _workstation, _queueIssue,
+                _jobsFinished, _failedJobs, _lastResultDirectory, _operations);
         }
     }
 }
 
 public sealed record RunnerStateSnapshot(
-    DateTimeOffset StartedUtc,
-    TimeSpan Uptime,
-    long UptimeMs,
-    string Phase,
-    string? CurrentJob,
-    string? RunId,
-    int? ProcessId,
-    DateTimeOffset? JobStartedUtc,
-    MetricSample? LatestMetric,
-    QueueSnapshot Queue,
-    string? HttpEndpoint,
-    string? LastJob,
-    string? LastResult,
-    DateTimeOffset? LastFinishedUtc,
-    WorkstationStateSnapshot Workstation,
-    QueueIssue? QueueIssue,
-    int JobsFinished,
-    int FailedJobs,
-    string? LastResultDirectory,
-    OperationPolicyDefinition Operations);
+    DateTimeOffset StartedUtc, TimeSpan Uptime, long UptimeMs, string Phase,
+    string? CurrentJob, string? RunId, int? ProcessId, DateTimeOffset? JobStartedUtc,
+    MetricSample? LatestMetric, QueueSnapshot Queue, string? HttpEndpoint,
+    string? LastJob, string? LastResult, DateTimeOffset? LastFinishedUtc,
+    WorkstationStateSnapshot Workstation, QueueIssue? QueueIssue,
+    int JobsFinished, int FailedJobs, string? LastResultDirectory,
+    OperationPolicyDefinition Operations)
+{
+    // Stabilization is an intentional admission phase, not failed work. Do not
+    // generalize this to all retryable issues: access contention, corrupt claims,
+    // missing files and Testing holds remain actionable immediately.
+    [JsonIgnore]
+    public bool QueueNeedsAttention => CurrentJob is null && QueueIssue is { } issue &&
+        !(issue.Code == "package_stabilizing" && issue.Retryable && !issue.HoldsTesting);
+}
