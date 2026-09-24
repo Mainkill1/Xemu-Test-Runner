@@ -6,6 +6,7 @@ cover rendering, bounds, hostile content, original precision and explicit export
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import base64
+import json
 import re
 import threading
 import unittest
