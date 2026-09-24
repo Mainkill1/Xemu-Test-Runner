@@ -311,11 +311,6 @@ public sealed class XemuControlManager : IDisposable
             failure?.Message);
         TryWriteScreenshotContext(path + ".context.json", context);
 
-        var hostCompleted = Stopwatch.GetTimestamp();
-        var guestAfter = session.Diagnostics.SampleGuest();
-        session.Diagnostics.RecordInput(
-            button, duration, hostStarted, hostCompleted, guestBefore, guestAfter);
-
         if (record)
         {
             RecordManualStep(
@@ -378,6 +373,11 @@ public sealed class XemuControlManager : IDisposable
         {
             _inputGate.Release();
         }
+
+        var hostCompleted = Stopwatch.GetTimestamp();
+        var guestAfter = session.Diagnostics.SampleGuest();
+        session.Diagnostics.RecordInput(
+            button, duration, hostStarted, hostCompleted, guestBefore, guestAfter);
 
         if (record)
         {
