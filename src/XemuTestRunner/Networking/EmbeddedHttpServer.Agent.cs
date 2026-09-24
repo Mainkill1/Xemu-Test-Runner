@@ -27,6 +27,8 @@ public sealed partial class EmbeddedHttpServer
 
     private async Task<bool?> TryAgentRouteAsync(Stream stream, HttpRequest request, CancellationToken ct)
     {
+        var extension = await TryAgentExtensionRouteAsync(stream, request, ct).ConfigureAwait(false);
+        if (extension.HasValue) return extension.Value;
         if (request.Method == "GET" && request.Path is ("/api/v1" or "/api/v1/agent" or "/.well-known/agent.json"))
         {
             await WriteAgentJsonAsync(stream, AgentApiCatalog.Describe(), cancellationToken: ct).ConfigureAwait(false);
@@ -246,7 +248,7 @@ public sealed partial class EmbeddedHttpServer
     {
         200 => "OK", 201 => "Created", 202 => "Accepted", 400 => "Bad Request", 404 => "Not Found",
         409 => "Conflict", 411 => "Length Required", 412 => "Precondition Failed",
-        422 => "Unprocessable Content", 428 => "Precondition Required", _ => "Error"
+        422 => "Unprocessable Content", 428 => "Precondition Required", 429 => "Too Many Requests", _ => "Error"
     };
     private sealed record CloneJobRequest(string NewId);
 }
