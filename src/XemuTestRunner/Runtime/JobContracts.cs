@@ -8,6 +8,8 @@ public sealed class RuntimeStateDefinition
     public bool KeepOnSuccess { get; set; }
     public bool KeepOnFailure { get; set; } = true;
     public List<RuntimeFileDefinition> Files { get; set; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RunIsolationDefinition? Isolation { get; set; }
 }
 
 public sealed class RuntimeFileDefinition
@@ -32,6 +34,10 @@ public sealed class WorkloadContract
     public List<ReportedMetricDefinition> ReportedMetrics { get; set; } = [];
     public int MinimumMetricSamples { get; set; }
     public bool RequirePlanCompletion { get; set; } = true;
+
+    // Omitting null preserves canonical serialization of previously baked tests.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public GuestHddResultsDefinition? GuestHddResults { get; set; }
 }
 
 public sealed class ArtifactCheckDefinition
@@ -91,23 +97,12 @@ public sealed class OperationPolicyDefinition
     public bool? AllowBulkTransfers { get; set; }
 
     [JsonIgnore]
-    public bool IsBenchmark =>
-        Mode.Equals("benchmark", StringComparison.OrdinalIgnoreCase);
-
-    public bool PreviewAllowed =>
-        AllowPreview ?? !IsBenchmark;
-
-    public bool ManualInputAllowed =>
-        AllowManualInput ?? !IsBenchmark;
-
-    public bool PauseResumeAllowed =>
-        AllowPauseResume ?? !IsBenchmark;
-
-    public bool DiagnosticsAllowed =>
-        AllowDiagnostics ?? !IsBenchmark;
-
-    public bool BulkTransfersAllowed =>
-        AllowBulkTransfers ?? !IsBenchmark;
+    public bool IsBenchmark => Mode.Equals("benchmark", StringComparison.OrdinalIgnoreCase);
+    public bool PreviewAllowed => AllowPreview ?? !IsBenchmark;
+    public bool ManualInputAllowed => AllowManualInput ?? !IsBenchmark;
+    public bool PauseResumeAllowed => AllowPauseResume ?? !IsBenchmark;
+    public bool DiagnosticsAllowed => AllowDiagnostics ?? !IsBenchmark;
+    public bool BulkTransfersAllowed => AllowBulkTransfers ?? !IsBenchmark;
 }
 
 public sealed class MeasurementSegmentDefinition

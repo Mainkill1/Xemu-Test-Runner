@@ -31,8 +31,19 @@ jobs:
           cache-dependency-path: '**/*.csproj'
       - name: Build without warnings
         run: dotnet build tests/RunnerChecks/RunnerChecks.csproj -c Release --nologo
+      - name: Run operation ownership and fixture shutdown checks
+        run: dotnet run --project tests/OperationChecks -c Release
       - name: Run regression and process integration checks
         run: dotnet run --project tests/RunnerChecks -c Release --no-build
+      - name: Run agent HTTP contract checks
+        run: dotnet run --project tests/AgentChecks -c Release
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Run HTTP client contract checks
+        run: python -m unittest discover -s tests -p 'test_runner_api*.py' -v
+      - name: Run client against the actual embedded HTTP listener
+        run: dotnet run --project tests/AgentChecks -c Release --no-build -- --client
       - name: Publish Linux
         if: runner.os == 'Linux'
         run: bash scripts/publish.sh linux-x64

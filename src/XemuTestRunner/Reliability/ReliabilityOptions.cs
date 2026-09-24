@@ -9,10 +9,10 @@ public sealed class ReliabilityOptions
     public int EvidenceListLimit { get; set; } = 100;
     public int MaxPreviewBytes { get; set; } = 16 * 1024 * 1024;
 
-    // Runner/control failures are evidence about the harness, not proof that xemu
-    // itself is bad. Preserve the target so an operator can inspect it instead
-    // of immediately destroying the reproduction.
-    public bool PreserveTargetOnRunnerError { get; set; } = true;
+    // Automated queues terminate failed targets by default. Preserving a live
+    // reproduction is an explicit interactive-debug choice, not crash recovery.
+    public bool PreserveTargetOnRunnerError { get; set; }
+
 }
 
 public sealed class PreflightOptions

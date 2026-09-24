@@ -27,6 +27,7 @@ public static class ConfigLoader
         var config = JsonSerializer.Deserialize<RunnerConfig>(File.ReadAllText(full), JsonOptions)
             ?? throw new InvalidDataException("Empty runner config.");
         Validate(config);
+        (config.Diagnostics.CrashReports ?? throw new InvalidDataException("CrashReports cannot be null.")).Validate();
         var paths = ResolvePaths(config, full);
         var states = new[] { paths.Pending, paths.Testing, paths.Tested, paths.Results };
         var cmp = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;

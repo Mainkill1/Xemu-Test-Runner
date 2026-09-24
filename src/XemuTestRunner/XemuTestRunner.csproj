@@ -10,16 +10,15 @@
     <RepositoryUrl>https://github.com/Mainkill1/Xemu-Test-Runner</RepositoryUrl>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
   </PropertyGroup>
-
   <ItemGroup>
     <PackageReference Include="Spectre.Console.Cli" Version="0.55.0" />
     <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="10.0.12" />
+    <PackageReference Include="Tomlyn" Version="0.19.0" />
   </ItemGroup>
-
   <ItemGroup>
     <InternalsVisibleTo Include="RunnerChecks" />
+    <InternalsVisibleTo Include="CrashChecks" />
   </ItemGroup>
-
   <ItemGroup>
     <Content Include="../../tools/*.py">
       <Link>tools/%(Filename)%(Extension)</Link>
