@@ -15,7 +15,6 @@ else
     ReuseStressChecks.Register(checks);
     BuildIndexRecoveryChecks.Register(checks);
     HumanWorkflowChecks.Register(checks);
-    FakeQmpShutdownChecks.Register(checks);
 }
 var failures = 0;
 foreach (var (name, run) in checks)

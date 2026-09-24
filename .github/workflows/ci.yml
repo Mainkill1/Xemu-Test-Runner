@@ -31,6 +31,8 @@ jobs:
           cache-dependency-path: '**/*.csproj'
       - name: Build without warnings
         run: dotnet build tests/RunnerChecks/RunnerChecks.csproj -c Release --nologo
+      - name: Run operation ownership and fixture shutdown checks
+        run: dotnet run --project tests/OperationChecks -c Release
       - name: Run regression and process integration checks
         run: dotnet run --project tests/RunnerChecks -c Release --no-build
       - name: Run agent HTTP contract checks
