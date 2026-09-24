@@ -563,7 +563,8 @@ public sealed class RunnerEngine
                     executableSha256 = preflight.ExecutableSha256,
                     jobSha256 = Convert.ToHexString(
                         SHA256.HashData(File.ReadAllBytes(
-                            Path.Combine(resultDirectory, "job.json")))).ToLowerInvariant(),
+                            Path.Combine(resultDirectory,
+                                "job.json")))).ToLowerInvariant(),
                     arguments = effectiveArguments,
                     environmentKeys = launchEnvironment.Keys.OrderBy(key => key).ToArray(),
                     workingDirectory = job.WorkingDirectory ?? ".",
@@ -896,15 +897,15 @@ public sealed class RunnerEngine
 
             if (process is not null && started)
             {
-                exited = HasExited(process);
+                // The supervisor's validated native receipt and a previously
+                // awaited exit cannot be undone by a stale target Process handle.
+                exited = ConfirmTargetExit(exited, HasExited(process), launch?.NativeExit is not null);
                 preserveTarget =
                     !exited &&
                     _config.Reliability.PreserveTargetOnRunnerError &&
                     status is ("runner_error" or "control_error");
 
-                if (!preserveTarget &&
-                    !exited &&
-                    status is not ("completed" or "cancelled" or "unresponsive"))
+                if (ShouldCaptureFailure(status, preserveTarget, exited))
                 {
                     try
                     {
@@ -918,11 +919,12 @@ public sealed class RunnerEngine
                     }
                 }
 
-                if (!preserveTarget &&
-                    !exited &&
+                // Automatic diagnostics can outlive the target. Check again
+                // before an external provider could photograph another window.
+                exited = ConfirmTargetExit(exited, HasExited(process), launch?.NativeExit is not null);
+                if (ShouldCaptureFailure(status, preserveTarget, exited) &&
                     _config.XemuControl.Enabled &&
-                    automaticBundle is null &&
-                    status is not ("cancelled" or "unresponsive"))
+                    automaticBundle is null)
                 {
                     using var screenshotDeadline = new CancellationTokenSource(
                         _config.XemuControl.ScreenshotTimeoutMs);
@@ -939,10 +941,12 @@ public sealed class RunnerEngine
                     }
                 }
 
+                exited = ConfirmTargetExit(exited, HasExited(process), launch?.NativeExit is not null);
                 if (!preserveTarget && !exited)
                 {
-                    runnerTerminated = true;
-                    exited = await StopProcessAsync(process).ConfigureAwait(false);
+                    var stopped = await StopProcessAsync(process).ConfigureAwait(false);
+                    runnerTerminated = stopped.TerminationRequested;
+                    exited = ConfirmTargetExit(exited, stopped.Exited, launch?.NativeExit is not null);
                 }
 
                 if (preserveTarget)
@@ -1121,6 +1125,7 @@ public sealed class RunnerEngine
             diagnosticBundle = "diagnostic-bundle.json",
             launchMode = job?.LaunchMode,
             snapshotName = job?.SnapshotName,
+            startPaused = job?.StartPaused,
             executable = job?.Executable,
             executableSha256 = preflight?.ExecutableSha256,
             arguments = effectiveArguments,
@@ -1460,12 +1465,25 @@ public sealed class RunnerEngine
         string detail) =>
         new(false, report.ExecutableSha256, [.. report.Checks, new(name, false, detail)]);
 
-    private async Task<bool> StopProcessAsync(Process process)
+    // Keep the automatic bundle and fallback screenshot on the same policy.
+    // A successful run is not a failure even if a Process observation lags.
+    private static bool ShouldCaptureFailure(string status, bool preserveTarget, bool exited) =>
+        !preserveTarget && !exited &&
+        status is not ("completed" or "cancelled" or "unresponsive");
+
+    private static bool ConfirmTargetExit(bool previousConfirmed, bool currentObserved, bool nativeConfirmed) =>
+        previousConfirmed || currentObserved || nativeConfirmed;
+
+    private async Task<(bool Exited, bool TerminationRequested)> StopProcessAsync(Process process)
     {
+        var terminationRequested = false;
         try
         {
             if (!process.HasExited)
+            {
                 process.Kill(entireProcessTree: true);
+                terminationRequested = true;
+            }
         }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { }
 
@@ -1477,7 +1495,7 @@ public sealed class RunnerEngine
         }
         catch (Exception ex) when (ex is TimeoutException or InvalidOperationException) { }
 
-        return HasExited(process);
+        return (HasExited(process), terminationRequested);
     }
 
     private static bool HasExited(Process process)
