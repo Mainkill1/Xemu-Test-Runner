@@ -4,17 +4,26 @@ namespace XemuTestRunner.Networking;
 
 public sealed partial class EmbeddedHttpServer
 {
-    // Private transport cadence, never an agent-selected test duration. Callers
-    // follow the returned read after a heartbeat until finished/attention.
+    // A transport heartbeat, not a deadline for the test or its observer.
     private static readonly TimeSpan CompletionHeartbeat = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan CompletionStateCheckInterval = TimeSpan.FromMilliseconds(500);
 
     private sealed record CompletionState(string State, string? RunId, string? Code, string Detail)
     {
         public bool Terminal => State is "tested" or "cancelled" or "failed";
         public bool ShouldWait => !Terminal && Code is null;
+        public string Event
+        {
+            get
+            {
+                if (Terminal) return "finished";
+                return ShouldWait ? "heartbeat" : "attention";
+            }
+        }
     }
 
-    private async Task<bool?> TryCompletionWaitRouteAsync(Stream stream, HttpRequest request, CancellationToken ct)
+    private async Task<bool?> TryCompletionWaitRouteAsync(
+        Stream stream, HttpRequest request, CancellationToken ct)
     {
         if (request.Method != "GET") return null;
         if (request.Path == "/api/v1/help" && GetQueryValue(request.Query, "topic") == "completion-wait")
@@ -34,73 +43,105 @@ public sealed partial class EmbeddedHttpServer
             return false;
         }
 
-        const string jobs = "/api/v1/jobs/";
-        const string tests = "/api/v1/test-runs/";
-        var requested = request.Path.StartsWith(tests, StringComparison.Ordinal);
-        var prefix = requested ? tests : jobs;
+        const string jobsPrefix = "/api/v1/jobs/";
+        const string requestedTestsPrefix = "/api/v1/test-runs/";
+        const string waitSuffix = "/wait";
+        var isRequestedTest = request.Path.StartsWith(requestedTestsPrefix, StringComparison.Ordinal);
+        var prefix = isRequestedTest ? requestedTestsPrefix : jobsPrefix;
+
+        // Require an ID followed by the action. A job literally named "wait"
+        // must still reach the ordinary /jobs/{id} route.
         if (!request.Path.StartsWith(prefix, StringComparison.Ordinal) ||
-            !request.Path.EndsWith("/wait", StringComparison.Ordinal) ||
-            request.Path.Length <= prefix.Length + 5) return null;
-        var encoded = request.Path[prefix.Length..^5];
-        if (encoded.Length == 0 || encoded.Contains('/')) return null;
+            !request.Path.EndsWith(waitSuffix, StringComparison.Ordinal) ||
+            request.Path.Length <= prefix.Length + waitSuffix.Length)
+            return null;
+        var encodedId = request.Path[prefix.Length..^waitSuffix.Length];
+        if (encodedId.Length == 0 || encodedId.Contains('/')) return null;
         if (!string.IsNullOrEmpty(request.Query))
-            throw new AgentRequestException(400, "wait_parameters_unsupported", "Completion waiting has no duration or interval parameters.",
+            throw new AgentRequestException(400, "wait_parameters_unsupported",
+                "Completion waiting has no duration or interval parameters.",
                 "Use the wait URL without a query. The runner supplies heartbeats; the client follows until completion.");
-        var id = Uri.UnescapeDataString(encoded);
-        var value = ReadCompletionState(id, requested);
 
-        if (value.ShouldWait)
-        {
-            if (!await _observationWaiters.WaitAsync(0, ct).ConfigureAwait(false))
-                throw new AgentRequestException(429, "too_many_waiters", "The bounded waiter limit is reached.",
-                    "Reconnect this read with the same ID. Do not resubmit the test.");
-            try
-            {
-                var clock = Stopwatch.StartNew();
-                while (value.ShouldWait)
-                {
-                    var remaining = CompletionHeartbeat - clock.Elapsed;
-                    if (remaining <= TimeSpan.Zero) break;
-                    await Task.Delay(remaining < TimeSpan.FromMilliseconds(500) ? remaining : TimeSpan.FromMilliseconds(500), ct).ConfigureAwait(false);
-                    value = ReadCompletionState(id, requested);
-                }
-            }
-            finally { _observationWaiters.Release(); }
-        }
-
-        object? result = null;
-        if (value.State == "tested")
-        {
-            if (value.RunId is null)
-                result = new { available = false, code = "run_identity_missing", outcome = (object?)null };
-            else
-            {
-                try { result = _assessmentReader.Read(_paths.Results, value.RunId); }
-                catch (AgentRequestException error) when (error.Status == 404)
-                { result = new { available = false, code = "run_evidence_missing", outcome = (object?)null }; }
-            }
-        }
+        var id = Uri.UnescapeDataString(encodedId);
+        var completion = ReadCompletionState(id, isRequestedTest);
+        completion = await WaitForCompletionOrHeartbeatAsync(id, isRequestedTest, completion, ct)
+            .ConfigureAwait(false);
 
         await WriteAgentJsonAsync(stream, new
         {
-            ok = true, id, state = value.State,
-            @event = value.Terminal ? "finished" : value.ShouldWait ? "heartbeat" : "attention",
-            terminal = value.Terminal, runId = value.RunId, code = value.Code,
-            next = value.ShouldWait ? prefix + Uri.EscapeDataString(id) + "/wait" : value.Detail,
-            result
+            ok = true,
+            id,
+            state = completion.State,
+            @event = completion.Event,
+            terminal = completion.Terminal,
+            runId = completion.RunId,
+            code = completion.Code,
+            next = completion.ShouldWait
+                ? prefix + Uri.EscapeDataString(id) + waitSuffix
+                : completion.Detail,
+            result = ReadCompletionAssessment(completion)
         }, cancellationToken: ct).ConfigureAwait(false);
         return false;
     }
 
-    private CompletionState ReadCompletionState(string id, bool requested)
+    private async Task<CompletionState> WaitForCompletionOrHeartbeatAsync(
+        string id, bool isRequestedTest, CompletionState completion, CancellationToken ct)
+    {
+        // Terminal results and blockers do not occupy a held-read slot.
+        if (!completion.ShouldWait) return completion;
+        if (!await _observationWaiters.WaitAsync(0, ct).ConfigureAwait(false))
+            throw new AgentRequestException(429, "too_many_waiters", "The bounded waiter limit is reached.",
+                "Reconnect this read with the same ID. Do not resubmit the test.");
+
+        try
+        {
+            var clock = Stopwatch.StartNew();
+            while (completion.ShouldWait)
+            {
+                var remaining = CompletionHeartbeat - clock.Elapsed;
+                if (remaining <= TimeSpan.Zero) break;
+                var delay = remaining < CompletionStateCheckInterval ? remaining : CompletionStateCheckInterval;
+                await Task.Delay(delay, ct).ConfigureAwait(false);
+                completion = ReadCompletionState(id, isRequestedTest);
+            }
+            return completion;
+        }
+        finally
+        {
+            _observationWaiters.Release();
+        }
+    }
+
+    private object? ReadCompletionAssessment(CompletionState completion)
+    {
+        // Heartbeats never open assessment files. Archival without an assessment
+        // is reported as missing evidence, not fabricated passing outcomes.
+        if (completion.State != "tested") return null;
+        if (completion.RunId is null)
+            return new { available = false, code = "run_identity_missing", outcome = (object?)null };
+        try
+        {
+            return _assessmentReader.Read(_paths.Results, completion.RunId);
+        }
+        catch (AgentRequestException error) when (error.Status == 404)
+        {
+            return new { available = false, code = "run_evidence_missing", outcome = (object?)null };
+        }
+    }
+
+    private CompletionState ReadCompletionState(string id, bool isRequestedTest)
     {
         var runner = _state.Snapshot();
-        var detail = requested ? "/api/v1/test-runs/" + Uri.EscapeDataString(id) : AgentJobStore.Url(id) + "?view=summary";
+        var detail = isRequestedTest
+            ? "/api/v1/test-runs/" + Uri.EscapeDataString(id)
+            : AgentJobStore.Url(id) + "?view=summary";
         string state;
         string? runId;
         string? code;
-        if (requested)
+        if (isRequestedTest)
         {
+            // A selection can wait in the queue before a package exists. Once
+            // materialized, the package owner is authoritative, including holds.
             var selection = AgentJobs.ReadRequestedTest(id);
             state = selection.State;
             runId = selection.RunId;
@@ -123,6 +164,8 @@ public sealed partial class EmbeddedHttpServer
             code = job.Blocker?.Code;
         }
 
+        // Unknown and blocked states need attention; only known progressing
+        // states can keep an observer waiting. This never authorizes execution.
         code ??= state switch
         {
             "draft" or "uploaded" => "start_required",
