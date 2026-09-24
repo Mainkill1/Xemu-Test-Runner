@@ -7,6 +7,7 @@ else
     TemplateChecks.Register(checks);
     EvidenceChecks.Register(checks);
     ActionBodyChecks.Register(checks);
+    ReuseStressChecks.Register(checks);
 }
 var failures = 0;
 foreach (var (name, run) in checks)
