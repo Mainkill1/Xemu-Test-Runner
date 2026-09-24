@@ -22,11 +22,35 @@ internal static class GuestSchemaChecks
                     reference[0]!["metadata"] = new JsonObject { ["oracle_status"] = "PASS" };
                     record["metadata"] = new JsonObject();
                 }
-                await Reject(candidate.ToJsonString(), reference.ToJsonString());
+                await Check(candidate.ToJsonString(), reference.ToJsonString(), false);
             }));
+        foreach (var encodedReference in new[] { false, true })
+            checks.Add(($"equivalent guest metadata encodings preserve correctness (encoded reference {encodedReference})", async () =>
+            {
+                var reference = JsonNode.Parse(GuestHddChecks.Record())!.AsArray();
+                var candidate = JsonNode.Parse(GuestHddChecks.Record())!.AsArray();
+                const string metadata = "{\"oracle_status\":\"PASS\",\"checks\":[{\"outcome\":\"PASS\"}]}";
+                reference[0]!["metadata"] = encodedReference ? JsonValue.Create(metadata) : JsonNode.Parse(metadata);
+                candidate[0]!["metadata"] = encodedReference ? JsonNode.Parse(metadata) : JsonValue.Create(metadata);
+                await Check(candidate.ToJsonString(), reference.ToJsonString(), true);
+            }));
+        checks.Add(("legacy guest records without optional outcome annotations remain valid", async () =>
+        {
+            var reference = JsonNode.Parse(GuestHddChecks.Record())!.AsArray();
+            reference[0]!.AsObject().Remove("outcome");
+            await Check(reference.ToJsonString(), reference.ToJsonString(), true);
+        }));
+        checks.Add(("missing reference-required oracle inside a metadata array is rejected", async () =>
+        {
+            var reference = JsonNode.Parse(GuestHddChecks.Record())!.AsArray();
+            var candidate = JsonNode.Parse(GuestHddChecks.Record())!.AsArray();
+            reference[0]!["metadata"] = JsonNode.Parse("{\"checks\":[{\"oracle_status\":\"PASS\"}]}");
+            candidate[0]!["metadata"] = JsonNode.Parse("{\"checks\":[]}");
+            await Check(candidate.ToJsonString(), reference.ToJsonString(), false);
+        }));
     }
 
-    private static async Task Reject(string payload, string reference)
+    private static async Task Check(string payload, string reference, bool expectedPass)
     {
         var root = Path.Combine(Path.GetTempPath(), "guest-schema-" + Guid.NewGuid().ToString("N"));
         var package = Path.Combine(root, "package"); var runtime = Path.Combine(root, "runtime"); var result = Path.Combine(root, "schema-run");
@@ -43,10 +67,19 @@ internal static class GuestSchemaChecks
             }}};
             var evaluation = await WorkloadEvaluator.EvaluateAsync(job, package, result,
                 new RuntimeMaterialization(runtime, [new RuntimeFileMaterialization("seed.img", "disk.img", GuestDiskFixture.Size, "fixture")]), 0, true, CancellationToken.None);
-            Require(evaluation.Correctness != CorrectnessOutcome.Passed || evaluation.Evidence != EvidenceOutcome.Complete,
-                "Changed timing/oracle semantics qualified as a successful test.");
-            Require(evaluation.Measurements.Count == 0, "Changed semantics produced guest timing claims.");
-            Require(await File.ReadAllTextAsync(Path.Combine(result, "guest", "results.txt")) == payload, "Invalid raw guest evidence was discarded.");
+            if (expectedPass)
+            {
+                Require(evaluation.Correctness == CorrectnessOutcome.Passed && evaluation.Evidence == EvidenceOutcome.Complete,
+                    "Equivalent or legacy-compatible guest evidence was incorrectly rejected.");
+                Require(evaluation.Measurements.Count == 5, "A qualified leaf must retain all five timing statistics.");
+            }
+            else
+            {
+                Require(evaluation.Correctness != CorrectnessOutcome.Passed || evaluation.Evidence != EvidenceOutcome.Complete,
+                    "Changed timing/oracle semantics qualified as a successful test.");
+                Require(evaluation.Measurements.Count == 0, "Changed semantics produced guest timing claims.");
+            }
+            Require(await File.ReadAllTextAsync(Path.Combine(result, "guest", "results.txt")) == payload, "Raw guest evidence was discarded.");
         }
         finally { Directory.Delete(root, true); }
     }
