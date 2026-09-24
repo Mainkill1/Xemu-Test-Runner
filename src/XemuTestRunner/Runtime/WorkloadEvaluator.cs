@@ -27,12 +27,12 @@ public static class WorkloadEvaluator
 
         foreach (var requirement in job.Workload.CorrectnessChecks)
         {
-            checks.Add(await EvaluateArtifactAsync(requirement, "correctness",
+            checks.Add(await EvaluateArtifactAsync(requirement, ArtifactCategory(job, requirement, "correctness"),
                 packageDirectory, resultDirectory, runtime, cancellationToken).ConfigureAwait(false));
         }
         foreach (var requirement in job.Workload.EvidenceRequirements)
         {
-            checks.Add(await EvaluateArtifactAsync(requirement, "evidence",
+            checks.Add(await EvaluateArtifactAsync(requirement, ArtifactCategory(job, requirement, "evidence"),
                 packageDirectory, resultDirectory, runtime, cancellationToken).ConfigureAwait(false));
         }
         if (job.Workload.MinimumMetricSamples > 0)
@@ -59,6 +59,29 @@ public static class WorkloadEvaluator
         var correctnessChecks = checks.Where(check => check.Category == "correctness").ToArray();
         var evidenceChecks = checks.Where(check => check.Category == "evidence").ToArray();
         return new WorkloadEvaluation(GetCorrectness(correctnessChecks), GetEvidence(evidenceChecks), checks, measurements);
+    }
+
+    private static string ArtifactCategory(
+        JobDefinition job,
+        ArtifactCheckDefinition requirement,
+        string declaredCategory)
+    {
+        // Only a named screenshot produced by this plan changes category. Other
+        // PNG/image checks retain their declared correctness/evidence semantics.
+        var artifactName = Path.GetFileNameWithoutExtension(
+            requirement.Path.Replace('\\', '/'));
+        if (string.IsNullOrWhiteSpace(artifactName))
+            return declaredCategory;
+
+        var screenshot = job.Plan.LastOrDefault(step =>
+            step.Type.Equals("screenshot", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(step.Name) &&
+            Path.GetFileNameWithoutExtension(step.Name)
+                .Equals(artifactName, StringComparison.OrdinalIgnoreCase));
+        return screenshot is not null &&
+               screenshot.EffectiveScreenshotPurpose == "diagnostic"
+            ? "diagnostic"
+            : declaredCategory;
     }
 
     private static async Task<AssessmentCheck> EvaluateArtifactAsync(ArtifactCheckDefinition requirement, string category,

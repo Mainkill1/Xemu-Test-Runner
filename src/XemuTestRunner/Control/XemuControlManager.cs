@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
+using System.Runtime.ExceptionServices;
+using XemuTestRunner.Reliability;
 using XemuTestRunner.Config;
 using XemuTestRunner.Queue;
 using XemuTestRunner.Runtime;
@@ -70,7 +72,11 @@ public sealed class XemuControlManager : IDisposable
         }
     }
 
-    public void Begin(Process process, string resultDirectory, int qmpPort)
+    public void Begin(
+        Process process,
+        string resultDirectory,
+        int qmpPort,
+        string? guestProgressPath = null)
     {
         IXemuInputProvider input = CreateInputProvider(process.Id);
 
@@ -82,7 +88,8 @@ public sealed class XemuControlManager : IDisposable
                 _options.QmpHost,
                 qmpPort,
                 resultDirectory,
-                input);
+                input,
+                new ScreenshotDiagnosticContext(resultDirectory, guestProgressPath));
             _paused = false;
             _resumeSignal.TrySetResult(true);
             _resumeSignal = CompletedSignal();
@@ -253,10 +260,17 @@ public sealed class XemuControlManager : IDisposable
     public async Task<string> CaptureScreenshotAsync(
         string? requestedName,
         CancellationToken cancellationToken,
-        bool record = true)
+        bool record = true,
+        string? purpose = null,
+        bool tolerateDiagnosticFailure = false)
     {
         var session = GetSession();
-        var started = DateTimeOffset.UtcNow;
+        var effectivePurpose = purpose?.Trim().ToLowerInvariant() == "correctness"
+            ? "correctness"
+            : "diagnostic";
+        var recordedStart = DateTimeOffset.UtcNow;
+        var hostStarted = Stopwatch.GetTimestamp();
+        var guestBefore = session.Diagnostics.SampleGuest();
         var screenshotDirectory = Path.Combine(session.ResultDirectory, "screenshots");
         Directory.CreateDirectory(screenshotDirectory);
 
@@ -268,20 +282,51 @@ public sealed class XemuControlManager : IDisposable
             baseName += ".png";
 
         var path = UniqueFile(screenshotDirectory, baseName);
-        await CaptureImageAsync(session, path, cancellationToken).ConfigureAwait(false);
+        string? provider = null;
+        Exception? failure = null;
+        try
+        {
+            provider = await CaptureImageAsync(session, path, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception error) when (
+            error is IOException or InvalidDataException or TimeoutException or
+            InvalidOperationException or SocketException or QmpCommandException)
+        {
+            failure = error;
+        }
+
+        var hostCompleted = Stopwatch.GetTimestamp();
+        var guestAfter = session.Diagnostics.SampleGuest();
+        var relative = Path.GetRelativePath(session.ResultDirectory, path);
+        var context = session.Diagnostics.BuildScreenshot(
+            relative,
+            effectivePurpose,
+            failure is null,
+            provider,
+            hostStarted,
+            hostCompleted,
+            guestBefore,
+            guestAfter,
+            failure?.Message);
+        TryWriteScreenshotContext(path + ".context.json", context);
 
         if (record)
         {
-            var ended = DateTimeOffset.UtcNow;
             RecordManualStep(
                 new JobStep
                 {
                     Type = "screenshot",
-                    Name = Path.GetFileNameWithoutExtension(path)
+                    Name = Path.GetFileNameWithoutExtension(path),
+                    Purpose = effectivePurpose
                 },
-                started,
-                ended);
+                recordedStart,
+                DateTimeOffset.UtcNow);
         }
+
+        if (failure is not null && !(tolerateDiagnosticFailure &&
+                                     effectivePurpose == "diagnostic"))
+            ExceptionDispatchInfo.Capture(failure).Throw();
 
         return path;
     }
@@ -292,7 +337,7 @@ public sealed class XemuControlManager : IDisposable
         var previewDirectory = Path.Combine(session.ResultDirectory, ".preview");
         Directory.CreateDirectory(previewDirectory);
         var path = Path.Combine(previewDirectory, $"preview-{Guid.NewGuid():N}.png");
-        await CaptureImageAsync(session, path, cancellationToken).ConfigureAwait(false);
+        _ = await CaptureImageAsync(session, path, cancellationToken).ConfigureAwait(false);
         return path;
     }
 
@@ -317,6 +362,8 @@ public sealed class XemuControlManager : IDisposable
         await WaitIfPausedAsync(cancellationToken).ConfigureAwait(false);
 
         var started = DateTimeOffset.UtcNow;
+        var hostStarted = Stopwatch.GetTimestamp();
+        var guestBefore = session.Diagnostics.SampleGuest();
         await _inputGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -326,6 +373,11 @@ public sealed class XemuControlManager : IDisposable
         {
             _inputGate.Release();
         }
+
+        var hostCompleted = Stopwatch.GetTimestamp();
+        var guestAfter = session.Diagnostics.SampleGuest();
+        session.Diagnostics.RecordInput(
+            button, duration, hostStarted, hostCompleted, guestBefore, guestAfter);
 
         if (record)
         {
@@ -465,7 +517,11 @@ public sealed class XemuControlManager : IDisposable
                     _ = await CaptureScreenshotAsync(
                         step.Name,
                         cancellationToken,
-                        record: false).ConfigureAwait(false);
+                        record: false,
+                        purpose: step.EffectiveScreenshotPurpose,
+                        tolerateDiagnosticFailure:
+                            step.EffectiveScreenshotPurpose == "diagnostic")
+                        .ConfigureAwait(false);
                     break;
 
                 case "pause":
@@ -494,6 +550,7 @@ public sealed class XemuControlManager : IDisposable
                 case "segment_start":
                     if (segmentStart is null)
                         throw new InvalidOperationException("Plan contains segment_start but no measurement timeline is attached.");
+                    GetSession().Diagnostics.SetSegment(step.Name!);
                     segmentStart(step.Name!);
                     break;
 
@@ -501,6 +558,7 @@ public sealed class XemuControlManager : IDisposable
                     if (segmentEnd is null)
                         throw new InvalidOperationException("Plan contains segment_end but no measurement timeline is attached.");
                     segmentEnd(step.Name!);
+                    GetSession().Diagnostics.SetSegment(null);
                     break;
 
                 case "wait_for_artifact":
@@ -545,7 +603,7 @@ public sealed class XemuControlManager : IDisposable
         _screenshotGate.Dispose();
     }
 
-    private async Task CaptureImageAsync(
+    private async Task<string> CaptureImageAsync(
         ActiveSession session,
         string path,
         CancellationToken cancellationToken)
@@ -575,14 +633,17 @@ public sealed class XemuControlManager : IDisposable
                     }
 
                     await CaptureExternalImageAsync(session, path, cancellationToken).ConfigureAwait(false);
+                    provider = "external";
                 }
             }
             else
             {
                 await CaptureExternalImageAsync(session, path, cancellationToken).ConfigureAwait(false);
+                provider = "external";
             }
 
             await ValidatePngAsync(path, cancellationToken).ConfigureAwait(false);
+            return provider == "auto" ? "qmp" : provider;
         }
         finally
         {
@@ -825,11 +886,28 @@ public sealed class XemuControlManager : IDisposable
         Button = step.Button,
         DurationMs = step.DurationMs,
         Name = step.Name,
+        Purpose = step.Purpose,
         DiagnosticId = step.DiagnosticId,
         Condition = step.Condition,
         TimeoutMs = step.TimeoutMs,
         PollIntervalMs = step.PollIntervalMs
     };
+
+    private static void TryWriteScreenshotContext(
+        string path,
+        ScreenshotContextDocument context)
+    {
+        try
+        {
+            AtomicJson.Write(path, context);
+        }
+        catch (Exception error) when (
+            error is IOException or UnauthorizedAccessException)
+        {
+            System.Diagnostics.Trace.TraceError(
+                "Screenshot context could not be retained: " + error.Message);
+        }
+    }
 
     private static string SanitizeFileName(string value)
     {
@@ -861,7 +939,8 @@ public sealed class XemuControlManager : IDisposable
         string QmpHost,
         int QmpPort,
         string ResultDirectory,
-        IXemuInputProvider Input) : IDisposable
+        IXemuInputProvider Input,
+        ScreenshotDiagnosticContext Diagnostics) : IDisposable
     {
         public int ProcessId => Process.Id;
         public void Dispose() => Input.Dispose();

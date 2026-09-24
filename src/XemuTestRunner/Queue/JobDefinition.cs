@@ -232,6 +232,16 @@ public sealed class JobDefinition
                     $"Artifact '{artifact.Path}' ExpectedSha256 must be 64 hexadecimal characters.");
         }
 
+        if (job.Workload.GuestProgressPath is { } guestProgressPath)
+        {
+            _ = RuntimeStateManager.ResolveInside(
+                Path.Combine(packageDirectory, ".result-validation"),
+                guestProgressPath);
+            if (guestProgressPath.Contains('\\') || guestProgressPath.Contains(':'))
+                throw new InvalidDataException(
+                    "Workload.GuestProgressPath must be a result-relative forward-slash path.");
+        }
+
         foreach (var metric in job.Workload.ReportedMetrics)
         {
             if (string.IsNullOrWhiteSpace(metric.Name) ||
@@ -329,6 +339,12 @@ public sealed class JobStep
     public string? Button { get; set; }
     public int DurationMs { get; set; } = 100;
     public string? Name { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(
+        Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? Purpose { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string EffectiveScreenshotPurpose =>
+        Purpose?.Trim().ToLowerInvariant() == "correctness" ? "correctness" : "diagnostic";
     public string? DiagnosticId { get; set; }
     public ArtifactCheckDefinition? Condition { get; set; }
     public int TimeoutMs { get; set; } = 10000;
@@ -337,14 +353,22 @@ public sealed class JobStep
     public void Validate(string jobId)
     {
         if (DelayMs < 0) throw new InvalidDataException($"Job {jobId}: negative DelayMs.");
-        switch (Type?.Trim().ToLowerInvariant())
+        var normalizedType = Type?.Trim().ToLowerInvariant();
+        if (Purpose is not null && normalizedType != "screenshot")
+            throw new InvalidDataException("Purpose is supported only for screenshot steps.");
+        switch (normalizedType)
         {
             case "wait": if (DelayMs <= 0) throw new InvalidDataException("wait requires DelayMs > 0."); break;
             case "button":
                 if (string.IsNullOrWhiteSpace(Button) || DurationMs is < 1 or > 60000)
                     throw new InvalidDataException("button requires Button and DurationMs between 1 and 60000.");
                 break;
-            case "screenshot": break;
+            case "screenshot":
+                if (Purpose?.Trim().ToLowerInvariant() is { } screenshotPurpose &&
+                    screenshotPurpose is not ("diagnostic" or "correctness"))
+                    throw new InvalidDataException(
+                        "screenshot Purpose must be diagnostic or correctness.");
+                break;
             case "pause": break;
             case "resume": break;
             case "quit": break;
@@ -374,7 +398,10 @@ public sealed class JobStep
                     throw new InvalidDataException(
                         "wait_for_artifact PollIntervalMs must be between 25 and 5000.");
                 break;
-            default: throw new InvalidDataException("Unsupported plan step: " + Type);
+            default:
+                if (Purpose is not null)
+                    throw new InvalidDataException("Purpose is supported only for screenshot steps.");
+                throw new InvalidDataException("Unsupported plan step: " + Type);
         }
     }
 }

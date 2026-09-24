@@ -47,6 +47,12 @@ public sealed class WorkloadContract
     // Omitting null preserves canonical serialization of previously baked tests.
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public GuestHddResultsDefinition? GuestHddResults { get; set; }
+
+    // Optional live guest frame log used only to annotate diagnostics.
+    // Null keeps old immutable definitions byte-for-byte stable and falls back
+    // to the conventional result path guest-frames.log when that file exists.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? GuestProgressPath { get; set; }
 }
 
 public sealed class ArtifactCheckDefinition

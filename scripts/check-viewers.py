@@ -6,6 +6,7 @@ cover rendering, bounds, hostile content, original precision and explicit export
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import base64
+import json
 import re
 import threading
 import unittest
@@ -43,7 +44,7 @@ class ViewerChecks(unittest.TestCase):
         self.page.on('download', lambda download: self.downloads.append(download))
         self.addCleanup(self.context.close)
 
-    def open(self, filename, content, blocked=False, ignore_range=False):
+    def open(self, filename, content, blocked=False, ignore_range=False, context=None):
         document = embedded('ArtifactViewerPage.cs')
         content = content.encode() if isinstance(content, str) else content
         def route(request):
@@ -51,6 +52,8 @@ class ViewerChecks(unittest.TestCase):
             self.calls.append((request.request.method, url.path, request.request.headers))
             if url.path == '/results/view':
                 return request.fulfill(body=document, content_type='text/html')
+            if url.path.endswith('.context.json') and context is not None:
+                return request.fulfill(status=200, body=json.dumps(context), content_type='application/json')
             if url.path.startswith('/api/v1/runs/run-1/artifacts/'):
                 if blocked:
                     return request.fulfill(status=409, json={'code':'operation_blocked', 'error':'Benchmark transfer policy blocks preview.'})
@@ -127,6 +130,29 @@ class ViewerChecks(unittest.TestCase):
         self.assertIn('Fit', self.page.locator('#zoomValue').inner_text())
         self.assertEqual(self.downloads, [])
         self.assertIn('/artifacts/screenshots/failure.png', self.page.locator('#download').get_attribute('href'))
+
+    def test_image_viewer_shows_guest_frame_time_and_last_input_context(self):
+        self.open('screenshots/steady-race.png', PNG, context={
+            'schemaVersion': 1,
+            'purpose': 'diagnostic',
+            'segment': 'in-game-throttle',
+            'guestBefore': {'frame': 14820, 'timestampUs': 247003331, 'observedHostElapsedMs': 8240.9},
+            'guestAfter': {'frame': 14821, 'timestampUs': 247020000, 'observedHostElapsedMs': 8241.5},
+            'lastInput': {
+                'button': 'A', 'durationMs': 100, 'hostElapsedMs': 7128.2,
+                'guest': {'frame': 13819, 'timestampUs': 230315004, 'observedHostElapsedMs': 7128.2}
+            },
+            'sinceLastInput': {'hostMs': 1113.3, 'guestUs': 16705327, 'guestFrames': 1001}
+        })
+        self.page.wait_for_function("document.getElementById('image').naturalWidth === 1")
+        text = self.page.locator('#imageContext').inner_text()
+        self.assertIn('Diagnostic', text)
+        self.assertIn('14,820', text)
+        self.assertIn('14,821', text)
+        self.assertIn('247.00', text)
+        self.assertIn('A', text)
+        self.assertIn('1,001', text)
+        self.assertIn('in-game-throttle', text)
 
     def test_html_and_formulas_are_displayed_only_as_text(self):
         self.open('diagnostics/report.html', '<script>window.compromised=true</script><img src=x onerror=alert(1)>')

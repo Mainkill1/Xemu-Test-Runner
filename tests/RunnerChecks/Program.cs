@@ -29,6 +29,20 @@ if (args.Length == 2 && args[0] == "--fake-screenshot-writer")
     FakeXemuHost.WritePng(args[1]);
     return 0;
 }
+if (args.Length == 2 && args[0] == "--fake-screenshot-context")
+{
+    var screenshot = Path.GetFullPath(args[1]);
+    if (Path.GetFileName(screenshot).Contains("diagnostic-failure", StringComparison.Ordinal))
+        return 9;
+    var resultDirectory = Directory.GetParent(Path.GetDirectoryName(screenshot)!)!.FullName;
+    await File.WriteAllTextAsync(
+        Path.Combine(resultDirectory, "guest-frames.log"),
+        "timestamp_us=123456789 frame=4242 delta_us=16667\n");
+    FakeXemuHost.WritePng(screenshot);
+    return 0;
+}
+if (args.Length == 2 && args[0] == "--fake-screenshot-fail")
+    return 9;
 if (args.Length == 2 && args[0] == "--fake-screenshot-delayed")
 {
     var writer = new ProcessStartInfo(Environment.ProcessPath!)
@@ -156,6 +170,88 @@ try
                darkRight.Detail.Contains("region", StringComparison.OrdinalIgnoreCase),
             "A region without pixels above the declared threshold passed.");
     });
+    await Check("screenshot image checks are diagnostic unless the screenshot explicitly opts into correctness", async () =>
+    {
+        var directory = Path.Combine(root, "diagnostic-screenshot-contract");
+        var screenshots = Path.Combine(directory, "screenshots");
+        Directory.CreateDirectory(screenshots);
+        WriteRgbPng(Path.Combine(screenshots, "frame.png"), 2, 2, (_, _) => (0, 0, 0));
+
+        var job = new JobDefinition
+        {
+            Plan = [new JobStep { Type = "screenshot", Name = "frame" }],
+            Workload = new WorkloadContract
+            {
+                CorrectnessChecks =
+                [
+                    new ArtifactCheckDefinition
+                    {
+                        Name = "hud-visible",
+                        Scope = "result",
+                        Path = "screenshots/frame.png",
+                        MinimumNonBlackPixelRatio = 0.5
+                    }
+                ]
+            }
+        };
+
+        var evaluation = await WorkloadEvaluator.EvaluateAsync(
+            job, directory, directory, null, 0, planCompleted: true, CancellationToken.None);
+        Assert(evaluation.Correctness == CorrectnessOutcome.NotEvaluated,
+            "A diagnostic screenshot still failed guest correctness.");
+        var check = evaluation.Checks.Single(value => value.Name == "hud-visible");
+        Assert(check.Category == "diagnostic" && !check.Passed,
+            "The image observation was not retained as a failed diagnostic annotation.");
+
+        job.Plan[0].Purpose = "correctness";
+        var explicitEvaluation = await WorkloadEvaluator.EvaluateAsync(
+            job, directory, directory, null, 0, planCompleted: true, CancellationToken.None);
+        Assert(explicitEvaluation.Correctness == CorrectnessOutcome.Failed,
+            "An explicitly correctness-scoped screenshot stopped gating correctness.");
+    });
+
+    await Check("screenshot context relates guest progress to the last controller input", async () =>
+    {
+        var directory = Path.Combine(root, "screenshot-input-context");
+        Directory.CreateDirectory(directory);
+        var progress = Path.Combine(directory, "guest-frames.log");
+        await File.WriteAllTextAsync(progress,
+            "timestamp_us=1000000 frame=100 delta_us=16667\n");
+        var context = new XemuTestRunner.Control.ScreenshotDiagnosticContext(directory);
+        var inputBefore = context.SampleGuest();
+        var inputStart = Stopwatch.GetTimestamp();
+        await Task.Delay(2);
+        await File.AppendAllTextAsync(progress,
+            "timestamp_us=1100000 frame=106 delta_us=16667\n");
+        var inputEnd = Stopwatch.GetTimestamp();
+        var inputAfter = context.SampleGuest();
+        context.RecordInput("A", 100, inputStart, inputEnd, inputBefore, inputAfter);
+
+        await File.AppendAllTextAsync(progress,
+            "timestamp_us=1300000 frame=118 delta_us=16667\n");
+        var captureGuest = context.SampleGuest();
+        var captureStart = Stopwatch.GetTimestamp();
+        var document = context.BuildScreenshot(
+            "screenshots/frame.png",
+            "diagnostic",
+            true,
+            "qmp",
+            captureStart,
+            captureStart,
+            captureGuest,
+            captureGuest,
+            null);
+
+        Assert(document.LastInput?.Button == "A",
+            "Screenshot context lost the last controller input.");
+        Assert(document.SinceLastInput?.GuestFrames == 12,
+            "Screenshot context did not calculate guest-frame distance from the last input.");
+        Assert(document.SinceLastInput?.GuestUs == 200000,
+            "Screenshot context did not calculate guest-time distance from the last input.");
+        Assert(document.SinceLastInput?.HostMs is >= 0,
+            "Screenshot context did not retain host-time distance from the last input.");
+    });
+
     await Check("workspace lease excludes a second owner and can be reacquired", () =>
     {
         var workspace = Path.Combine(root, "lease");
@@ -919,7 +1015,7 @@ try
                 InputProvider = "unavailable",
                 ScreenshotProvider = "auto",
                 ScreenshotExecutable = Environment.ProcessPath!,
-                ScreenshotArguments = ["--fake-screenshot-delayed", "{path}"]
+                ScreenshotArguments = ["--fake-screenshot-context", "{path}"]
             },
             Reliability = new ReliabilityOptions
             {
@@ -960,6 +1056,7 @@ try
             Plan =
             [
                 new JobStep { Type = "screenshot", Name = "integration-frame" },
+                new JobStep { Type = "screenshot", Name = "diagnostic-failure" },
                 new JobStep { Type = "resume" },
                 new JobStep { Type = "wait", DelayMs = 1000 },
                 new JobStep { Type = "pause" },
@@ -1018,8 +1115,32 @@ try
         Assert(result.RootElement.GetProperty("status").GetString() == "completed", result.RootElement.ToString());
         Assert(result.RootElement.GetProperty("monitoring").GetProperty("samples").GetInt64() > 0,
             "No telemetry samples were retained.");
-        Assert(File.Exists(Path.Combine(results[0], "screenshots", "integration-frame.png")),
-            "The screenshot fallback was not retained.");
+        var screenshot = Path.Combine(results[0], "screenshots", "integration-frame.png");
+        Assert(File.Exists(screenshot), "The screenshot fallback was not retained.");
+        var screenshotContext = screenshot + ".context.json";
+        Assert(File.Exists(screenshotContext), "Diagnostic screenshot context was not retained.");
+        using (var context = JsonDocument.Parse(await File.ReadAllTextAsync(screenshotContext)))
+        {
+            Assert(context.RootElement.GetProperty("purpose").GetString() == "diagnostic",
+                "Screenshot did not default to diagnostic purpose.");
+            Assert(context.RootElement.GetProperty("guestAfter").GetProperty("frame").GetInt64() == 4242,
+                "Screenshot context did not capture the latest guest frame.");
+            Assert(context.RootElement.GetProperty("guestAfter").GetProperty("timestampUs").GetInt64() == 123456789,
+                "Screenshot context did not capture guest time.");
+            Assert(context.RootElement.GetProperty("segment").ValueKind == JsonValueKind.Null,
+                "Unexpected measurement segment was attached to the screenshot.");
+        }
+        var failedDiagnostic = Path.Combine(
+            results[0], "screenshots", "diagnostic-failure.png.context.json");
+        Assert(File.Exists(failedDiagnostic),
+            "A failed diagnostic screenshot did not retain its context receipt.");
+        using (var context = JsonDocument.Parse(await File.ReadAllTextAsync(failedDiagnostic)))
+        {
+            Assert(!context.RootElement.GetProperty("captured").GetBoolean(),
+                "Failed diagnostic screenshot context claimed an image was captured.");
+            Assert(context.RootElement.GetProperty("error").GetString() is { Length: > 0 },
+                "Failed diagnostic screenshot context omitted the provider error.");
+        }
         Assert(Directory.GetDirectories(paths.Tested).Length == 1 && Directory.GetDirectories(paths.Testing).Length == 0,
             "The completed package was not archived exactly once.");
     });

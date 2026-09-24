@@ -9,7 +9,7 @@ internal static class ArtifactViewerPage
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src blob:; base-uri 'none'; form-action 'none'; object-src 'none'">
 <title>Artifact viewer</title>
 <style>
-:root{color-scheme:dark;--bg:#10141b;--panel:#19212d;--line:#344255;--muted:#a8b7c9;--accent:#8cc5ff}*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:var(--bg);color:#edf3fc;font:14px/1.5 system-ui}header{padding:16px 24px;border-bottom:1px solid var(--line)}nav,.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}a{color:var(--accent)}main{padding:20px 24px;max-width:1800px;margin:auto}h1{font-size:21px;margin:0 0 4px;overflow-wrap:anywhere}.muted{color:var(--muted)}button,input,select,textarea{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:7px 10px}button{cursor:pointer}button:hover,a:hover{color:#b8dbff}button:focus-visible,a:focus-visible,input:focus-visible,td:focus-visible{outline:2px solid var(--accent);outline-offset:2px}button:disabled{opacity:.45;cursor:default}input[type=checkbox]{accent-color:#73b6fa}#status{margin:14px 0;padding:10px 14px;border-left:3px solid #6aaef5;background:var(--panel);white-space:pre-wrap;overflow-wrap:anywhere}#status[data-state=error]{border-color:#f29595;color:#ffc3c3}.toolbar{padding:10px 0}.sheet{border:1px solid var(--line);border-radius:6px;overflow:auto;max-height:62vh;background:#151c26}table{border-collapse:separate;border-spacing:0;min-width:100%;font:13px/1.45 ui-monospace,monospace}td,th{border-right:1px solid #293748;border-bottom:1px solid #293748;padding:7px 11px;text-align:left;white-space:pre-wrap;min-width:115px;max-width:400px;overflow-wrap:anywhere}thead th{position:sticky;top:0;background:#253347;z-index:2}thead button{background:transparent;border:0;padding:0;width:100%;text-align:left}tbody th{position:sticky;left:0;background:#253347;color:var(--muted);min-width:55px;z-index:1}tbody tr:nth-child(even){background:#1b2532}tbody td:hover{background:#293c52}td.numeric{text-align:right;font-variant-numeric:tabular-nums}#cellValue{width:100%;height:65px;font-family:ui-monospace,monospace;resize:vertical}pre{margin:0;background:#131b25;padding:18px;max-height:72vh;overflow:auto;border:1px solid var(--line);border-radius:6px;font:13px/1.6 ui-monospace,monospace;tab-size:2;white-space:pre}pre.wrap{white-space:pre-wrap;overflow-wrap:anywhere}#imageStage{height:70vh;overflow:auto;display:flex;align-items:flex-start;justify-content:center;border:1px solid var(--line);background:repeating-conic-gradient(#1b2532 0% 25%,#131b25 0% 50%) 0/24px 24px;padding:16px}#image{display:block;flex:none}#image.fit{max-width:100%;max-height:100%;object-fit:contain;width:auto;height:auto}#zoomValue{min-width:55px;font-variant-numeric:tabular-nums}.footnote{margin:10px 0;color:var(--muted);font-size:12px}@media(max-width:700px){header,main{padding:14px}.sheet{max-height:55vh}td,th{padding:6px}}
+:root{color-scheme:dark;--bg:#10141b;--panel:#19212d;--line:#344255;--muted:#a8b7c9;--accent:#8cc5ff}*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:var(--bg);color:#edf3fc;font:14px/1.5 system-ui}header{padding:16px 24px;border-bottom:1px solid var(--line)}nav,.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}a{color:var(--accent)}main{padding:20px 24px;max-width:1800px;margin:auto}h1{font-size:21px;margin:0 0 4px;overflow-wrap:anywhere}.muted{color:var(--muted)}button,input,select,textarea{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:7px 10px}button{cursor:pointer}button:hover,a:hover{color:#b8dbff}button:focus-visible,a:focus-visible,input:focus-visible,td:focus-visible{outline:2px solid var(--accent);outline-offset:2px}button:disabled{opacity:.45;cursor:default}input[type=checkbox]{accent-color:#73b6fa}#status{margin:14px 0;padding:10px 14px;border-left:3px solid #6aaef5;background:var(--panel);white-space:pre-wrap;overflow-wrap:anywhere}#status[data-state=error]{border-color:#f29595;color:#ffc3c3}.toolbar{padding:10px 0}.sheet{border:1px solid var(--line);border-radius:6px;overflow:auto;max-height:62vh;background:#151c26}table{border-collapse:separate;border-spacing:0;min-width:100%;font:13px/1.45 ui-monospace,monospace}td,th{border-right:1px solid #293748;border-bottom:1px solid #293748;padding:7px 11px;text-align:left;white-space:pre-wrap;min-width:115px;max-width:400px;overflow-wrap:anywhere}thead th{position:sticky;top:0;background:#253347;z-index:2}thead button{background:transparent;border:0;padding:0;width:100%;text-align:left}tbody th{position:sticky;left:0;background:#253347;color:var(--muted);min-width:55px;z-index:1}tbody tr:nth-child(even){background:#1b2532}tbody td:hover{background:#293c52}td.numeric{text-align:right;font-variant-numeric:tabular-nums}#cellValue{width:100%;height:65px;font-family:ui-monospace,monospace;resize:vertical}pre{margin:0;background:#131b25;padding:18px;max-height:72vh;overflow:auto;border:1px solid var(--line);border-radius:6px;font:13px/1.6 ui-monospace,monospace;tab-size:2;white-space:pre}pre.wrap{white-space:pre-wrap;overflow-wrap:anywhere}#imageStage{height:70vh;overflow:auto;display:flex;align-items:flex-start;justify-content:center;border:1px solid var(--line);background:repeating-conic-gradient(#1b2532 0% 25%,#131b25 0% 50%) 0/24px 24px;padding:16px}#image{display:block;flex:none}#image.fit{max-width:100%;max-height:100%;object-fit:contain;width:auto;height:auto}#zoomValue{min-width:55px;font-variant-numeric:tabular-nums}#imageContext{margin:10px 0;padding:12px 14px;background:var(--panel);border:1px solid var(--line);border-radius:6px;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px 18px}#imageContext strong{display:block;color:#fff}#imageContext .context-note{grid-column:1/-1;color:var(--muted);font-size:12px}.footnote{margin:10px 0;color:var(--muted);font-size:12px}@media(max-width:700px){header,main{padding:14px}.sheet{max-height:55vh}td,th{padding:6px}}
 </style></head><body>
 <header><nav><strong>Artifact viewer</strong><a href="/results" id="back">Back to run</a><a href="/diagnostics">Diagnostics</a><a href="/">Home</a></nav></header>
 <main><h1 id="name">Select an artifact from Evidence</h1><div id="identity" class="muted"></div>
@@ -22,7 +22,7 @@ internal static class ArtifactViewerPage
 <label for="cellValue">Selected cell — exact original value</label><textarea id="cellValue" readonly spellcheck="false"></textarea>
 <p class="footnote">Click a column to sort the loaded rows. Decimal measurements display two places; select a cell or enable Exact numbers to see full precision. IDs and large integers remain unchanged. No formulas are evaluated.</p></section>
 <section id="textPanel" hidden aria-label="Text and JSON viewer"><div class="toolbar"><label><input id="pretty" type="checkbox" checked> Pretty JSON</label><label><input id="wrap" type="checkbox"> Wrap lines</label><button id="copy">Copy displayed text</button><span id="copyStatus" class="muted"></span></div><pre id="text" tabindex="0"></pre></section>
-<section id="imagePanel" hidden aria-label="Image viewer"><div class="toolbar"><button id="fit">Fit</button><button id="actual">100%</button><button id="zoomOut" aria-label="Zoom out">−</button><span id="zoomValue">Fit</span><button id="zoomIn" aria-label="Zoom in">+</button><span id="dimensions" class="muted"></span></div><div id="imageStage"><img id="image" class="fit" alt="Selected diagnostic image"></div></section>
+<section id="imagePanel" hidden aria-label="Image viewer"><div id="imageContext" hidden></div><div class="toolbar"><button id="fit">Fit</button><button id="actual">100%</button><button id="zoomOut" aria-label="Zoom out">−</button><span id="zoomValue">Fit</span><button id="zoomIn" aria-label="Zoom in">+</button><span id="dimensions" class="muted"></span></div><div id="imageStage"><img id="image" class="fit" alt="Selected diagnostic image"></div></section>
 </main><script>
 'use strict';
 const $=id=>document.getElementById(id);
@@ -39,7 +39,34 @@ function selection(){
  if(!safePath(run)||run.includes('/')||!safePath(file))throw Error('Use a run ID and relative artifact path from Evidence.');
  return {run,file,url:'/api/v1/runs/'+encodeURIComponent(run)+'/artifacts/'+file.split('/').map(encodeURIComponent).join('/')};
 }
-function releaseImage(){if(objectUrl){URL.revokeObjectURL(objectUrl);objectUrl=null;}$('image').removeAttribute('src');}
+function releaseImage(){if(objectUrl){URL.revokeObjectURL(objectUrl);objectUrl=null;}$('image').removeAttribute('src');$('imageContext').hidden=true;$('imageContext').replaceChildren();}
+function contextField(label,value){const box=document.createElement('div'),strong=document.createElement('strong'),text=document.createElement('span');strong.textContent=label;text.textContent=value;box.append(strong,text);return box;}
+function guestText(point){if(!point)return 'Unavailable';return 'frame '+Number(point.frame).toLocaleString()+' · guest '+twoDecimals(Number(point.timestampUs)/1e6)+' s';}
+async function loadImageContext(selected,signal){
+ try{
+  const response=await fetch(selected.url+'.context.json',{cache:'no-store',redirect:'error',signal,headers:{Range:'bytes=0-65536'}});
+  if(response.status===404)return;
+  if(!response.ok)return;
+  const preview=await boundedRead(response,65536);
+  if(preview.bytes.length>65536||!preview.ended&&response.status!==206)return;
+  const raw=new TextDecoder('utf-8').decode(preview.bytes);
+  const value=JSON.parse(raw),panel=$('imageContext');panel.replaceChildren();
+  panel.append(contextField('Purpose',(value.purpose||'diagnostic').replace(/^./,c=>c.toUpperCase())));
+  panel.append(contextField('Segment',value.segment||'None'));
+  const before=value.guestBefore,after=value.guestAfter;
+  panel.append(contextField('Guest around capture',before&&after&&before.frame!==after.frame?guestText(before)+' → '+guestText(after):guestText(after||before)));
+  if(value.lastInput){
+   const delta=value.sinceLastInput||{};
+   const parts=[value.lastInput.button];
+   if(Number.isFinite(delta.guestFrames))parts.push(Number(delta.guestFrames).toLocaleString()+' guest frames earlier');
+   else if(Number.isFinite(delta.hostMs))parts.push(twoDecimals(Number(delta.hostMs))+' host ms earlier');
+   panel.append(contextField('Last input',parts.join(' · ')));
+  }else panel.append(contextField('Last input','None recorded'));
+  const note=document.createElement('div');note.className='context-note';note.textContent=value.guestSemantics||'Guest timing is diagnostic context, not an identical-frame requirement.';panel.append(note);
+  if(value.captured===false&&value.error){const failed=contextField('Capture error',String(value.error).slice(0,512));panel.append(failed);}
+  panel.hidden=false;
+ }catch(error){if(error.name!=='AbortError')$('imageContext').hidden=true;}
+}
 
 // A Range request avoids transferring huge evidence just to display a preview.
 // Stream limits also protect the browser if a proxy ignores the Range header.
@@ -172,7 +199,7 @@ async function load(){
   if(imageType){
    if(preview.partial)throw Error('Image exceeds the 16 MiB preview limit. Download original is available; no partial image was decoded.');
    $('imagePanel').hidden=false;objectUrl=URL.createObjectURL(new Blob([preview.bytes],{type:imageType}));
-   const image=$('image');image.onload=()=>{if(token!==requestNumber)return;$('dimensions').textContent=image.naturalWidth+' × '+image.naturalHeight+' pixels';fitImage();status(baseMessage);};image.onerror=()=>{if(token!==requestNumber)return;releaseImage();status('Image could not be decoded. Original artifact is unchanged.','error');};image.src=objectUrl;
+   const image=$('image');image.onload=()=>{if(token!==requestNumber)return;$('dimensions').textContent=image.naturalWidth+' × '+image.naturalHeight+' pixels';fitImage();status(baseMessage);loadImageContext(selected,controller.signal);};image.onerror=()=>{if(token!==requestNumber)return;releaseImage();status('Image could not be decoded. Original artifact is unchanged.','error');};image.src=objectUrl;
   }else{
    sourceText=new TextDecoder('utf-8').decode(preview.bytes);sourcePartial=preview.partial;
    if(extension==='csv'||extension==='tsv'){$('delimiter').value=extension==='tsv'?'tab':',';showCsv();}else showText();
