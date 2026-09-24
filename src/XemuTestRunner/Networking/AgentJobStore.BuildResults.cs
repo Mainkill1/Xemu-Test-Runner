@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using XemuTestRunner.Config;
 using XemuTestRunner.Queue;
 using XemuTestRunner.Reliability;
+using XemuTestRunner.Runtime;
 
 namespace XemuTestRunner.Networking;
 
@@ -44,6 +45,15 @@ internal sealed partial class AgentJobStore
         if (validation?.Passed != true || !sha.Equals(validation.ExecutableSha256, StringComparison.OrdinalIgnoreCase)) issues.Add("payload_validation_missing");
         if (outcome.Execution != "completed" || outcome.Correctness != "passed" || outcome.Evidence != "complete" || outcome.Comparison != "eligible")
             issues.Add("assessment_ineligible");
+        RunStorageReport? storage = null;
+        if (job.RuntimeState.Isolation is not null)
+        {
+            try { storage = RunStateQualification.Read(catalog.Resolve(runId, ".")); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or JsonException) { issues.Add("state_evidence_invalid"); }
+            if (storage?.ComparisonReady != true) issues.Add("state_not_qualified");
+        }
+        else if (job.Operations.IsBenchmark && File.Exists(catalog.Resolve(runId, "diagnostics/run-state/report.json")))
+            issues.Add("benchmark_state_unmanaged");
         var metrics = new List<BuildMetric>();
         var keys = new HashSet<(string, string, string)>();
         if (result.TryGetProperty("workload", out var workload) && workload.TryGetProperty("Measurements", out var measurements) && measurements.ValueKind == JsonValueKind.Array)
@@ -53,9 +63,7 @@ internal sealed partial class AgentJobStore
             if (measurements.GetArrayLength() > 4096) throw new InvalidDataException("Too many reported metrics (maximum 4096).");
             foreach (var item in measurements.EnumerateArray())
             {
-                var name = Text(item, "Name");
-                var unit = Text(item, "Unit");
-                var direction = Text(item, "Direction");
+                var name = Text(item, "Name"); var unit = Text(item, "Unit"); var direction = Text(item, "Direction");
                 if (name.Length is < 1 or > 128 || unit.Length > 64 || direction is not ("lower" or "higher" or "neutral") ||
                     !item.TryGetProperty("Value", out var value) || value.ValueKind != JsonValueKind.Number || !value.TryGetDouble(out var number) || !double.IsFinite(number) ||
                     !keys.Add((name, unit, direction)))
@@ -71,8 +79,6 @@ internal sealed partial class AgentJobStore
         inventory.Remove("CapturedUtc");
         var hasMonitoring = result.TryGetProperty("monitoring", out var monitoring) && monitoring.ValueKind == JsonValueKind.Object;
         if (!hasMonitoring) issues.Add("monitoring_unavailable");
-        // Early startup crashes can precede telemetry initialization. Keep them
-        // in build history instead of dropping the failed attempt from A/B.
         var environmentKey = HashJson(new { inventory, runnerVersion = Text(result.GetProperty("host"), "runnerVersion"),
             intervalMs = hasMonitoring && monitoring.TryGetProperty("intervalMs", out var interval) ? (int?)interval.GetInt32() : null,
             gpuProviders = hasMonitoring && monitoring.TryGetProperty("gpuProviders", out var providers) ? providers : JsonSerializer.SerializeToElement(Array.Empty<string>()) });
@@ -99,13 +105,13 @@ internal sealed partial class AgentJobStore
         job.Environment = job.Environment.OrderBy(item => item.Key, StringComparer.Ordinal).ToDictionary(item => item.Key, item => item.Value, StringComparer.Ordinal);
         var testKey = HashJson(new { job, fixedFiles = source.Request.Files.Where(file => !buildPaths.Contains(file.Path, StringComparer.Ordinal))
             .OrderBy(file => file.Path, StringComparer.Ordinal).Select(file => new { file.Path, file.Length, sha256 = file.Sha256.ToLowerInvariant() }).ToArray() });
+        testKey = RunStateQualification.ComparisonKey(testKey, storage, job.RuntimeState.Isolation is not null);
         var record = new BuildRunRecord(runId, sha, testKey, environmentKey, buildKey, testLabel, outcome, issues.Count == 0,
             issues.Distinct().ToArray(), metrics.OrderBy(metric => metric.Name, StringComparer.Ordinal).ThenBy(metric => metric.Unit, StringComparer.Ordinal).ToArray(),
             "/api/v1/runs/" + Uri.EscapeDataString(runId) + "/artifacts/metrics.csv");
         BuildResults.Save(record);
         return record;
     }
-
     private static string Text(JsonElement element, string name) => element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
         ? value.GetString()! : throw new InvalidDataException("Required metadata field is missing: " + name);
 }

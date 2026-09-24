@@ -4,24 +4,14 @@ using XemuTestRunner.Queue;
 namespace XemuTestRunner.Runtime;
 
 public sealed record ReportedMeasurement(string Name, double Value, string Unit, string Direction, string Source);
-
-public sealed record WorkloadEvaluation(
-    CorrectnessOutcome Correctness,
-    EvidenceOutcome Evidence,
-    IReadOnlyList<AssessmentCheck> Checks,
-    IReadOnlyList<ReportedMeasurement> Measurements);
+public sealed record WorkloadEvaluation(CorrectnessOutcome Correctness, EvidenceOutcome Evidence,
+    IReadOnlyList<AssessmentCheck> Checks, IReadOnlyList<ReportedMeasurement> Measurements);
 
 /// <summary>Evaluates each declared requirement independently; one unreadable artifact must not hide the others.</summary>
 public static class WorkloadEvaluator
 {
-    public static async Task<WorkloadEvaluation> EvaluateAsync(
-        JobDefinition job,
-        string packageDirectory,
-        string resultDirectory,
-        RuntimeMaterialization? runtime,
-        int metricSamples,
-        bool planCompleted,
-        CancellationToken cancellationToken)
+    public static async Task<WorkloadEvaluation> EvaluateAsync(JobDefinition job, string packageDirectory,
+        string resultDirectory, RuntimeMaterialization? runtime, int metricSamples, bool planCompleted, CancellationToken cancellationToken)
     {
         var checks = new List<AssessmentCheck>();
         var measurements = new List<ReportedMeasurement>();
@@ -63,6 +53,9 @@ public static class WorkloadEvaluator
             if (definition.Required)
                 checks.Add(new AssessmentCheck("metric:" + definition.Name, result.Measurement is not null, "evidence", result.Detail));
         }
+        // Storage control is comparison provenance, not a guest correctness test.
+        var state = RunStateQualification.Check(job, resultDirectory);
+        if (state is not null) checks.Add(state);
         var correctnessChecks = checks.Where(check => check.Category == "correctness").ToArray();
         var evidenceChecks = checks.Where(check => check.Category == "evidence").ToArray();
         return new WorkloadEvaluation(GetCorrectness(correctnessChecks), GetEvidence(evidenceChecks), checks, measurements);
@@ -102,7 +95,6 @@ public static class WorkloadEvaluator
         catch (Exception exception) when (ArtifactInspector.IsArtifactFailure(exception))
         { return new(null, "Metric extraction failed: " + exception.Message); }
     }
-
     private static bool TryReadNumber(JsonElement root, string propertyPath, out double value)
     {
         value = default;

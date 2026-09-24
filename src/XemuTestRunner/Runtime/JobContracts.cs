@@ -8,6 +8,8 @@ public sealed class RuntimeStateDefinition
     public bool KeepOnSuccess { get; set; }
     public bool KeepOnFailure { get; set; } = true;
     public List<RuntimeFileDefinition> Files { get; set; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RunIsolationDefinition? Isolation { get; set; }
 }
 
 public sealed class RuntimeFileDefinition

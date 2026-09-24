@@ -18,6 +18,7 @@ public sealed partial class EmbeddedHttpServer
                 topic = "observations",
                 job = "/api/v1/jobs/{id}?view=summary&since={cursor}&wait=20",
                 result = "/api/v1/runs/{runId}?view=summary",
+                state = "/api/v1/runs/{runId}/state",
                 waitSeconds = new { minimum = 0, maximum = 20 },
                 unchanged = "changed:false is a successful bounded wait, not failed submission.",
                 identity = "Cursors identify lifecycle state and server instance, not plan revision.",
@@ -32,14 +33,15 @@ public sealed partial class EmbeddedHttpServer
             var snapshot = _state.Snapshot();
             await WriteAgentJsonAsync(stream, new
             {
-                api = "xemu-test-runner", protocol = "v1", agentRevision = 5,
+                api = "xemu-test-runner", protocol = "v1", agentRevision = 6,
                 version = ApplicationInfo.DisplayVersion,
                 instance = _observationEpoch, phase = snapshot.Phase,
                 blocked = snapshot.QueueIssue is not null,
                 bulkTransfersAllowed = snapshot.CurrentJob is null || snapshot.Operations.BulkTransfersAllowed,
-                capabilities = new[] { "jobDrafts", "resumableUploads", "jobSummaries", "resultSummaries", "boundedWait", "pinnedTests", "payloadReuse", "artifactPages", "logCursors", "crashReports", "diagnosticZip" },
+                capabilities = new[] { "jobDrafts", "resumableUploads", "jobSummaries", "resultSummaries", "boundedWait", "pinnedTests", "payloadReuse", "artifactPages", "logCursors", "crashReports", "diagnosticZip", "runStateLedger" },
                 jobs = "/api/v1/jobs", runs = "/api/v1/runs", tests = "/api/v1/tests",
                 help = "/api/v1/help?topic=observations", testHelp = "/api/v1/help?topic=tests",
+                stateHelp = "/api/v1/help?topic=run-state",
                 crashReadiness = "/api/v1/diagnostics/crash-capabilities",
                 evidenceHelp = "/api/v1/help?topic=evidence", detail = "/api/v1/agent"
             }, cancellationToken: ct).ConfigureAwait(false);

@@ -15,6 +15,7 @@ else
     ReuseStressChecks.Register(checks);
     BuildIndexRecoveryChecks.Register(checks);
     CrashApiChecks.Register(checks);
+    RunStateApiChecks.Register(checks);
     AbReportChecks.Register(checks);
     GuestHddChecks.Register(checks);
     GuestPipelineChecks.Register(checks);
