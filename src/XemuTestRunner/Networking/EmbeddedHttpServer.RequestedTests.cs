@@ -39,8 +39,9 @@ public sealed partial class EmbeddedHttpServer
         if (request.Path == "/api/v1/help" && GetQueryValue(request.Query, "topic") == "test-workflow" && request.Method == "GET")
         {
             await WriteAgentJsonAsync(stream, new {
-                version = 1, capabilities = new[] { "namedConfigs", "requestedTests", "uploadOnly", "executableHashResults", "pinnedBaseline", "serverComparison" },
+                version = 1, capabilities = new[] { "namedConfigs", "requestedTests", "uploadOnly", "executableHashResults", "pinnedBaseline", "serverComparison", "applicationIdentity", "performanceAnalysis" },
                 configs = "/api/v1/test-configs", viewer = "/tests", requests = "/api/v1/test-runs", results = "/api/v1/help?topic=build-results",
+                application = "/api/v1/applications/{id}", performance = "/api/v1/runs/{runId}/performance",
                 start = "POST /api/v1/test-runs/{id}/start", rule = "Uploads never start tests. Explicit start persists intent and queues behind current work."
             }, cancellationToken: ct).ConfigureAwait(false);
             return false;
@@ -100,8 +101,7 @@ public sealed partial class EmbeddedHttpServer
                 if (request.ContentLength.GetValueOrDefault() > 0)
                 {
                     var body = await ReadAgentBodyAsync<JsonElement>(stream, request, ct).ConfigureAwait(false);
-                    if (body.ValueKind != JsonValueKind.Object || body.EnumerateObject().Any())
-                        throw new InvalidDataException("Start accepts no body or an empty JSON object.");
+                    if (body.ValueKind != JsonValueKind.Object || body.EnumerateObject().Any()) throw new InvalidDataException("Start accepts no body or an empty JSON object.");
                 }
                 await WriteAgentJsonAsync(stream, AgentJobs.RequestedView(AgentJobs.RequestTestStart(id)), 202, cancellationToken: ct).ConfigureAwait(false);
                 return false;
