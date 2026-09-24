@@ -122,6 +122,8 @@ public sealed partial class EmbeddedHttpServer
     }
     private async Task<bool> RouteAsync(Stream stream, HttpRequest request, bool keepAlive, CancellationToken ct)
     {
+        var health = await TryHealthRouteAsync(stream, request, keepAlive, ct).ConfigureAwait(false);
+        if (health.HasValue) return health.Value;
         var agent = await TryAgentRouteAsync(stream, request, ct).ConfigureAwait(false);
         if (agent.HasValue) return agent.Value;
         var evidence = await TryEvidenceRouteAsync(stream, request, keepAlive, ct);
@@ -132,7 +134,6 @@ public sealed partial class EmbeddedHttpServer
             {
                 case "/": await WriteHtmlAsync(stream, WebPages.Home(_uiOptions.WebRefreshMs), keepAlive, ct); return true;
                 case "/control": await WriteHtmlAsync(stream, WebPages.Control(_uiOptions.WebRefreshMs, _uiOptions.LivePreviewIntervalMs, _uiOptions.LivePreviewEnabled), keepAlive, ct); return true;
-                case "/api/v1/health": await WriteJsonAsync(stream, 200, "OK", new { status = "ok", timestampUtc = DateTimeOffset.UtcNow }, keepAlive, ct); return true;
                 case "/api/v1/status": await WriteJsonAsync(stream, 200, "OK", _state.Snapshot(), keepAlive, ct); return true;
                 case "/api/v1/control": await WriteJsonAsync(stream, 200, "OK", _control.Snapshot(), keepAlive, ct); return true;
                 case "/api/v1/queue": await WriteJsonAsync(stream, 200, "OK", _state.Snapshot().Queue, keepAlive, ct); return true;

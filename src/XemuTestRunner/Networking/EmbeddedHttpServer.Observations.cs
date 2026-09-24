@@ -36,13 +36,14 @@ public sealed partial class EmbeddedHttpServer
             var snapshot = _state.Snapshot();
             await WriteAgentJsonAsync(stream, new
             {
-                api = "xemu-test-runner", protocol = "v1", agentRevision = 8,
+                api = "xemu-test-runner", protocol = "v1", agentRevision = 9,
                 version = ApplicationInfo.DisplayVersion,
                 instance = _observationEpoch, phase = snapshot.Phase,
                 blocked = snapshot.QueueIssue is not null,
                 bulkTransfersAllowed = snapshot.CurrentJob is null || snapshot.Operations.BulkTransfersAllowed,
-                capabilities = new[] { "jobDrafts", "resumableUploads", "jobSummaries", "resultSummaries", "boundedWait", "pinnedTests", "payloadReuse", "artifactPages", "logCursors", "crashReports", "diagnosticZip", "runStateLedger", "diskAssets", "completionWait" },
+                capabilities = new[] { "jobDrafts", "resumableUploads", "jobSummaries", "resultSummaries", "boundedWait", "pinnedTests", "payloadReuse", "artifactPages", "logCursors", "crashReports", "diagnosticZip", "runStateLedger", "diskAssets", "completionWait", "healthContract" },
                 jobs = "/api/v1/jobs", runs = "/api/v1/runs", tests = "/api/v1/tests", diskAssets = "/api/v1/disk-assets",
+                health = "/health", versionedHealth = "/api/v1/health",
                 help = "/api/v1/help?topic=observations", testHelp = "/api/v1/help?topic=tests",
                 waitHelp = "/api/v1/help?topic=completion-wait",
                 stateHelp = "/api/v1/help?topic=run-state", diskAssetHelp = "/api/v1/help?topic=disk-assets",

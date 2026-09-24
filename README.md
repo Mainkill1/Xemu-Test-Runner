@@ -134,6 +134,7 @@ Start with `GET /api/v1/health` for liveness and `GET /api/v1/agent?view=summary
 
 | Need | Reference |
 | --- | --- |
+| Liveness/readiness contract | [Health API](docs/HEALTH.md) |
 | Understand or change the implementation | [Code guide](docs/CODE-GUIDE.md) |
 | Drafts, uploads, validation and submission | [Agent API](docs/AGENT-API.md) |
 | Small status replies and selected evidence | [Observations](docs/AGENT-OBSERVATIONS.md), [evidence](docs/AGENT-EVIDENCE.md) |
