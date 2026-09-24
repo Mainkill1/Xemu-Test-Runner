@@ -9,7 +9,7 @@ internal sealed record AgentOutcome(string Execution, string Correctness, string
 internal sealed record AgentFailure(string Name, string Category, string Detail);
 internal sealed record AgentResultSummary(bool Ok, string RunId, bool Available, string? Code, AgentOutcome? Outcome,
     IReadOnlyList<string> Reasons, int MoreReasons, IReadOnlyList<AgentFailure> Failures,
-    int MoreFailures, bool Truncated, string Detail);
+    int MoreFailures, bool Truncated, string Detail, string Diagnostics);
 
 /// <summary>Projects the canonical assessment, never inferring correctness from process exit or queue location.</summary>
 internal sealed class AgentAssessmentReader
@@ -87,7 +87,7 @@ internal sealed class AgentAssessmentReader
         var outcome = new AgentOutcome(Name(assessment.Execution), Name(assessment.Correctness), Name(assessment.Evidence), Name(assessment.Comparison));
         AgentResultSummary Build() => new(true, runId, true, null, outcome, reasons.ToArray(),
             assessment.ComparisonReasons.Count - reasons.Count, failures.ToArray(), allFailures.Length - failures.Count,
-            truncated || reasons.Count < assessment.ComparisonReasons.Count || failures.Count < allFailures.Length, Detail(runId));
+            truncated || reasons.Count < assessment.ComparisonReasons.Count || failures.Count < allFailures.Length, Detail(runId), DiagnosticsUrl(runId));
         var result = Build();
         // Escaped Unicode can cost more bytes than character counts suggest.
         // Drop whole detail entries, reporting every omission, until within budget.
@@ -102,6 +102,7 @@ internal sealed class AgentAssessmentReader
     }
 
     private static string Name<T>(T value) where T : struct, Enum => JsonNamingPolicy.CamelCase.ConvertName(value.ToString());
+    internal static string DiagnosticsUrl(string runId) => "/api/v1/runs/" + Uri.EscapeDataString(runId) + "/diagnostics";
     private static string Detail(string runId) => "/api/v1/runs/" + Uri.EscapeDataString(runId) + "/artifacts/assessment.json";
-    private static AgentResultSummary Unavailable(string runId, string code) => new(true, runId, false, code, null, [], 0, [], 0, false, Detail(runId));
+    private static AgentResultSummary Unavailable(string runId, string code) => new(true, runId, false, code, null, [], 0, [], 0, false, Detail(runId), DiagnosticsUrl(runId));
 }

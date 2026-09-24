@@ -64,13 +64,18 @@ internal sealed partial class AgentJobStore
             }
         }
         if (metrics.Count == 0) issues.Add("metrics_missing");
+        if (outcome.Execution == "crashed") issues.Add("native_crash");
         var inventory = BuildResultStore.Read<JsonObject>(catalog.Resolve(runId, "host-inventory.json"));
         foreach (var name in new[] { "Machine", "OperatingSystem", "OsArchitecture", "ProcessArchitecture", "DotNet", "CpuModel", "LogicalProcessors", "GraphicsAdapters" })
             if (!inventory.ContainsKey(name)) throw new InvalidDataException("Environment identity is incomplete: " + name);
         inventory.Remove("CapturedUtc");
+        var hasMonitoring = result.TryGetProperty("monitoring", out var monitoring) && monitoring.ValueKind == JsonValueKind.Object;
+        if (!hasMonitoring) issues.Add("monitoring_unavailable");
+        // Early startup crashes can precede telemetry initialization. Keep them
+        // in build history instead of dropping the failed attempt from A/B.
         var environmentKey = HashJson(new { inventory, runnerVersion = Text(result.GetProperty("host"), "runnerVersion"),
-            intervalMs = result.GetProperty("monitoring").GetProperty("intervalMs").GetInt32(),
-            gpuProviders = result.GetProperty("monitoring").GetProperty("gpuProviders") });
+            intervalMs = hasMonitoring && monitoring.TryGetProperty("intervalMs", out var interval) ? (int?)interval.GetInt32() : null,
+            gpuProviders = hasMonitoring && monitoring.TryGetProperty("gpuProviders", out var providers) ? providers : JsonSerializer.SerializeToElement(Array.Empty<string>()) });
         var tag = job.Tags.SingleOrDefault(value => value.StartsWith("test-definition:", StringComparison.Ordinal));
         IReadOnlyList<string> buildPaths = [exe];
         var testLabel = job.Arguments.FirstOrDefault() ?? "custom";

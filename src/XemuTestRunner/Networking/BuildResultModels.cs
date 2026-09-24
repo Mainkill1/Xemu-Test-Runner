@@ -19,7 +19,11 @@ internal sealed record BuildComparison(string A, string B, bool BaselinePinned, 
     int RunsA, int RunsB, int BlockedRuns, string Status, string Statistic, string RecordSet,
     IReadOnlyList<BuildDelta> Rows, int MoreRows, string Csv);
 internal sealed record BuildRunBrief(string RunId, string Test, AgentOutcome Outcome, bool Eligible,
-    IReadOnlyList<BuildMetric> Metrics, int MoreMetrics, IReadOnlyList<string> Issues, string RawCsv);
+    IReadOnlyList<BuildMetric> Metrics, int MoreMetrics, IReadOnlyList<string> Issues, string RawCsv)
+{
+    // Presentation link only; persisted build records/baseline identities stay unchanged.
+    public string Diagnostics => AgentAssessmentReader.DiagnosticsUrl(RunId);
+}
 internal sealed record BuildSummary(string Sha256, int RunCount, int EligibleRuns, string RecordSet,
     string BaselineStatus, BuildComparison? Comparison, IReadOnlyList<BuildRunBrief> Runs, int MoreRuns, string Details);
 

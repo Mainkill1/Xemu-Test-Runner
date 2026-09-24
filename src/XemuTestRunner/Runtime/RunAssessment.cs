@@ -11,7 +11,8 @@ public enum ExecutionOutcome
     InvalidInput,
     RunnerFailure,
     CleanupFailure,
-    Held
+    Held,
+    Crashed
 }
 
 public enum CorrectnessOutcome

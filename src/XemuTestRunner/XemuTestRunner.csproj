@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="RunnerChecks" />
+    <InternalsVisibleTo Include="CrashChecks" />
   </ItemGroup>
 
   <ItemGroup>

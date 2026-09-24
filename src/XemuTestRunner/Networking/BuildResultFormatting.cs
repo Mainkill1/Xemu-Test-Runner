@@ -36,6 +36,7 @@ internal static class BuildResultFormatting
             foreach (var metric in run.Metrics) text.AppendLine($"  {Cell(metric.Name)}: {Number(metric.Value)} {Cell(metric.Unit)}");
             if (run.MoreMetrics > 0) text.AppendLine($"  +{run.MoreMetrics} metrics in detailed result.");
             foreach (var issue in run.Issues) text.AppendLine("  " + Cell(issue));
+            text.AppendLine("  Diagnostics: " + run.Diagnostics);
             text.AppendLine("  Raw CSV: " + run.RawCsv);
         }
         if (summary.MoreRuns > 0) text.AppendLine($"{summary.MoreRuns} additional attempts: {summary.Details}");

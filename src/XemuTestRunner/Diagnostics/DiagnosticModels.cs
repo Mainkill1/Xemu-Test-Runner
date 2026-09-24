@@ -3,6 +3,7 @@ namespace XemuTestRunner.Diagnostics;
 public sealed class DiagnosticsOptions
 {
     public bool Enabled { get; set; } = true;
+    public CrashCaptureOptions CrashReports { get; set; } = new();
     public int ToolTimeoutMs { get; set; } = 15000;
     public int CaptureFinalizeTimeoutMs { get; set; } = 60000;
     public bool AutoHangBundle { get; set; } = true;
