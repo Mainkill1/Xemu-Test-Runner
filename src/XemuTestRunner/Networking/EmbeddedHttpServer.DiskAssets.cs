@@ -77,7 +77,7 @@ public sealed partial class EmbeddedHttpServer
                     items,
                     nextOffset = next,
                     storedBytes = stored,
-                    storedBytesComplete = next is null && catalog.List(0, 100, out var extra).Count < 100 && extra is null
+                    storedBytesComplete = catalog.List(0, 100, out var extra).Count <= 100 && extra is null
                 }, cancellationToken: ct).ConfigureAwait(false);
                 return false;
             }
@@ -101,6 +101,7 @@ public sealed partial class EmbeddedHttpServer
             {
                 if (!await EnsureOperationAllowedAsync(stream, "bulk_transfer", false, ct).ConfigureAwait(false))
                     return false;
+                using var transfer = Activity.TrackTransfer(new { diskAsset = id, action = "delete" });
                 var references = FindDiskAssetReferences(id);
                 if (references.Count > 0)
                     throw new AgentRequestException(409, "disk_asset_in_use",
@@ -130,6 +131,12 @@ public sealed partial class EmbeddedHttpServer
                 throw new AgentRequestException(409, "disk_asset_source_mismatch",
                     "Source file length does not match the catalog definition.",
                     "Use the file declaration's exact length and SHA-256.");
+            using var transfer = Activity.TrackTransfer(new
+            {
+                diskAsset = id,
+                action = "import",
+                sourceJob = body.SourceJobId
+            });
             var receipt = await _uploads.ReceiveAsync(source, catalog.ContentPath(id), source.Length, null,
                 manifest.Sha256, null, _options.TransferBufferBytes, ct).ConfigureAwait(false);
             if (!receipt.Complete)
@@ -175,6 +182,7 @@ public sealed partial class EmbeddedHttpServer
                     throw new AgentRequestException(409, "disk_asset_hash_mismatch",
                         "Upload digest differs from the immutable disk asset digest.",
                         "Use the manifest SHA-256 or create a different asset ID.");
+                using var transfer = Activity.TrackTransfer(new { diskAsset = id, action = "upload" });
                 var receipt = await _uploads.ReceiveAsync(stream, target, upload.Length, upload.Range,
                     manifest.Sha256, upload.Id, _options.TransferBufferBytes, ct).ConfigureAwait(false);
                 await WriteAgentJsonAsync(stream, new

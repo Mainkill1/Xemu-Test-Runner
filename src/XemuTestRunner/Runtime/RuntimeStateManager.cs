@@ -221,6 +221,11 @@ public static class RuntimeStateManager
                 if (receipt.SchemaVersion != 1 || receipt.State != "pending" ||
                     !receipt.TargetStopped || !receipt.EvidenceFinalized)
                     continue;
+                var resultRunId = Path.GetFileName(Path.GetFullPath(result)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                if (!string.Equals(receipt.RunId, resultRunId, StringComparison.Ordinal))
+                    throw new InvalidDataException(
+                        "Runtime cleanup receipt RunId does not match its result directory.");
                 ProcessAuthorizedCleanup(receipt, receiptPath, workspace);
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or
