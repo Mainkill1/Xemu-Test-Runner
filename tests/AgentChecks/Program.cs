@@ -1,8 +1,14 @@
 var checks = new List<(string Name, Func<Task> Run)>();
-ObservationChecks.Register(checks);
-TemplateChecks.Register(checks);
-EvidenceChecks.Register(checks);
-ReuseStressChecks.Register(checks);
+if (args.Contains("--client", StringComparer.Ordinal))
+    ClientChecks.Register(checks);
+else
+{
+    ObservationChecks.Register(checks);
+    TemplateChecks.Register(checks);
+    EvidenceChecks.Register(checks);
+    ActionBodyChecks.Register(checks);
+    ReuseStressChecks.Register(checks);
+}
 var failures = 0;
 foreach (var (name, run) in checks)
 {
