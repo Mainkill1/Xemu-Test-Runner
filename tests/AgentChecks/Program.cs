@@ -7,6 +7,7 @@ else
     TemplateChecks.Register(checks);
     EvidenceChecks.Register(checks);
     ActionBodyChecks.Register(checks);
+    RequestedTestChecks.Register(checks);
     ReuseStressChecks.Register(checks);
 }
 var failures = 0;
