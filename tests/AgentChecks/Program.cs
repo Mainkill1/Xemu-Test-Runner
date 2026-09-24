@@ -6,6 +6,7 @@ if (args.Contains("--client", StringComparer.Ordinal))
 }
 else
 {
+    SharedInputChecks.Register(checks);
     QueueHandoffChecks.Register(checks);
     CompletionWaitChecks.Register(checks);
     DiskAssetSchemaChecks.Register(checks);
