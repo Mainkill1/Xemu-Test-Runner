@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
+using XemuTestRunner.Runtime;
 
 namespace XemuTestRunner.Config;
 
@@ -14,7 +16,24 @@ public static class ConfigLoader
             PropertyNameCaseInsensitive = true,
             ReadCommentHandling = JsonCommentHandling.Skip,
             AllowTrailingCommas = true,
-            WriteIndented = true
+            WriteIndented = true,
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver
+            {
+                Modifiers =
+                {
+                    static type =>
+                    {
+                        if (type.Type != typeof(RuntimeStateDefinition)) return;
+                        // Saved revisions hash this serialization. Do not add a
+                        // new empty field to legacy jobs; populated asset pins
+                        // remain part of the canonical identity as usual.
+                        var disks = type.Properties.Single(property =>
+                            property.Name == nameof(RuntimeStateDefinition.DiskAssets));
+                        disks.ShouldSerialize = static (_, value) =>
+                            value is ICollection<RuntimeDiskAssetDefinition> { Count: > 0 };
+                    }
+                }
+            }
         };
         options.Converters.Add(
             new JsonStringEnumConverter(
@@ -70,7 +89,7 @@ public static class ConfigLoader
                 "Sampling/flush/queue intervals must be positive; PackageStabilityMs must be at least 100; FiniteWaitTimeoutSeconds must be between 0 and 3600; buffer capacity must be at least 16.");
         if (c.Monitoring.Gpu.SampleIntervalMs < c.Monitoring.IntervalMs ||
             c.Monitoring.Gpu.SensorIntervalMs < c.Monitoring.Gpu.SampleIntervalMs ||
-            c.Monitoring.Gpu.CounterRefreshMs < c.Monitoring.Gpu.SampleIntervalMs)
+            c.Monitoring.Gpu.CounterRefreshMs < c.Monitoring.Gpu.SensorIntervalMs)
             throw new InvalidDataException(
                 "GPU SampleIntervalMs must be >= Monitoring.IntervalMs; SensorIntervalMs and CounterRefreshMs must be >= SampleIntervalMs.");
         if (c.Http.Port is < 1 or > 65535 || c.Http.TransferBufferBytes is < 65536 or > 16777216 || c.Http.MaxHeaderBytes is < 4096 or > 1048576)
