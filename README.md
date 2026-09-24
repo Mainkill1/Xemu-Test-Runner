@@ -51,6 +51,16 @@ Normal result output is a small readable report calculated by the tester, with t
 
 `GET /api/v1/compare?A=SHA&B=SHA` performs the comparison server-side. Omitting A uses the explicit baseline snapshot. Baselines do not drift when later runs of the same executable arrive. Different procedures/environments, failed repetitions, missing metrics and zero reference values do not become invented speedup claims. The displayed change is descriptive, not a statistical-significance claim.
 
+Reports include A/B medians, means, ranges and attempt counts, with **Improvement % as the final column** in each section and in comparison CSV. Positive means better for the declared metric direction; a runtime dropping from 100 to 80 is reported as +20% time reduction. JSON additionally provides sample standard deviations. Incomparable/neutral results have no invented improvement percentage.
+
+## Guest results inside the HDD
+
+A saved test can enable `Workload.GuestHddResults` to collect `xemu_perf_tests/results.txt` automatically from its private FATX HDD after confirmed process exit, before runtime cleanup. The runner reads only the configured path and its allocation chain; no mount, whole-disk conversion, SSH or agent-side HDD download is needed.
+
+Raw and self-contained QCOW2 v2/v3 images are supported. The test definition pins the partition geometry, clean runtime seed and expected guest result file. The adapter preserves original guest bytes, validates record IDs/work/checksums, and calculates per-leaf mean/median/min/max/p95. These metrics enter the same baseline/A/B API in separate XISO sections. Unsupported image features, stale seeds and partial/wrong guest output fail explicitly.
+
+Configure this once in the test library using [Guest HDD results](docs/GUEST-HDD-RESULTS.md). Uploading a candidate still does not start anything; the extraction is post-processing of an already-authorized execution. It is not a new guest completion detector.
+
 A completed or archived process is not necessarily correct. Execution, correctness, evidence and comparison remain separate. An unconfigured correctness contract is not a pass. The lower-level client retains `result JOB_ID --require correctness` and `--require eligible` for explicit exit-code gates.
 
 ## Detailed protocols and operations
@@ -59,6 +69,7 @@ A completed or archived process is not necessarily correct. Execution, correctne
 | --- | --- |
 | Named configs, application uploads and explicit queue requests | [Requested tests](docs/REQUESTED-TESTS.md) |
 | Saved hash results, comparison keys and baseline lifetime | [Hash results](docs/HASH-RESULTS.md) |
+| Automatic guest HDD extraction and A/B statistics | [Guest results](docs/GUEST-HDD-RESULTS.md) |
 | Draft/upload/validate/submit API | [Agent API](docs/AGENT-API.md) |
 | Lightweight job/assessment observations | [Observations](docs/AGENT-OBSERVATIONS.md) |
 | Original pinned package definitions/reuse | [Test library](docs/AGENT-TEST-LIBRARY.md) |

@@ -96,8 +96,6 @@ internal sealed class BuildResultStore(string resultsRoot)
             var shaA = baseline?.Sha256 ?? Sha(a!);
             var shaB = Sha(b);
             var all = new List<BuildDelta>();
-            // Cohorts require the same actual workload and captured environment.
-            // A failed repetition poisons its cohort rather than vanishing from a median.
             foreach (var key in left.Concat(right).Select(value => (value.TestKey, value.EnvironmentKey)).Distinct().OrderBy(key => key.TestKey).ThenBy(key => key.EnvironmentKey))
             {
                 var groupA = left.Where(value => value.TestKey == key.TestKey && value.EnvironmentKey == key.EnvironmentKey).ToArray();
@@ -118,8 +116,11 @@ internal sealed class BuildResultStore(string resultsRoot)
                     var aa = Values(groupA);
                     var bb = Values(groupB);
                     var verdict = failure ?? (aa.Length != groupA.Length || bb.Length != groupB.Length ? "missingMetric" : null);
-                    double? va = verdict is null ? Median(aa) : null;
-                    double? vb = verdict is null ? Median(bb) : null;
+                    var statsA = verdict is null ? BuildStatistics.From(aa) : null;
+                    var statsB = verdict is null ? BuildStatistics.From(bb) : null;
+                    if (verdict is null && (statsA is null || statsB is null)) verdict = "numericRange";
+                    double? va = verdict is null ? statsA!.Median : null;
+                    double? vb = verdict is null ? statsB!.Median : null;
                     double? percent = null;
                     if (verdict is null)
                     {
@@ -136,8 +137,10 @@ internal sealed class BuildResultStore(string resultsRoot)
                             }
                         }
                     }
-                    all.Add(new(Clip(label), key.TestKey[..12], key.EnvironmentKey[..12], Clip(metric.Name), Clip(metric.Unit),
-                        aa.Length, bb.Length, va, vb, percent, verdict!));
+                    // Preserve full metric identity even when the readable label
+                    // is shortened by a renderer. Distinct leaf IDs must not collapse.
+                    all.Add(new(Clip(label), key.TestKey[..12], key.EnvironmentKey[..12], metric.Name, metric.Unit,
+                        aa.Length, bb.Length, va, vb, percent, verdict!, metric.Direction, statsA, statsB));
                 }
             }
             var measured = all.Count(row => row.ChangePercent.HasValue);
@@ -182,12 +185,6 @@ internal sealed class BuildResultStore(string resultsRoot)
         while (JsonSerializer.SerializeToUtf8Bytes(value, WireJson).Length > 4096 && value.Rows.Count > 0)
             value = value with { Rows = value.Rows.SkipLast(1).ToArray(), MoreRows = value.MoreRows + 1 };
         return value;
-    }
-    private static double Median(double[] values)
-    {
-        Array.Sort(values);
-        var middle = values.Length / 2;
-        return values.Length % 2 != 0 ? values[middle] : values[middle - 1] / 2 + values[middle] / 2;
     }
     internal static string Clip(string text) => text.Length > 48 ? text[..45] + "..." : text;
     internal static string Sha(string? text)

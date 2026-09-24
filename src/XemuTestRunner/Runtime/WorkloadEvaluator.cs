@@ -15,32 +15,54 @@ public static class WorkloadEvaluator
     {
         var checks = new List<AssessmentCheck>();
         var measurements = new List<ReportedMeasurement>();
+
+        // Engine finalization calls this after confirmed process shutdown and
+        // before runtime cleanup. The extractor independently checks ownership.
+        if (job.Workload.GuestHddResults is { } guestDefinition)
+        {
+            var guest = GuestHddResults.Evaluate(guestDefinition, packageDirectory, resultDirectory, runtime, cancellationToken);
+            checks.AddRange(guest.Checks);
+            measurements.AddRange(guest.Measurements);
+        }
+
         foreach (var requirement in job.Workload.CorrectnessChecks)
-            checks.Add(await EvaluateArtifactAsync(requirement, "correctness", packageDirectory, resultDirectory, runtime, cancellationToken).ConfigureAwait(false));
+        {
+            checks.Add(await EvaluateArtifactAsync(requirement, "correctness",
+                packageDirectory, resultDirectory, runtime, cancellationToken).ConfigureAwait(false));
+        }
         foreach (var requirement in job.Workload.EvidenceRequirements)
-            checks.Add(await EvaluateArtifactAsync(requirement, "evidence", packageDirectory, resultDirectory, runtime, cancellationToken).ConfigureAwait(false));
+        {
+            checks.Add(await EvaluateArtifactAsync(requirement, "evidence",
+                packageDirectory, resultDirectory, runtime, cancellationToken).ConfigureAwait(false));
+        }
         if (job.Workload.MinimumMetricSamples > 0)
+        {
             checks.Add(new AssessmentCheck("minimum_metric_samples", metricSamples >= job.Workload.MinimumMetricSamples, "evidence",
                 $"Required >= {job.Workload.MinimumMetricSamples}; actual {metricSamples}."));
+        }
         if (job.Workload.RequirePlanCompletion && job.Plan.Count > 0)
+        {
             checks.Add(new AssessmentCheck("plan_completion", planCompleted, "evidence",
                 planCompleted ? "The declared plan completed." : "The declared plan did not complete."));
+        }
         foreach (var definition in job.Workload.ReportedMetrics)
         {
-            var result = await ReadMeasurementAsync(definition, packageDirectory, resultDirectory, runtime, cancellationToken).ConfigureAwait(false);
+            var result = await ReadMeasurementAsync(definition,
+                packageDirectory, resultDirectory, runtime, cancellationToken).ConfigureAwait(false);
             if (result.Measurement is not null) measurements.Add(result.Measurement);
-            if (definition.Required) checks.Add(new AssessmentCheck("metric:" + definition.Name, result.Measurement is not null, "evidence", result.Detail));
+            if (definition.Required)
+                checks.Add(new AssessmentCheck("metric:" + definition.Name, result.Measurement is not null, "evidence", result.Detail));
         }
         // Storage control is comparison provenance, not a guest correctness test.
         var state = RunStateQualification.Check(job, resultDirectory);
         if (state is not null) checks.Add(state);
-        var correctness = GetCorrectness(checks.Where(check => check.Category == "correctness").ToArray());
-        var evidence = GetEvidence(checks.Where(check => check.Category == "evidence").ToArray());
-        return new WorkloadEvaluation(correctness, evidence, checks, measurements);
+        var correctnessChecks = checks.Where(check => check.Category == "correctness").ToArray();
+        var evidenceChecks = checks.Where(check => check.Category == "evidence").ToArray();
+        return new WorkloadEvaluation(GetCorrectness(correctnessChecks), GetEvidence(evidenceChecks), checks, measurements);
     }
 
-    private static async Task<AssessmentCheck> EvaluateArtifactAsync(ArtifactCheckDefinition requirement,
-        string category, string packageDirectory, string resultDirectory, RuntimeMaterialization? runtime, CancellationToken cancellationToken)
+    private static async Task<AssessmentCheck> EvaluateArtifactAsync(ArtifactCheckDefinition requirement, string category,
+        string packageDirectory, string resultDirectory, RuntimeMaterialization? runtime, CancellationToken cancellationToken)
     {
         var name = string.IsNullOrWhiteSpace(requirement.Name) ? requirement.Path : requirement.Name;
         try
@@ -59,7 +81,8 @@ public static class WorkloadEvaluator
         if (string.IsNullOrWhiteSpace(definition.Name) || string.IsNullOrWhiteSpace(definition.Path) || string.IsNullOrWhiteSpace(definition.JsonProperty))
             return new(null, "Reported metric requires Name, Path, and JsonProperty.");
         var direction = definition.Direction?.Trim().ToLowerInvariant();
-        if (direction is not ("higher" or "lower" or "neutral")) return new(null, $"Metric direction '{definition.Direction}' is invalid.");
+        if (direction is not ("higher" or "lower" or "neutral"))
+            return new(null, $"Metric direction '{definition.Direction}' is invalid.");
         try
         {
             var path = ArtifactInspector.ResolvePath(definition.Scope, definition.Path, packageDirectory, resultDirectory, runtime);

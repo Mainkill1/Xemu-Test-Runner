@@ -34,6 +34,10 @@ public sealed class WorkloadContract
     public List<ReportedMetricDefinition> ReportedMetrics { get; set; } = [];
     public int MinimumMetricSamples { get; set; }
     public bool RequirePlanCompletion { get; set; } = true;
+
+    // Omitting null preserves canonical serialization of previously baked tests.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public GuestHddResultsDefinition? GuestHddResults { get; set; }
 }
 
 public sealed class ArtifactCheckDefinition
