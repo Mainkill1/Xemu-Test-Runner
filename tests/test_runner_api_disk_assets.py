@@ -10,6 +10,11 @@ import unittest
 from urllib.parse import urlsplit
 from test_runner_api import fixture
 
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+from runner_transport import RunnerApi
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "runner_tests.py"
 
 def respond(method, path, body, headers):
@@ -33,6 +38,26 @@ def respond(method, path, body, headers):
     return 404, {"code": "unexpected_request", "error": route}, {}
 
 class DiskAssetClientChecks(unittest.TestCase):
+    def test_generic_transport_preserves_zero_byte_job_uploads(self):
+        completed = False
+        def zero_respond(method, path, body, headers):
+            nonlocal completed
+            if path == "/zero?upload-status=1":
+                return 200, {"complete": completed, "partial": False, "length": 0,
+                             "total": 0, "uploadId": None, "state": "complete" if completed else "missing"}, {}
+            if path == "/zero" and method == "PUT":
+                self.assertEqual(headers.get("Content-Length"), "0")
+                completed = True
+                return 201, {"complete": True}, {}
+            return 404, {"code": "unexpected", "error": path}, {}
+
+        with tempfile.TemporaryDirectory() as folder, fixture(zero_respond) as (origin, calls):
+            source = Path(folder) / "empty.bin"
+            source.write_bytes(b"")
+            RunnerApi(origin).upload_path("/zero", source, 0, hashlib.sha256(b"").hexdigest())
+        self.assertTrue(completed)
+        self.assertTrue(any(method == "PUT" and path == "/zero" for method, path, _, _ in calls))
+
     def run_client(self, origin, *args):
         return subprocess.run([sys.executable, str(SCRIPT), *args],
             env={**os.environ, "XEMU_RUNNER_URL": origin}, text=True,

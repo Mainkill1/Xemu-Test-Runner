@@ -52,8 +52,8 @@ try
         var files = runtime.RootElement.GetProperty("files");
         Require(files.GetArrayLength() == 1, "Catalog disk was not materialized.");
         var file = files[0];
-        Require(file.GetProperty("diskAssetId").GetString() == "xiso-empty-v1", "Asset provenance missing.");
-        Require(file.GetProperty("sha256").GetString() == sha, "Runtime disk hash missing.");
+        Require(file.GetProperty("DiskAssetId").GetString() == "xiso-empty-v1", "Asset provenance missing.");
+        Require(file.GetProperty("Sha256").GetString() == sha, "Runtime disk hash missing.");
         var runtimeDirectory = runtime.RootElement.GetProperty("directory").GetString()!;
         Require(!File.Exists(Path.Combine(runtimeDirectory, "xbox_hdd.qcow2")), "Transient XISO HDD survived finalized evidence.");
         using var cleanup = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(result, "runtime-cleanup.json")));
