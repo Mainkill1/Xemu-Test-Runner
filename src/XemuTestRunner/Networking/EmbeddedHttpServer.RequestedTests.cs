@@ -39,9 +39,9 @@ public sealed partial class EmbeddedHttpServer
         if (request.Path == "/api/v1/help" && GetQueryValue(request.Query, "topic") == "test-workflow" && request.Method == "GET")
         {
             await WriteAgentJsonAsync(stream, new {
-                version = 1, capabilities = new[] { "namedConfigs", "requestedTests", "uploadOnly", "executableHashResults", "pinnedBaseline", "serverComparison" },
+                version = 1, capabilities = new[] { "namedConfigs", "requestedTests", "uploadOnly", "executableHashResults", "pinnedBaseline", "serverComparison", "shortReferences" },
                 configs = "/api/v1/test-configs", viewer = "/tests", requests = "/api/v1/test-runs", results = "/api/v1/help?topic=build-results",
-                start = "POST /api/v1/test-runs/{id}/start", rule = "Uploads never start tests. Explicit start persists intent and queues behind current work."
+                start = "POST /api/v1/test-runs/{id}/start", rule = "Uploads never start tests. Explicit start persists intent and queues behind current work. References resolve before durable identity is recorded."
             }, cancellationToken: ct).ConfigureAwait(false);
             return false;
         }
@@ -65,7 +65,9 @@ public sealed partial class EmbeddedHttpServer
             if (parts.Length == 2 && request.Method == "GET")
             {
                 if (!await EnsureOperationAllowedAsync(stream, "bulk_transfer", false, ct).ConfigureAwait(false)) return false;
-                await WriteAgentJsonAsync(stream, AgentJobs.DescribeTest(Uri.UnescapeDataString(parts[0]), parts[1], true), cancellationToken: ct).ConfigureAwait(false);
+                var name = Uri.UnescapeDataString(parts[0]);
+                var revision = AgentJobs.ResolveTestReference(name, parts[1]);
+                await WriteAgentJsonAsync(stream, AgentJobs.DescribeTest(name, revision, true), cancellationToken: ct).ConfigureAwait(false);
                 return false;
             }
         }
@@ -75,6 +77,7 @@ public sealed partial class EmbeddedHttpServer
             if (request.Method == "POST")
             {
                 var body = await ReadAgentBodyAsync<TestRunRequest>(stream, request, ct).ConfigureAwait(false);
+                body = body with { Revision = AgentJobs.ResolveTestReference(body.TestId, body.Revision) };
                 await WriteAgentJsonAsync(stream, AgentJobs.RequestedView(AgentJobs.CreateRequestedTest(body)), cancellationToken: ct).ConfigureAwait(false);
                 return false;
             }

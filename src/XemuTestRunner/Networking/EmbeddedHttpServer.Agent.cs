@@ -183,7 +183,11 @@ public sealed partial class EmbeddedHttpServer
             }
             throw new AgentRequestException(404, "route_not_found", "No matching job action.", "GET /api/v1/agent and follow the returned job actions.");
         }
-        catch (Exception) when (responseStarted) { throw; }
+        catch (Exception) when (responseStarted || ResponseHasStarted(stream)) { throw; }
+        catch (ApiInputException exception)
+        {
+            await WriteInputErrorAsync(stream, exception, ct).ConfigureAwait(false);
+        }
         catch (AgentRequestException exception)
         {
             await WriteApiErrorAsync(stream, exception.Status, AgentReason(exception.Status), exception.Code,
@@ -218,12 +222,20 @@ public sealed partial class EmbeddedHttpServer
 
     private static async Task<T> ReadAgentBodyAsync<T>(Stream stream, HttpRequest request, CancellationToken ct)
     {
+        ApiRequestValidation.RequireJson(request);
         if (request.ContentLength is not long length || length is < 1 or > 1048576)
-            throw new InvalidDataException("This JSON request requires Content-Length between 1 and 1048576 bytes.");
+            throw new ApiInputException(400, "request_length_invalid", "JSON Content-Length must be between 1 and 1048576 bytes.",
+                "Send a bounded JSON object with its exact byte length.");
         var bytes = new byte[(int)length];
-        await ReadExactlyAsync(stream, bytes, ct).ConfigureAwait(false);
-        return JsonSerializer.Deserialize<T>(bytes, ConfigLoader.JsonOptions)
-            ?? throw new InvalidDataException("The JSON body cannot be null.");
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(15));
+        try { await ReadExactlyAsync(stream, bytes, deadline.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new ApiInputException(408, "request_body_timeout", "The JSON request body was not received within 15 seconds.",
+                "Reconnect and send the complete body. No mutation was attempted.");
+        }
+        return ApiRequestValidation.Parse<T>(bytes);
     }
 
     private static async Task WriteAgentJsonAsync(Stream stream, object? value, int status = 200,
@@ -246,9 +258,10 @@ public sealed partial class EmbeddedHttpServer
 
     private static string AgentReason(int status) => status switch
     {
-        200 => "OK", 201 => "Created", 202 => "Accepted", 400 => "Bad Request", 404 => "Not Found",
-        409 => "Conflict", 411 => "Length Required", 412 => "Precondition Failed",
-        422 => "Unprocessable Content", 428 => "Precondition Required", 429 => "Too Many Requests", _ => "Error"
+        200 => "OK", 201 => "Created", 202 => "Accepted", 400 => "Bad Request", 403 => "Forbidden", 404 => "Not Found",
+        405 => "Method Not Allowed", 408 => "Request Timeout", 409 => "Conflict", 411 => "Length Required", 412 => "Precondition Failed",
+        413 => "Content Too Large", 415 => "Unsupported Media Type", 422 => "Unprocessable Content", 428 => "Precondition Required",
+        429 => "Too Many Requests", _ => "Error"
     };
     private sealed record CloneJobRequest(string NewId);
 }
