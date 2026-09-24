@@ -90,29 +90,51 @@ class RunnerApi:
 
     def upload(self, job_id: str, root: Path, item: dict, chunk_bytes: int = 8 * 1024 * 1024) -> None:
         path = job_url(job_id) + "/files/" + encode_path(item["Path"])
-        source_path = inside(root, item["Path"])
+        self.upload_path(path, inside(root, item["Path"]), item["Length"], item["Sha256"], chunk_bytes)
+
+    def upload_path(self, path: str, source_path: Path, total: int, sha256: str,
+                    chunk_bytes: int = 8 * 1024 * 1024) -> None:
+        if total < 0 or source_path.is_symlink() or not source_path.is_file():
+            raise ClientError("source_invalid", "Upload source must be a regular file with a non-negative declared length.")
+        if source_path.stat().st_size != total:
+            raise ClientError("source_changed", "Local payload length differs from its declaration.")
         failures = 0
         with source_path.open("rb") as source:
             while True:
                 status = self.json(path + "?upload-status=1")
-                total = item["Length"]
                 if status["complete"] and not status["partial"] and status["length"] == total:
-                    return  # Submit rechecks all declared digests.
+                    return
+                if total == 0:
+                    headers = {"Content-Type": "application/octet-stream", "X-Content-SHA256": sha256}
+                    try:
+                        with self.open(path, "PUT", b"", headers) as response:
+                            receipt = json.loads(response.read(65536))
+                        failures = 0
+                        if not receipt.get("complete"):
+                            raise ClientError("publication_unconfirmed", "Zero-byte upload was not published.",
+                                              "Inspect upload status and retry the same identity.")
+                        return
+                    except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+                        failures += 1
+                        if failures >= 4:
+                            raise ClientError("upload_interrupted", "Upload did not finish.",
+                                              "Rerun the identical command with the SAME ID and unchanged local file.") from error
+                        time.sleep(failures)
+                        continue
                 offset = int(status["length"]) if status["partial"] else 0
                 if offset < 0 or offset > total:
                     raise ClientError("upload_offset_invalid", "Server returned an invalid committed upload offset.")
-                if total and offset == total:
+                if offset == total:
                     raise ClientError("publication_unconfirmed", "All bytes arrived but publication is unconfirmed.",
-                                      "Inspect this file's upload status; do not create another attempt.")
+                                      "Inspect upload status and retry the same asset/job identity.")
                 source.seek(offset)
                 data = source.read(min(chunk_bytes, total - offset))
-                if not data and total:
+                if not data:
                     raise ClientError("source_changed", "Local payload became shorter after hashing.")
-                headers = {"Content-Type": "application/octet-stream", "X-Content-SHA256": item["Sha256"]}
-                if total:
-                    headers["Content-Range"] = f"bytes {offset}-{offset + len(data) - 1}/{total}"
-                    if status.get("uploadId"):
-                        headers["X-Upload-Id"] = status["uploadId"]
+                headers = {"Content-Type": "application/octet-stream", "X-Content-SHA256": sha256,
+                           "Content-Range": f"bytes {offset}-{offset + len(data) - 1}/{total}"}
+                if status.get("uploadId"):
+                    headers["X-Upload-Id"] = status["uploadId"]
                 try:
                     with self.open(path, "PUT", data, headers) as response:
                         receipt = json.loads(response.read(65536))
@@ -123,7 +145,7 @@ class RunnerApi:
                     failures += 1
                     if failures >= 4:
                         raise ClientError("upload_interrupted", "Upload did not finish.",
-                                          "Rerun the identical command with the SAME ID and unchanged local files.") from error
+                                          "Rerun the identical command with the SAME ID and unchanged local file.") from error
                     time.sleep(failures)
 
     def download(self, path: str, target: Path, expected: int) -> None:

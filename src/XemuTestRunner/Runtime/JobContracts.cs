@@ -8,6 +8,7 @@ public sealed class RuntimeStateDefinition
     public bool KeepOnSuccess { get; set; }
     public bool KeepOnFailure { get; set; } = true;
     public List<RuntimeFileDefinition> Files { get; set; } = [];
+    public List<RuntimeDiskAssetDefinition> DiskAssets { get; set; } = [];
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public RunIsolationDefinition? Isolation { get; set; }
 }
@@ -17,6 +18,14 @@ public sealed class RuntimeFileDefinition
     public string Source { get; set; } = "";
     public string Destination { get; set; } = "";
     public string? ExpectedSha256 { get; set; }
+}
+
+public sealed class RuntimeDiskAssetDefinition
+{
+    public string AssetId { get; set; } = "";
+    public string ExpectedSha256 { get; set; } = "";
+    public string Destination { get; set; } = "";
+    public string Retention { get; set; } = "deleteAfterEvidence";
 }
 
 public sealed class InputIdentityDefinition

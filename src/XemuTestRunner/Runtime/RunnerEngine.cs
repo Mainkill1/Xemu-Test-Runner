@@ -53,6 +53,7 @@ public sealed class RunnerEngine
         _queue.EnsureDirectories();
         using var owner = WorkspaceLease.Acquire(_paths.Workspace);
         using var queueOwner = WorkspaceLease.Acquire(_paths.Testing);
+        RuntimeStateManager.RecoverAuthorizedCleanups(_paths.Workspace, _paths.Results);
         _queue.RecoverInterrupted();
         _state.SetQueue(_queue.Snapshot());
 
@@ -1190,7 +1191,10 @@ public sealed class RunnerEngine
             RuntimeStateManager.Cleanup(
                 job.RuntimeState,
                 runtimeState,
-                runtimeSuccess);
+                runtimeSuccess,
+                resultDirectory,
+                targetStopped: !started || exited,
+                evidenceFinalized: !started || exited);
         }
 
         if (preserveTarget &&
@@ -1383,7 +1387,10 @@ public sealed class RunnerEngine
         RuntimeStateManager.Cleanup(
             held.RuntimeDefinition,
             held.RuntimeState,
-            success: false);
+            success: false,
+            held.ResultDirectory,
+            targetStopped: true,
+            evidenceFinalized: false);
 
         AtomicJson.Write(
             Path.Combine(

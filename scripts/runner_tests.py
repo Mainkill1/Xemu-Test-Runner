@@ -7,6 +7,7 @@ runner_transport.py and runner_test_results.py beside this standard-library clie
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import json
 import os
@@ -103,6 +104,22 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="Return JSON instead of formatted configs/results.")
     sub = p.add_subparsers(dest="command", required=True)
     sub.add_parser("list")
+    sub.add_parser("disk-list")
+    disk_show = sub.add_parser("disk-show")
+    disk_show.add_argument("id")
+    disk_upload = sub.add_parser("disk-upload")
+    disk_upload.add_argument("id")
+    disk_upload.add_argument("file", type=Path)
+    disk_upload.add_argument("--kind", choices=("xiso-seed", "snapshot-carrier"), required=True)
+    disk_upload.add_argument("--description")
+    disk_import = sub.add_parser("disk-import")
+    disk_import.add_argument("id")
+    disk_import.add_argument("--from-job", required=True)
+    disk_import.add_argument("--path", required=True)
+    disk_import.add_argument("--kind", choices=("xiso-seed", "snapshot-carrier"), required=True)
+    disk_import.add_argument("--description")
+    disk_delete = sub.add_parser("disk-delete")
+    disk_delete.add_argument("id")
     show = sub.add_parser("show")
     show.add_argument("test", help="NAME or NAME@REVISION")
     show.add_argument("--out", type=Path)
@@ -134,6 +151,50 @@ def parser() -> argparse.ArgumentParser:
 def execute(args) -> dict | str:
     api = RunnerApi(args.url)
     command = args.command
+    if command.startswith("disk-"):
+        info = api.json("/api/v1/help?topic=disk-assets")
+        if not isinstance(info, dict) or info.get("capability") != "diskAssets":
+            raise ClientError("capability_missing", "The tester does not support disk assets.",
+                              "Deploy a compatible runner; do not copy HDDs through SSH.")
+        if command == "disk-list":
+            return api.json("/api/v1/disk-assets")
+        if command == "disk-show":
+            return api.json("/api/v1/disk-assets/" + urllib.parse.quote(args.id, safe=""))
+        if command == "disk-delete":
+            return api.json("/api/v1/disk-assets/" + urllib.parse.quote(args.id, safe=""), "DELETE")
+        if command == "disk-import":
+            job = api.json("/api/v1/jobs/" + urllib.parse.quote(args.from_job, safe=""))
+            declaration = next((item for item in job.get("files", [])
+                                if item.get("path", item.get("Path")) == args.path), None)
+            if declaration is None:
+                raise ClientError("disk_source_missing", "The source job does not declare that file.")
+            length = declaration.get("length", declaration.get("Length"))
+            sha256 = declaration.get("sha256", declaration.get("Sha256"))
+            api.json("/api/v1/disk-assets", "POST", {
+                "id": args.id, "kind": args.kind, "length": length, "sha256": sha256,
+                **({"description": args.description} if args.description is not None else {})})
+            return api.json("/api/v1/disk-assets/" + urllib.parse.quote(args.id, safe="") + "/import",
+                            "POST", {"sourceJobId": args.from_job, "path": args.path})
+        if command == "disk-upload":
+            source = args.file.resolve()
+            if source.is_symlink() or not source.is_file():
+                raise ClientError("source_invalid", "Disk asset source must be a regular file.")
+            before = source.stat()
+            digest = hashlib.sha256()
+            with source.open("rb") as file:
+                for block in iter(lambda: file.read(1024 * 1024), b""):
+                    digest.update(block)
+            after = source.stat()
+            if before.st_size <= 0 or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                raise ClientError("source_changed", "Disk asset source changed while hashing.")
+            sha256 = digest.hexdigest()
+            api.json("/api/v1/disk-assets", "POST", {
+                "id": args.id, "kind": args.kind, "length": after.st_size, "sha256": sha256,
+                **({"description": args.description} if args.description is not None else {})})
+            path = "/api/v1/disk-assets/" + urllib.parse.quote(args.id, safe="") + "/content"
+            api.upload_path(path, source, after.st_size, sha256)
+            value = api.json("/api/v1/disk-assets/" + urllib.parse.quote(args.id, safe=""))
+            return {**value, "sha256": sha256}
     if command in runner_test_results.COMMANDS:
         return runner_test_results.execute(api, args)
     info = api.json("/api/v1/help?topic=test-workflow")

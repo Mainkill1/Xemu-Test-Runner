@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
+using XemuTestRunner.Runtime;
 
 namespace XemuTestRunner.Config;
 
@@ -14,7 +16,24 @@ public static class ConfigLoader
             PropertyNameCaseInsensitive = true,
             ReadCommentHandling = JsonCommentHandling.Skip,
             AllowTrailingCommas = true,
-            WriteIndented = true
+            WriteIndented = true,
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver
+            {
+                Modifiers =
+                {
+                    static type =>
+                    {
+                        if (type.Type != typeof(RuntimeStateDefinition)) return;
+                        // Saved revisions hash this serialization. Do not add a
+                        // new empty field to legacy jobs; populated asset pins
+                        // remain part of the canonical identity as usual.
+                        var disks = type.Properties.Single(property =>
+                            property.Name == nameof(RuntimeStateDefinition.DiskAssets));
+                        disks.ShouldSerialize = static (_, value) =>
+                            value is ICollection<RuntimeDiskAssetDefinition> { Count: > 0 };
+                    }
+                }
+            }
         };
         options.Converters.Add(
             new JsonStringEnumConverter(

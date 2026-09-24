@@ -104,6 +104,6 @@ public static class RunStateInventory
             await output.WriteAsync(buffer.AsMemory(0, count), ct).ConfigureAwait(false);
         }
         if (copied != expectedLength || !Convert.ToHexString(hash.GetHashAndReset()).Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("Seed content identity changed while copying.");
+            throw new InvalidDataException("Seed content SHA-256 or length changed while copying.");
     }
 }

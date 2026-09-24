@@ -67,6 +67,7 @@ A completed or archived process is not necessarily correct. Execution, correctne
 
 | Topic | Reference |
 | --- | --- |
+| Shared Xbox HDD assets and transient runtime disks | [Disk assets](docs/DISK-ASSETS.md) |
 | Named configs, application uploads and explicit queue requests | [Requested tests](docs/REQUESTED-TESTS.md) |
 | Saved hash results, comparison keys and baseline lifetime | [Hash results](docs/HASH-RESULTS.md) |
 | Automatic guest HDD extraction and A/B statistics | [Guest results](docs/GUEST-HDD-RESULTS.md) |

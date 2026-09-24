@@ -35,6 +35,8 @@ jobs:
         run: dotnet run --project tests/OperationChecks -c Release
       - name: Run regression and process integration checks
         run: dotnet run --project tests/RunnerChecks -c Release --no-build
+      - name: Run disk asset lifecycle checks
+        run: dotnet run --project tests/DiskAssetChecks -c Release
       - name: Run agent HTTP contract checks
         run: dotnet run --project tests/AgentChecks -c Release
       - uses: actions/setup-python@v7
