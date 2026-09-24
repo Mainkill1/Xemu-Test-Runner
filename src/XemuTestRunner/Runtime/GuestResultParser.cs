@@ -43,9 +43,10 @@ internal static class GuestResultParser
             var correct = FixedFields.All(field => baseline.TryGetProperty(field, out var a) && candidate.TryGetProperty(field, out var b) &&
                 Scalar(a) is { } expectedValue && expectedValue == Scalar(b));
             correct &= NoFailure(baseline) && NoFailure(candidate) && NoFailure(baselineMetadata) && NoFailure(candidateMetadata);
-            // A PASS elsewhere cannot replace a reference-required oracle at its
-            // original path. Encoded metadata is checked after decoding as well.
-            correct &= RequiredOutcomesMatch(baseline, candidate) && RequiredOutcomesMatch(baselineMetadata, candidateMetadata);
+            // Metadata supports object and encoded-object forms. Compare its
+            // decoded content once, not an object against its JSON string.
+            correct &= RequiredOutcomesMatch(baseline, candidate, skipMetadata: true) &&
+                RequiredOutcomesMatch(baselineMetadata, candidateMetadata);
             var checkedHashes = 0;
             foreach (var field in HashFields)
             {
@@ -169,12 +170,15 @@ internal static class GuestResultParser
             throw new InvalidDataException("Guest schema 1 timing direction must be lower-is-better.");
     }
 
-    private static bool RequiredOutcomesMatch(JsonElement expected, JsonElement actual)
+    private static bool RequiredOutcomesMatch(JsonElement expected, JsonElement actual, bool skipMetadata = false)
     {
         if (expected.ValueKind == JsonValueKind.Object)
         {
             foreach (var property in expected.EnumerateObject())
             {
+                // Only the record's metadata container is handled separately.
+                // A nested field with the same name still has ordinary semantics.
+                if (skipMetadata && property.Name == "metadata") continue;
                 JsonElement found = default;
                 var present = actual.ValueKind == JsonValueKind.Object && actual.TryGetProperty(property.Name, out found);
                 if (property.Name is "outcome" or "oracle_status")
