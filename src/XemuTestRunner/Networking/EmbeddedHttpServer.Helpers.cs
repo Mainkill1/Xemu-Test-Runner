@@ -63,30 +63,6 @@ public sealed partial class EmbeddedHttpServer
         }
     }
 
-    private static Task WriteApiErrorAsync(
-        Stream stream,
-        int status,
-        string reason,
-        string code,
-        string message,
-        string hint,
-        bool keepAlive,
-        CancellationToken cancellationToken,
-        object? details = null) =>
-        WriteJsonAsync(
-            stream,
-            status,
-            reason,
-            new ApiErrorResponse(
-                message,
-                code,
-                hint,
-                status,
-                "/api/v1/help",
-                details),
-            keepAlive,
-            cancellationToken);
-
     private static async Task WriteJsonAsync(Stream stream, int code, string reason, object value, bool keepAlive, CancellationToken cancellationToken)
     {
         var body = JsonSerializer.SerializeToUtf8Bytes(value, ConfigLoader.JsonOptions);
@@ -134,10 +110,13 @@ public sealed partial class EmbeddedHttpServer
 
     private static async Task WriteHeadersAsync(Stream stream, int code, string reason, IReadOnlyDictionary<string, string> headers, bool keepAlive, CancellationToken cancellationToken)
     {
+        var state = ResponseState(stream);
+        state.Started = true;
         var builder = new StringBuilder();
         builder.Append("HTTP/1.1 ").Append(code).Append(' ').Append(reason).Append("\r\n");
         builder.Append("Server: XemuTestRunner\r\n");
         builder.Append("Connection: ").Append(keepAlive ? "keep-alive" : "close").Append("\r\n");
+        builder.Append("X-Request-Id: ").Append(state.RequestId).Append("\r\n");
         foreach (var header in headers)
             builder.Append(header.Key).Append(": ").Append(header.Value).Append("\r\n");
         builder.Append("\r\n");

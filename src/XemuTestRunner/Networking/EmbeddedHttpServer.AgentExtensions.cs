@@ -6,8 +6,10 @@ public sealed partial class EmbeddedHttpServer
 {
     private async Task<bool?> TryAgentExtensionRouteAsync(Stream stream, HttpRequest request, CancellationToken ct)
     {
+        BeginApiResponse(stream);
         try
         {
+            ApiRequestValidation.Validate(request);
             await ConsumeAgentActionBodyAsync(stream, request, ct).ConfigureAwait(false);
             var results = await TryBuildResultRoutesAsync(stream, request, ct).ConfigureAwait(false);
             if (results.HasValue) return results.Value;
@@ -20,6 +22,11 @@ public sealed partial class EmbeddedHttpServer
             var observation = await TryObservationRouteAsync(stream, request, ct).ConfigureAwait(false);
             if (observation.HasValue) return observation.Value;
             return null;
+        }
+        catch (Exception) when (ResponseHasStarted(stream)) { throw; }
+        catch (ApiInputException error)
+        {
+            await WriteInputErrorAsync(stream, error, ct).ConfigureAwait(false);
         }
         catch (AgentRequestException error)
         {

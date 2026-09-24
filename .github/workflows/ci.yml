@@ -31,6 +31,8 @@ jobs:
           cache-dependency-path: '**/*.csproj'
       - name: Build without warnings
         run: dotnet build tests/RunnerChecks/RunnerChecks.csproj -c Release --nologo
+      - name: Run operation ownership and fixture shutdown checks
+        run: dotnet run --project tests/OperationChecks -c Release
       - name: Run regression and process integration checks
         run: dotnet run --project tests/RunnerChecks -c Release --no-build
       - name: Run agent HTTP contract checks
@@ -68,5 +70,7 @@ jobs:
           python -m playwright install --with-deps chromium
       - name: Run browser fixtures
         run: python scripts/check-browser.py
+      - name: Run human workbench interaction checks
+        run: python -m unittest discover -s tests -p 'test_human_workbench.py' -v
       - name: Check diagnostic helpers
         run: python -m py_compile tools/renderdoc_analyze.py tools/renderdoc_session.py

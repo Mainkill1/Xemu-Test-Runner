@@ -14,6 +14,7 @@ else
     HashResultChecks.Register(checks);
     ReuseStressChecks.Register(checks);
     BuildIndexRecoveryChecks.Register(checks);
+    HumanWorkflowChecks.Register(checks);
 }
 var failures = 0;
 foreach (var (name, run) in checks)

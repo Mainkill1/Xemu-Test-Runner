@@ -17,19 +17,25 @@ public sealed partial class EmbeddedHttpServer
         {
             await WriteAgentJsonAsync(stream, new
             {
-                capabilities = new[] { "executableHashResults", "pinnedBaseline", "serverComparison", "compactReports" },
-                result = "/api/v1/build-results/{sha256}", comparison = "/api/v1/compare?A={sha256}&B={sha256}",
-                baseline = "/api/v1/baseline", formats = new[] { "json", "markdown", "csv (comparison only)" },
-                rule = "A omitted uses the explicitly pinned baseline. No first/latest baseline is selected automatically. Indexing reads archived evidence, never starts tests.",
+                capabilities = new[] { "executableHashResults", "pinnedBaseline", "serverComparison", "compactReports", "shortReferences", "buildCatalog" },
+                result = "/api/v1/build-results/{reference}", comparison = "/api/v1/compare?A={reference}&B={reference}",
+                builds = "/api/v1/builds?offset=0&limit=25", baseline = "/api/v1/baseline", formats = new[] { "json", "markdown", "csv (comparison only)" },
+                rule = "A omitted uses the explicitly pinned baseline. A 12..64-hex reference must resolve uniquely; stored identities remain full SHA-256. No first/latest baseline is selected. Reads and indexing never start tests.",
                 index = "POST /api/v1/build-results/index {runId}", indexStatus = "/api/v1/build-results/index-status"
             }, cancellationToken: ct).ConfigureAwait(false);
             return false;
         }
-        var supported = request.Path == "/api/v1/baseline" || request.Path == "/api/v1/compare" || request.Path.StartsWith("/api/v1/build-results/", StringComparison.Ordinal);
+        var supported = request.Path is "/api/v1/builds" or "/api/v1/baseline" or "/api/v1/compare" || request.Path.StartsWith("/api/v1/build-results/", StringComparison.Ordinal);
         if (!supported) return null;
         // This is explicit result analysis, not the constant-cost status path.
         // It reads bounded summary metadata only, never raw measurement CSVs.
         if (!await EnsureOperationAllowedAsync(stream, "bulk_transfer", false, ct).ConfigureAwait(false)) return false;
+        if (request.Path == "/api/v1/builds" && request.Method == "GET")
+        {
+            await WriteAgentJsonAsync(stream, AgentJobs.ListBuilds(ReadBoundedQuery(request.Query, "offset", 0, 0, 1000000),
+                ReadBoundedQuery(request.Query, "limit", 25, 1, 100)), cancellationToken: ct).ConfigureAwait(false);
+            return false;
+        }
         if (request.Path == "/api/v1/baseline")
         {
             if (request.Method == "GET")
@@ -40,7 +46,8 @@ public sealed partial class EmbeddedHttpServer
             if (request.Method == "PUT")
             {
                 var body = await ReadAgentBodyAsync<PinBaselineRequest>(stream, request, ct).ConfigureAwait(false);
-                await WriteAgentJsonAsync(stream, AgentJobs.BuildResults.Pin(body.Sha256), cancellationToken: ct).ConfigureAwait(false);
+                var sha = AgentJobs.ResolveBuildReference(body.Sha256);
+                await WriteAgentJsonAsync(stream, AgentJobs.BuildResults.Pin(sha), cancellationToken: ct).ConfigureAwait(false);
                 return false;
             }
         }
@@ -61,10 +68,13 @@ public sealed partial class EmbeddedHttpServer
             var format = GetQueryValue(request.Query, "format") ?? "json";
             if (format is not ("json" or "markdown" or "csv")) throw new InvalidDataException("format must be json, markdown or csv.");
             var a = GetQueryValue(request.Query, "A");
-            var b = GetQueryValue(request.Query, "B");
-            _ = BuildResultStore.Sha(b);
-            if (a is not null) _ = BuildResultStore.Sha(a);
-            var result = AgentJobs.BuildResults.Compare(a, b!, format == "csv");
+            var b = AgentReferenceResolver.ValidateSyntax(GetQueryValue(request.Query, "B"));
+            // Reject malformed input on either side before looking up either
+            // catalog entry. A missing valid B must not mask an invalid A as 404.
+            if (a is not null) a = AgentReferenceResolver.ValidateSyntax(a);
+            if (a is not null) a = AgentJobs.ResolveBuildReference(a);
+            b = AgentJobs.ResolveBuildReference(b);
+            var result = AgentJobs.BuildResults.Compare(a, b, format == "csv");
             if (format == "json") await WriteAgentJsonAsync(stream, result, cancellationToken: ct).ConfigureAwait(false);
             else await WriteBuildTextAsync(stream, format == "csv" ? BuildResultFormatting.Csv(result) : BuildResultFormatting.Markdown(result), format, ct).ConfigureAwait(false);
             return false;
@@ -73,7 +83,7 @@ public sealed partial class EmbeddedHttpServer
         if (request.Path.StartsWith(prefix, StringComparison.Ordinal) && request.Method == "GET")
         {
             var parts = request.Path[prefix.Length..].Split('/');
-            var sha = BuildResultStore.Sha(parts[0]);
+            var sha = AgentJobs.ResolveBuildReference(parts[0]);
             if (parts.Length == 2 && parts[1] == "runs")
             {
                 var offset = ReadBoundedQuery(request.Query, "offset", 0, 0, 1000000);
