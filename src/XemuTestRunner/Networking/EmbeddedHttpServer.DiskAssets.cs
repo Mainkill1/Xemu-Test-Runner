@@ -2,7 +2,6 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using XemuTestRunner.Runtime;
-using XemuTestRunner.Util;
 
 namespace XemuTestRunner.Networking;
 
@@ -49,17 +48,17 @@ public sealed partial class EmbeddedHttpServer
             if (request.Method == "POST")
             {
                 var body = await ReadAgentBodyAsync<DiskAssetCreateRequest>(stream, request, ct).ConfigureAwait(false);
-                DiskAssetManifest manifest;
+                DiskAssetManifest createdManifest;
                 try
                 {
-                    manifest = catalog.CreateOrGet(body.Id, body.Kind, body.Length, body.Sha256, body.Description, out _);
+                    createdManifest = catalog.CreateOrGet(body.Id, body.Kind, body.Length, body.Sha256, body.Description, out _);
                 }
                 catch (InvalidOperationException error)
                 {
                     throw new AgentRequestException(409, "disk_asset_conflict", error.Message,
                         "Use the existing immutable asset or choose a new asset ID.");
                 }
-                await WriteAgentJsonAsync(stream, DiskAssetView(catalog, manifest), cancellationToken: ct).ConfigureAwait(false);
+                await WriteAgentJsonAsync(stream, DiskAssetView(catalog, createdManifest), cancellationToken: ct).ConfigureAwait(false);
                 return false;
             }
             if (request.Method == "GET")
@@ -191,46 +190,6 @@ public sealed partial class EmbeddedHttpServer
                 return false;
             }
 
-            if (request.Method is "GET" or "HEAD")
-            {
-                if (!catalog.IsReady(manifest))
-                    throw new AgentRequestException(409, "disk_asset_incomplete", "Disk asset content is not completely published.",
-                        "Query ?upload-status=1 and resume the same upload.");
-                await using var file = new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete,
-                    _options.TransferBufferBytes, FileOptions.Asynchronous | FileOptions.SequentialScan);
-                FileRange range;
-                try { range = FileRange.Parse(request.Headers.GetValueOrDefault("Range"), file.Length); }
-                catch (InvalidDataException)
-                {
-                    await WriteHeadersAsync(stream, 416, "Range Not Satisfiable", new Dictionary<string, string>
-                    {
-                        ["Content-Range"] = $"bytes */{file.Length.ToString(CultureInfo.InvariantCulture)}",
-                        ["Content-Length"] = "0"
-                    }, false, ct).ConfigureAwait(false);
-                    await stream.FlushAsync(ct).ConfigureAwait(false);
-                    return false;
-                }
-                var headers = new Dictionary<string, string>
-                {
-                    ["Content-Type"] = "application/octet-stream",
-                    ["Content-Length"] = range.Length.ToString(CultureInfo.InvariantCulture),
-                    ["Accept-Ranges"] = "bytes",
-                    ["Cache-Control"] = "no-store",
-                    ["X-Content-SHA256"] = manifest.Sha256,
-                    ["Content-Disposition"] = $"attachment; filename=\"{id}.qcow2\""
-                };
-                if (range.Partial)
-                    headers["Content-Range"] = $"bytes {range.Start}-{range.Start + range.Length - 1}/{file.Length}";
-                await WriteHeadersAsync(stream, range.Partial ? 206 : 200,
-                    range.Partial ? "Partial Content" : "OK", headers, false, ct).ConfigureAwait(false);
-                if (request.Method == "GET")
-                {
-                    file.Position = range.Start;
-                    await CopyBytesAsync(file, stream, range.Length, ct).ConfigureAwait(false);
-                }
-                await stream.FlushAsync(ct).ConfigureAwait(false);
-                return false;
-            }
         }
 
         throw new AgentRequestException(404, "route_not_found", "No matching disk asset action.",

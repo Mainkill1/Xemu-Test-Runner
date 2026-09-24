@@ -29,7 +29,7 @@ public sealed class DiskAssetCatalog
         value is { Length: >= 1 and <= 64 } &&
         char.IsAsciiLetterOrDigit(value[0]) &&
         char.IsAsciiLetterOrDigit(value[^1]) &&
-        value.All(ch => char.IsAsciiLower(ch) || char.IsAsciiDigit(ch) || ch == '-');
+        value.All(ch => (ch >= 'a' && ch <= 'z') || char.IsAsciiDigit(ch) || ch == '-');
 
     public static void ValidateKind(string kind)
     {

@@ -85,3 +85,6 @@ These commands never select/start/submit a test. Upload remains resumable. Impor
 ## Migration boundary
 
 Create catalog assets first, create new immutable test-config revisions referencing them, verify the new runs, then remove duplicated HDD payloads only when no retained definitions need them. Historical test definitions/results are not rewritten. An automated multi-package migration/prune tool is intentionally separate from this storage primitive.
+
+
+Catalog content download is intentionally not a normal API operation in this first version. The catalog exists to avoid moving HDD images repeatedly; raw disk export can be added later with its own retention/authorization contract rather than making agents fetch multi-gigabyte assets by default.
