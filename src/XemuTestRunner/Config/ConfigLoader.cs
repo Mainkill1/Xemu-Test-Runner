@@ -89,7 +89,7 @@ public static class ConfigLoader
                 "Sampling/flush/queue intervals must be positive; PackageStabilityMs must be at least 100; FiniteWaitTimeoutSeconds must be between 0 and 3600; buffer capacity must be at least 16.");
         if (c.Monitoring.Gpu.SampleIntervalMs < c.Monitoring.IntervalMs ||
             c.Monitoring.Gpu.SensorIntervalMs < c.Monitoring.Gpu.SampleIntervalMs ||
-            c.Monitoring.Gpu.CounterRefreshMs < c.Monitoring.Gpu.SensorIntervalMs)
+            c.Monitoring.Gpu.CounterRefreshMs < c.Monitoring.Gpu.SampleIntervalMs)
             throw new InvalidDataException(
                 "GPU SampleIntervalMs must be >= Monitoring.IntervalMs; SensorIntervalMs and CounterRefreshMs must be >= SampleIntervalMs.");
         if (c.Http.Port is < 1 or > 65535 || c.Http.TransferBufferBytes is < 65536 or > 16777216 || c.Http.MaxHeaderBytes is < 4096 or > 1048576)
