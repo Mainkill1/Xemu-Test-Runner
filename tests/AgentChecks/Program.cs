@@ -1,6 +1,9 @@
 var checks = new List<(string Name, Func<Task> Run)>();
 if (args.Contains("--client", StringComparer.Ordinal))
+{
     ClientChecks.Register(checks);
+    RequestedClientChecks.Register(checks);
+}
 else
 {
     ObservationChecks.Register(checks);
@@ -8,7 +11,9 @@ else
     EvidenceChecks.Register(checks);
     ActionBodyChecks.Register(checks);
     RequestedTestChecks.Register(checks);
+    HashResultChecks.Register(checks);
     ReuseStressChecks.Register(checks);
+    BuildIndexRecoveryChecks.Register(checks);
 }
 var failures = 0;
 foreach (var (name, run) in checks)

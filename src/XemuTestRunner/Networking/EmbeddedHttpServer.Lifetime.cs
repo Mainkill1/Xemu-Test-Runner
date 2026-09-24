@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace XemuTestRunner.Networking;
 
 public sealed partial class EmbeddedHttpServer
@@ -17,15 +19,31 @@ public sealed partial class EmbeddedHttpServer
         finally
         {
             await lifetime.CancelAsync().ConfigureAwait(false);
-            await Task.WhenAll(http, requested).ConfigureAwait(false);
+            try { await Task.WhenAll(http, requested).ConfigureAwait(false); }
+            finally { await DrainAgentRequestsAsync().ConfigureAwait(false); }
         }
     }
 
     private async Task RunListenerLifetimeAsync(CancellationToken ct)
     {
         try { await RunHttpAsync(ct).ConfigureAwait(false); }
-        // Windows may report disposal rather than cancellation when Stop races
-        // a pending accept. Only an actually cancelled lifetime permits this.
         catch (ObjectDisposedException) when (ct.IsCancellationRequested) { }
+    }
+
+    private async Task DrainAgentRequestsAsync()
+    {
+        var timer = Stopwatch.StartNew();
+        while (true)
+        {
+            bool pending;
+            lock (_agentStoreGate) pending = _agentStore?.HasPendingOperations ?? false;
+            // Handlers can still publish a final receipt after their connection
+            // is closed. Do not release the server lifetime while those writers
+            // still own the workspace. Waiting is bounded and never reruns work.
+            if (_clients.IsEmpty && !pending) return;
+            if (timer.Elapsed >= TimeSpan.FromSeconds(5))
+                throw new TimeoutException("HTTP handlers or agent operations did not finish shutdown; workspace ownership must not be assumed released.");
+            await Task.Delay(10).ConfigureAwait(false);
+        }
     }
 }

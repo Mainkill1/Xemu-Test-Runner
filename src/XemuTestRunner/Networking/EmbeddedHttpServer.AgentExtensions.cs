@@ -9,6 +9,8 @@ public sealed partial class EmbeddedHttpServer
         try
         {
             await ConsumeAgentActionBodyAsync(stream, request, ct).ConfigureAwait(false);
+            var results = await TryBuildResultRoutesAsync(stream, request, ct).ConfigureAwait(false);
+            if (results.HasValue) return results.Value;
             var tests = await TryRequestedTestRoutesAsync(stream, request, ct).ConfigureAwait(false);
             if (tests.HasValue) return tests.Value;
             var evidence = await TryFocusedEvidenceRouteAsync(stream, request, ct).ConfigureAwait(false);
@@ -29,10 +31,10 @@ public sealed partial class EmbeddedHttpServer
             await WriteApiErrorAsync(stream, error.Status, AgentReason(error.Status), error.Code,
                 error.Message, error.Hint, false, ct, error.Details).ConfigureAwait(false);
         }
-        catch (Exception error) when (error is JsonException or InvalidDataException or ArgumentException)
+        catch (Exception error) when (error is JsonException or InvalidDataException or ArgumentException or KeyNotFoundException or InvalidOperationException)
         {
             await WriteApiErrorAsync(stream, 400, "Bad Request", "request_invalid", error.Message,
-                "Check the requested IDs, revision, fields and bounded query parameters.", false, ct).ConfigureAwait(false);
+                "Check the requested IDs, revision, fields and bounded query parameters. Missing result metadata does not imply a pass.", false, ct).ConfigureAwait(false);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
