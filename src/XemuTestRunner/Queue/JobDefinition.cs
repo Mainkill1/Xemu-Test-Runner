@@ -237,7 +237,7 @@ public sealed class JobDefinition
             _ = RuntimeStateManager.ResolveInside(
                 Path.Combine(packageDirectory, ".result-validation"),
                 guestProgressPath);
-            if (guestProgressPath.Contains('\') || guestProgressPath.Contains(':'))
+            if (guestProgressPath.Contains('\\') || guestProgressPath.Contains(':'))
                 throw new InvalidDataException(
                     "Workload.GuestProgressPath must be a result-relative forward-slash path.");
         }
