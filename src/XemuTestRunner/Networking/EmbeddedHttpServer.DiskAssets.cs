@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using XemuTestRunner.Runtime;
@@ -210,8 +209,7 @@ public sealed partial class EmbeddedHttpServer
             createdUtc = manifest.CreatedUtc,
             ready,
             uploadState = status.State,
-            upload = $"/api/v1/disk-assets/{Uri.EscapeDataString(manifest.Id)}/content",
-            content = ready ? $"/api/v1/disk-assets/{Uri.EscapeDataString(manifest.Id)}/content" : null
+            upload = $"/api/v1/disk-assets/{Uri.EscapeDataString(manifest.Id)}/content"
         };
     }
 

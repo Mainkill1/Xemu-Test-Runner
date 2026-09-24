@@ -20,7 +20,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "runner_tests.py"
 def respond(method, path, body, headers):
     route = urlsplit(path).path
     if route == "/api/v1/help":
-        return 200, {"capabilities": ["diskAssets"]}, {}
+        return 200, {"capability": "diskAssets"}, {}
     if route == "/api/v1/disk-assets" and method == "POST":
         return 200, {**body, "ready": False}, {}
     if route == "/api/v1/disk-assets" and method == "GET":
@@ -46,7 +46,7 @@ class DiskAssetClientChecks(unittest.TestCase):
                 return 200, {"complete": completed, "partial": False, "length": 0,
                              "total": 0, "uploadId": None, "state": "complete" if completed else "missing"}, {}
             if path == "/zero" and method == "PUT":
-                self.assertEqual(headers.get("Content-Length"), "0")
+                self.assertEqual(next((value for key, value in headers.items() if key.lower() == "content-length"), None), "0")
                 completed = True
                 return 201, {"complete": True}, {}
             return 404, {"code": "unexpected", "error": path}, {}

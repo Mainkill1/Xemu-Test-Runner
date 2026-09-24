@@ -94,13 +94,23 @@ class RunnerApi:
 
     def upload_path(self, path: str, source_path: Path, total: int, sha256: str,
                     chunk_bytes: int = 8 * 1024 * 1024) -> None:
-        if total <= 0 or source_path.is_symlink() or not source_path.is_file():
-            raise ClientError("source_invalid", "Upload source must be a non-empty regular file.")
+        if total < 0 or source_path.is_symlink() or not source_path.is_file():
+            raise ClientError("source_invalid", "Upload source must be a regular file with a non-negative declared length.")
+        if source_path.stat().st_size != total:
+            raise ClientError("source_changed", "Local payload length differs from its declaration.")
         failures = 0
         with source_path.open("rb") as source:
             while True:
                 status = self.json(path + "?upload-status=1")
                 if status["complete"] and not status["partial"] and status["length"] == total:
+                    return
+                if total == 0:
+                    headers = {"Content-Type": "application/octet-stream", "X-Content-SHA256": sha256}
+                    with self.open(path, "PUT", b"", headers) as response:
+                        receipt = json.loads(response.read(65536))
+                    if not receipt.get("complete"):
+                        raise ClientError("publication_unconfirmed", "Zero-byte upload was not published.",
+                                          "Inspect upload status and retry the same identity.")
                     return
                 offset = int(status["length"]) if status["partial"] else 0
                 if offset < 0 or offset > total:
