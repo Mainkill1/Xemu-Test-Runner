@@ -22,7 +22,9 @@ internal static class GuestHddResults
             var file = runtime.Files.SingleOrDefault(item => item.Destination.Replace('\\', '/') == definition.Image)
                 ?? throw new InvalidDataException("guest_image_undeclared: Image is not a materialized runtime file.");
             var image = Inside(runtime.Directory, definition.Image);
-            var seed = Inside(package, file.Source.Replace('\\', '/'));
+            var seed = file.DiskAssetId is null
+                ? Inside(package, file.Source.Replace('\\', '/'))
+                : CatalogSeed(runtime.Directory, file.DiskAssetId);
             var referencePath = Inside(package, definition.ExpectedResults);
             var reference = ReadBounded(referencePath, definition.MaximumResultBytes);
             if (!Hash(reference).Equals(definition.ExpectedResultsSha256, StringComparison.OrdinalIgnoreCase))
@@ -63,6 +65,21 @@ internal static class GuestHddResults
             checks.Add(new("guest_hdd_extraction", false, "evidence", error.Message));
             return new(checks, [], []);
         }
+    }
+
+    private static string CatalogSeed(string runtimeDirectory, string assetId)
+    {
+        var runtimeParent = Directory.GetParent(Path.GetFullPath(runtimeDirectory))
+            ?? throw new InvalidDataException("Runtime directory has no parent.");
+        if (!runtimeParent.Name.Equals("Runtime", StringComparison.Ordinal))
+            throw new InvalidDataException("Runtime directory is outside the runner Runtime root.");
+        var workspace = runtimeParent.Parent?.FullName
+            ?? throw new InvalidDataException("Runtime directory has no workspace parent.");
+        var catalog = new DiskAssetCatalog(workspace);
+        var manifest = catalog.GetRequired(assetId);
+        if (!catalog.IsReady(manifest))
+            throw new InvalidDataException("guest_asset_unavailable: catalog disk is not ready.");
+        return catalog.ContentPath(assetId);
     }
 
     private static string Inside(string root, string relative)

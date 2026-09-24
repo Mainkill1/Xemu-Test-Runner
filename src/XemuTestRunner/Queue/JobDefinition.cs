@@ -52,7 +52,7 @@ public sealed class JobDefinition
         if (job.Arguments is null || job.Environment is null || job.Plan is null ||
             job.RequiredFiles is null || job.Tags is null || job.Diagnostics is null ||
             job.RuntimeState is null || job.RuntimeState.Files is null ||
-            job.Inputs is null || job.Workload is null ||
+            job.RuntimeState.DiskAssets is null || job.Inputs is null || job.Workload is null ||
             job.Workload.CorrectnessChecks is null ||
             job.Workload.EvidenceRequirements is null ||
             job.Workload.ReportedMetrics is null ||
@@ -160,6 +160,29 @@ public sealed class JobDefinition
                  !runtimeFile.ExpectedSha256.All(Uri.IsHexDigit)))
                 throw new InvalidDataException(
                     $"Runtime seed '{runtimeFile.Source}' ExpectedSha256 must be 64 hexadecimal characters.");
+        }
+
+        foreach (var diskAsset in job.RuntimeState.DiskAssets)
+        {
+            if (!DiskAssetCatalog.IsValidId(diskAsset.AssetId))
+                throw new InvalidDataException(
+                    "RuntimeState DiskAssets require a lowercase asset ID using letters, digits and hyphens.");
+            if (string.IsNullOrWhiteSpace(diskAsset.Destination))
+                throw new InvalidDataException("RuntimeState DiskAssets require Destination.");
+            if (diskAsset.ExpectedSha256 is null ||
+                diskAsset.ExpectedSha256.Length != 64 ||
+                !diskAsset.ExpectedSha256.All(Uri.IsHexDigit))
+                throw new InvalidDataException(
+                    $"Disk asset '{diskAsset.AssetId}' ExpectedSha256 must be 64 hexadecimal characters.");
+            if (diskAsset.Retention is not ("deleteAfterEvidence" or "keep" or "keepOnFailure"))
+                throw new InvalidDataException(
+                    $"Disk asset '{diskAsset.AssetId}' Retention must be deleteAfterEvidence, keep, or keepOnFailure.");
+            if (!runtimeDestinations.Add(diskAsset.Destination))
+                throw new InvalidDataException(
+                    $"Duplicate RuntimeState destination '{diskAsset.Destination}'.");
+            _ = RuntimeStateManager.ResolveInside(
+                Path.Combine(packageDirectory, ".runtime-validation"),
+                diskAsset.Destination);
         }
 
         foreach (var artifact in

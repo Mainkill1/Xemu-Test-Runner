@@ -33,15 +33,15 @@ public sealed partial class EmbeddedHttpServer
             var snapshot = _state.Snapshot();
             await WriteAgentJsonAsync(stream, new
             {
-                api = "xemu-test-runner", protocol = "v1", agentRevision = 6,
+                api = "xemu-test-runner", protocol = "v1", agentRevision = 7,
                 version = ApplicationInfo.DisplayVersion,
                 instance = _observationEpoch, phase = snapshot.Phase,
                 blocked = snapshot.QueueIssue is not null,
                 bulkTransfersAllowed = snapshot.CurrentJob is null || snapshot.Operations.BulkTransfersAllowed,
-                capabilities = new[] { "jobDrafts", "resumableUploads", "jobSummaries", "resultSummaries", "boundedWait", "pinnedTests", "payloadReuse", "artifactPages", "logCursors", "crashReports", "diagnosticZip", "runStateLedger" },
-                jobs = "/api/v1/jobs", runs = "/api/v1/runs", tests = "/api/v1/tests",
+                capabilities = new[] { "jobDrafts", "resumableUploads", "jobSummaries", "resultSummaries", "boundedWait", "pinnedTests", "payloadReuse", "artifactPages", "logCursors", "crashReports", "diagnosticZip", "runStateLedger", "diskAssets" },
+                jobs = "/api/v1/jobs", runs = "/api/v1/runs", tests = "/api/v1/tests", diskAssets = "/api/v1/disk-assets",
                 help = "/api/v1/help?topic=observations", testHelp = "/api/v1/help?topic=tests",
-                stateHelp = "/api/v1/help?topic=run-state",
+                stateHelp = "/api/v1/help?topic=run-state", diskAssetHelp = "/api/v1/help?topic=disk-assets",
                 crashReadiness = "/api/v1/diagnostics/crash-capabilities",
                 evidenceHelp = "/api/v1/help?topic=evidence", detail = "/api/v1/agent"
             }, cancellationToken: ct).ConfigureAwait(false);

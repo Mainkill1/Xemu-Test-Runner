@@ -9,6 +9,8 @@ public sealed partial class EmbeddedHttpServer
         try
         {
             await ConsumeAgentActionBodyAsync(stream, request, ct).ConfigureAwait(false);
+            var disks = await TryDiskAssetRoutesAsync(stream, request, ct).ConfigureAwait(false);
+            if (disks.HasValue) return disks.Value;
             var state = await TryRunStateRouteAsync(stream, request, ct).ConfigureAwait(false);
             if (state.HasValue) return state.Value;
             var crash = await TryCrashRoutesAsync(stream, request, ct).ConfigureAwait(false);
