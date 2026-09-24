@@ -6,6 +6,7 @@ if (args.Contains("--client", StringComparer.Ordinal))
 }
 else
 {
+    PerformanceIdentityChecks.Register(checks);
     EmulatorIdentityChecks.Register(checks);
     PerformanceAnalysisChecks.Register(checks);
     QueueHandoffChecks.Register(checks);
