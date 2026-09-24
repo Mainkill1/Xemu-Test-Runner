@@ -14,9 +14,16 @@ internal sealed partial class AgentJobStore
         _ = ReadDocument(id);
         var path = OperationPath(id);
         if (!File.Exists(path)) return null;
-        var operation = ReadJson<AgentOperation>(path);
+        AgentOperation operation;
         bool running;
-        lock (_gate) { running = _runningOperations.Contains(id); }
+        lock (_gate)
+        {
+            // A writer publishes its terminal receipt before removing ownership
+            // under this gate. Keep both observations together: reading the old
+            // receipt first and ownership later can invent a runner restart.
+            running = _runningOperations.Contains(id);
+            operation = ReadJson<AgentOperation>(path);
+        }
         if (!running && operation.State is ("queued" or "running"))
         {
             // Queue location reconciles a crash after rename but before receipt.
