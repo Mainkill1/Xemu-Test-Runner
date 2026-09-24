@@ -4,14 +4,16 @@ namespace XemuTestRunner.Networking;
 
 public sealed partial class EmbeddedHttpServer
 {
+    // Private transport cadence, never an agent-selected test duration. Callers
+    // follow the returned read after a heartbeat until finished/attention.
+    private static readonly TimeSpan CompletionHeartbeat = TimeSpan.FromSeconds(20);
+
     private sealed record CompletionState(string State, string? RunId, string? Code, string Detail)
     {
         public bool Terminal => State is "tested" or "cancelled" or "failed";
         public bool ShouldWait => !Terminal && Code is null;
     }
 
-    // One bounded HTTP response, not an unbounded socket or another executor.
-    // The caller can repeat this read silently until finished, or show heartbeats.
     private async Task<bool?> TryCompletionWaitRouteAsync(Stream stream, HttpRequest request, CancellationToken ct)
     {
         if (request.Method != "GET") return null;
@@ -20,13 +22,14 @@ public sealed partial class EmbeddedHttpServer
             await WriteAgentJsonAsync(stream, new
             {
                 capability = "completionWait",
-                requestedTest = "/api/v1/test-runs/{id}/wait?wait=20",
-                apiJob = "/api/v1/jobs/{id}/wait?wait=20",
-                defaultWaitSeconds = 20, maxWaitSeconds = 120,
+                requestedTest = "/api/v1/test-runs/{id}/wait",
+                apiJob = "/api/v1/jobs/{id}/wait",
+                duration = "untilFinishedOrAttention",
+                heartbeats = "automatic",
                 events = new[] { "heartbeat", "finished", "attention" },
-                client = "runner_tests.py wait ID --follow [--updates] [--interval 20] [--job]",
-                rule = "Repeat heartbeat reads with the SAME ID. Completion and blockers return early. Waiting/disconnecting never starts, retries or cancels work. Terminal does not mean passed.",
-                capacity = "32 waiting requests shared with lifecycle observations; excess waits return 429."
+                client = "runner_tests.py wait ID [--updates] [--job]",
+                rule = "There is no caller-selected deadline. Follow heartbeat reads with the SAME ID. Waiting/disconnecting never starts, retries or cancels work. Terminal does not mean passed.",
+                capacity = "32 held requests shared with lifecycle observations; excess reads reconnect after 429."
             }, cancellationToken: ct).ConfigureAwait(false);
             return false;
         }
@@ -40,24 +43,23 @@ public sealed partial class EmbeddedHttpServer
             request.Path.Length <= prefix.Length + 5) return null;
         var encoded = request.Path[prefix.Length..^5];
         if (encoded.Length == 0 || encoded.Contains('/')) return null;
+        if (!string.IsNullOrEmpty(request.Query))
+            throw new AgentRequestException(400, "wait_parameters_unsupported", "Completion waiting has no duration or interval parameters.",
+                "Use the wait URL without a query. The runner supplies heartbeats; the client follows until completion.");
         var id = Uri.UnescapeDataString(encoded);
-        var seconds = ReadBoundedQuery(request.Query, "wait", 20, 0, 120);
         var value = ReadCompletionState(id, requested);
 
-        if (seconds > 0 && value.ShouldWait)
+        if (value.ShouldWait)
         {
-            // Reuse the existing admission bound; normal status/result requests
-            // and immediately finished waits do not consume a waiting slot.
             if (!await _observationWaiters.WaitAsync(0, ct).ConfigureAwait(false))
                 throw new AgentRequestException(429, "too_many_waiters", "The bounded waiter limit is reached.",
-                    "Retry this read later with the same ID. Do not resubmit the test.");
+                    "Reconnect this read with the same ID. Do not resubmit the test.");
             try
             {
                 var clock = Stopwatch.StartNew();
-                var limit = TimeSpan.FromSeconds(seconds);
                 while (value.ShouldWait)
                 {
-                    var remaining = limit - clock.Elapsed;
+                    var remaining = CompletionHeartbeat - clock.Elapsed;
                     if (remaining <= TimeSpan.Zero) break;
                     await Task.Delay(remaining < TimeSpan.FromMilliseconds(500) ? remaining : TimeSpan.FromMilliseconds(500), ct).ConfigureAwait(false);
                     value = ReadCompletionState(id, requested);
@@ -84,7 +86,7 @@ public sealed partial class EmbeddedHttpServer
             ok = true, id, state = value.State,
             @event = value.Terminal ? "finished" : value.ShouldWait ? "heartbeat" : "attention",
             terminal = value.Terminal, runId = value.RunId, code = value.Code,
-            next = value.ShouldWait ? prefix + Uri.EscapeDataString(id) + "/wait?wait=" + (seconds == 0 ? 20 : seconds) : value.Detail,
+            next = value.ShouldWait ? prefix + Uri.EscapeDataString(id) + "/wait" : value.Detail,
             result
         }, cancellationToken: ct).ConfigureAwait(false);
         return false;
@@ -103,8 +105,6 @@ public sealed partial class EmbeddedHttpServer
             state = selection.State;
             runId = selection.RunId;
             code = selection.ErrorCode;
-            // Before materialization there is intentionally no API job. Once a
-            // package exists, its owner is authoritative (including cancellation).
             if (state is "queuedForExecution" or "running" or "held" or "tested")
             {
                 var job = AgentJobs.Observe(id, runner, _observationEpoch);
