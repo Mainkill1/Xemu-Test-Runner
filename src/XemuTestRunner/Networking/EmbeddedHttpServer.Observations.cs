@@ -11,12 +11,15 @@ public sealed partial class EmbeddedHttpServer
     private async Task<bool?> TryObservationRouteAsync(Stream stream, HttpRequest request, CancellationToken ct)
     {
         if (request.Method != "GET") return null;
+        var completion = await TryCompletionWaitRouteAsync(stream, request, ct).ConfigureAwait(false);
+        if (completion.HasValue) return completion.Value;
         if (request.Path == "/api/v1/help" && GetQueryValue(request.Query, "topic") == "observations")
         {
             await WriteAgentJsonAsync(stream, new
             {
                 topic = "observations",
                 job = "/api/v1/jobs/{id}?view=summary&since={cursor}&wait=20",
+                completion = "/api/v1/help?topic=completion-wait",
                 result = "/api/v1/runs/{runId}?view=summary",
                 state = "/api/v1/runs/{runId}/state",
                 waitSeconds = new { minimum = 0, maximum = 20 },
@@ -33,14 +36,15 @@ public sealed partial class EmbeddedHttpServer
             var snapshot = _state.Snapshot();
             await WriteAgentJsonAsync(stream, new
             {
-                api = "xemu-test-runner", protocol = "v1", agentRevision = 7,
+                api = "xemu-test-runner", protocol = "v1", agentRevision = 8,
                 version = ApplicationInfo.DisplayVersion,
                 instance = _observationEpoch, phase = snapshot.Phase,
                 blocked = snapshot.QueueIssue is not null,
                 bulkTransfersAllowed = snapshot.CurrentJob is null || snapshot.Operations.BulkTransfersAllowed,
-                capabilities = new[] { "jobDrafts", "resumableUploads", "jobSummaries", "resultSummaries", "boundedWait", "pinnedTests", "payloadReuse", "artifactPages", "logCursors", "crashReports", "diagnosticZip", "runStateLedger", "diskAssets" },
+                capabilities = new[] { "jobDrafts", "resumableUploads", "jobSummaries", "resultSummaries", "boundedWait", "pinnedTests", "payloadReuse", "artifactPages", "logCursors", "crashReports", "diagnosticZip", "runStateLedger", "diskAssets", "completionWait" },
                 jobs = "/api/v1/jobs", runs = "/api/v1/runs", tests = "/api/v1/tests", diskAssets = "/api/v1/disk-assets",
                 help = "/api/v1/help?topic=observations", testHelp = "/api/v1/help?topic=tests",
+                waitHelp = "/api/v1/help?topic=completion-wait",
                 stateHelp = "/api/v1/help?topic=run-state", diskAssetHelp = "/api/v1/help?topic=disk-assets",
                 crashReadiness = "/api/v1/diagnostics/crash-capabilities",
                 evidenceHelp = "/api/v1/help?topic=evidence", detail = "/api/v1/agent"

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Upload once, inspect configs, explicitly request tests, and read server-computed results.
 
-Upload/select never starts tests unless --start is supplied. Keep
-runner_transport.py and runner_test_results.py beside this standard-library client.
+Upload/select never starts tests unless --start is supplied. Keep runner_transport.py,
+runner_test_results.py and runner_wait.py beside this standard-library client.
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ import sys
 import urllib.parse
 from runner_transport import ClientError, RunnerApi, declaration, inside
 import runner_test_results
+import runner_wait
 
 
 class Parser(argparse.ArgumentParser):
@@ -145,12 +146,15 @@ def parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status")
     status.add_argument("id")
     runner_test_results.register(sub)
+    runner_wait.register(sub)
     return p
 
 
 def execute(args) -> dict | str:
     api = RunnerApi(args.url)
     command = args.command
+    if command == "wait":
+        return runner_wait.execute(api, args)
     if command.startswith("disk-"):
         info = api.json("/api/v1/help?topic=disk-assets")
         if not isinstance(info, dict) or info.get("capability") != "diskAssets":

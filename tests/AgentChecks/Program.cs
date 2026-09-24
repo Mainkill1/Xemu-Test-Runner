@@ -6,6 +6,7 @@ if (args.Contains("--client", StringComparer.Ordinal))
 }
 else
 {
+    CompletionWaitChecks.Register(checks);
     DiskAssetSchemaChecks.Register(checks);
     DiskAssetApiChecks.Register(checks);
     ObservationChecks.Register(checks);
