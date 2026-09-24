@@ -70,6 +70,25 @@ internal static class FakeXemuHost
         Action requestQuit,
         CancellationToken cancellationToken)
     {
+        try
+        {
+            await HandleClientCoreAsync(client, paused, setPaused, requestQuit, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // A lifetime expiry or explicit quit cancels idle probe reads too.
+            // Normalize only that client's expected shutdown. Catching around
+            // WhenAll could hide a separate client's genuine protocol failure.
+        }
+    }
+
+    private static async Task HandleClientCoreAsync(
+        TcpClient client,
+        Func<bool> paused,
+        Action<bool> setPaused,
+        Action requestQuit,
+        CancellationToken cancellationToken)
+    {
         using (client)
         await using (var stream = client.GetStream())
         using (var reader = new StreamReader(stream, new UTF8Encoding(false), false, 4096, leaveOpen: true))
@@ -131,7 +150,6 @@ internal static class FakeXemuHost
             setPaused(value);
             return new { };
         }
-
     }
 
     private static string? ValueAfter(IReadOnlyList<string> args, string name)
