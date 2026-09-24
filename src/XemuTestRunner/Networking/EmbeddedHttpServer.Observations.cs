@@ -32,14 +32,14 @@ public sealed partial class EmbeddedHttpServer
             var snapshot = _state.Snapshot();
             await WriteAgentJsonAsync(stream, new
             {
-                api = "xemu-test-runner", protocol = "v1", agentRevision = 2,
+                api = "xemu-test-runner", protocol = "v1", agentRevision = 3,
                 version = typeof(EmbeddedHttpServer).Assembly.GetName().Version?.ToString(),
                 instance = _observationEpoch, phase = snapshot.Phase,
                 blocked = snapshot.QueueIssue is not null,
                 bulkTransfersAllowed = snapshot.CurrentJob is null || snapshot.Operations.BulkTransfersAllowed,
-                capabilities = new[] { "jobDrafts", "resumableUploads", "jobSummaries", "resultSummaries", "boundedWait" },
-                jobs = "/api/v1/jobs", runs = "/api/v1/runs",
-                help = "/api/v1/help?topic=observations", detail = "/api/v1/agent"
+                capabilities = new[] { "jobDrafts", "resumableUploads", "jobSummaries", "resultSummaries", "boundedWait", "pinnedTests", "payloadReuse" },
+                jobs = "/api/v1/jobs", runs = "/api/v1/runs", tests = "/api/v1/tests",
+                help = "/api/v1/help?topic=observations", testHelp = "/api/v1/help?topic=tests", detail = "/api/v1/agent"
             }, cancellationToken: ct).ConfigureAwait(false);
             return false;
         }

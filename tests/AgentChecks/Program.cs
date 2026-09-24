@@ -1,5 +1,7 @@
 var checks = new List<(string Name, Func<Task> Run)>();
 ObservationChecks.Register(checks);
+TemplateChecks.Register(checks);
+ReuseStressChecks.Register(checks);
 var failures = 0;
 foreach (var (name, run) in checks)
 {
