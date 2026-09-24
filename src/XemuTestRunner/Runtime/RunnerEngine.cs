@@ -673,7 +673,11 @@ public sealed class RunnerEngine
                 {
                     try
                     {
-                        _control.Begin(process, resultDirectory, qmpPort);
+                        _control.Begin(
+                            process,
+                            resultDirectory,
+                            qmpPort,
+                            job.Workload.GuestProgressPath);
                         await _control.WaitUntilReadyAsync(ct).ConfigureAwait(false);
                         await _control.RefreshPauseStateAsync(ct).ConfigureAwait(false);
                         if (job.StartPaused && !_control.Snapshot().Paused)

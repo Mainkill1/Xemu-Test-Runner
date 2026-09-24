@@ -32,6 +32,8 @@ if (args.Length == 2 && args[0] == "--fake-screenshot-writer")
 if (args.Length == 2 && args[0] == "--fake-screenshot-context")
 {
     var screenshot = Path.GetFullPath(args[1]);
+    if (Path.GetFileName(screenshot).Contains("diagnostic-failure", StringComparison.Ordinal))
+        return 9;
     var resultDirectory = Directory.GetParent(Path.GetDirectoryName(screenshot)!)!.FullName;
     await File.WriteAllTextAsync(
         Path.Combine(resultDirectory, "guest-frames.log"),
@@ -200,6 +202,12 @@ try
         var check = evaluation.Checks.Single(value => value.Name == "hud-visible");
         Assert(check.Category == "diagnostic" && !check.Passed,
             "The image observation was not retained as a failed diagnostic annotation.");
+
+        job.Plan[0].Purpose = "correctness";
+        var explicitEvaluation = await WorkloadEvaluator.EvaluateAsync(
+            job, directory, directory, null, 0, planCompleted: true, CancellationToken.None);
+        Assert(explicitEvaluation.Correctness == CorrectnessOutcome.Failed,
+            "An explicitly correctness-scoped screenshot stopped gating correctness.");
     });
 
     await Check("workspace lease excludes a second owner and can be reacquired", () =>
@@ -1006,6 +1014,7 @@ try
             Plan =
             [
                 new JobStep { Type = "screenshot", Name = "integration-frame" },
+                new JobStep { Type = "screenshot", Name = "diagnostic-failure" },
                 new JobStep { Type = "resume" },
                 new JobStep { Type = "wait", DelayMs = 1000 },
                 new JobStep { Type = "pause" },
@@ -1078,6 +1087,17 @@ try
                 "Screenshot context did not capture guest time.");
             Assert(context.RootElement.GetProperty("segment").ValueKind == JsonValueKind.Null,
                 "Unexpected measurement segment was attached to the screenshot.");
+        }
+        var failedDiagnostic = Path.Combine(
+            results[0], "screenshots", "diagnostic-failure.png.context.json");
+        Assert(File.Exists(failedDiagnostic),
+            "A failed diagnostic screenshot did not retain its context receipt.");
+        using (var context = JsonDocument.Parse(await File.ReadAllTextAsync(failedDiagnostic)))
+        {
+            Assert(!context.RootElement.GetProperty("captured").GetBoolean(),
+                "Failed diagnostic screenshot context claimed an image was captured.");
+            Assert(context.RootElement.GetProperty("error").GetString() is { Length: > 0 },
+                "Failed diagnostic screenshot context omitted the provider error.");
         }
         Assert(Directory.GetDirectories(paths.Tested).Length == 1 && Directory.GetDirectories(paths.Testing).Length == 0,
             "The completed package was not archived exactly once.");

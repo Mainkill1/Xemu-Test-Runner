@@ -113,7 +113,7 @@ python scripts/runner_tests.py diagnostics RUN_ID --out diagnostics.zip
 python scripts/runner_tests.py csv RUN_ID ./metrics.csv
 ```
 
-`diagnostics` reads a small crash/bundle report; only `--out` downloads its verified ZIP. A confirmed crash stays `crashed`, and other requested tests can proceed after ownership is released and the attempt is archived. Successful runs do not create failure-labeled screenshots.
+`diagnostics` reads a small crash/bundle report; only `--out` downloads its verified ZIP. A confirmed crash stays `crashed`, and other requested tests can proceed after ownership is released and the attempt is archived. Successful runs do not create failure-labeled screenshots. Plan screenshots are diagnostic by default: they do not require two hosts to reach an identical guest frame and their image-content checks do not gate correctness/evidence unless the screenshot step explicitly sets `Purpose: "correctness"`. Each diagnostic screenshot retains a `.context.json` sidecar with host timing, active segment, nearest available guest frame/time and last controller-input context. See [screenshot diagnostics](docs/SCREENSHOT-DIAGNOSTICS.md).
 
 ## Save configurations and reuse disks
 
