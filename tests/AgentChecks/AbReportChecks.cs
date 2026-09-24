@@ -36,9 +36,27 @@ internal static class AbReportChecks
             var route = "/api/v1/compare?A=" + new string('a',64) + "&B=" + new string('b',64);
             var markdown = await host.Client.GetStringAsync(route + "&format=markdown");
             Require(markdown.Split('\n').Any(line => line.Contains("Metric") && line.TrimEnd().EndsWith("Improvement % |", StringComparison.Ordinal)), "Improvement is not the last table column.");
-            Require(markdown.Contains("+20%", StringComparison.Ordinal), "Readable report omitted calculated gain.");
+            Require(markdown.Contains("+20.00%", StringComparison.Ordinal), "Readable report must use two decimal places.");
             var csv = await host.Client.GetStringAsync(route + "&format=csv");
             Require(csv.Split('\n')[0].TrimEnd().EndsWith(",improvement_percent", StringComparison.Ordinal), "CSV last column is not improvement_percent.");
+        }));
+        checks.Add(("display rounding leaves canonical JSON and CSV precision intact", async () =>
+        {
+            await using var host = new AgentFixture();
+            Seed(host, "a", 'a', 1.1557, "lower"); Seed(host, "b", 'b', 0.23113999999999998, "lower");
+            var route = "/api/v1/compare?A=" + new string('a',64) + "&B=" + new string('b',64);
+            var value = await host.Json(route);
+            Require(value.GetProperty("rows")[0].GetProperty("a").GetDouble() == 1.1557, "Stored precision was rounded.");
+            var markdown = await host.Client.GetStringAsync(route + "&format=markdown");
+            Require(markdown.Contains("| 1.16 | 0.23 |", StringComparison.Ordinal), "Display measurements need two decimals.");
+            Require((await host.Client.GetStringAsync(route + "&format=csv")).Contains("1.1557", StringComparison.Ordinal), "CSV lost original precision.");
+        }));
+        checks.Add(("artifact viewer is served without exposing raw HTML artifacts", async () =>
+        {
+            await using var host = new AgentFixture();
+            using var response = await host.Client.GetAsync("/results/view?run=sample&file=report.json");
+            Require(response.IsSuccessStatusCode, "Viewer route is missing.");
+            Require((await response.Content.ReadAsStringAsync()).Contains("Artifact viewer", StringComparison.Ordinal), "Viewer page missing.");
         }));
         checks.Add(("unmeasured direction and zero baseline never invent improvement", async () =>
         {
