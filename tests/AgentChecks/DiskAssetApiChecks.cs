@@ -104,6 +104,10 @@ internal static class DiskAssetApiChecks
             Require(imported.GetProperty("ready").GetBoolean(), "Local import did not publish a ready asset.");
             Require((await host.Json("/api/v1/disk-assets/imported-seed")).GetProperty("sha256").GetString() == sha,
                 "Imported catalog identity changed.");
+            var repeated = await host.Json("/api/v1/disk-assets/imported-seed/import", HttpMethod.Post,
+                new { sourceJobId = "legacy-seed", path = "seeds/xbox_hdd.qcow2" });
+            Require(repeated.GetProperty("ready").GetBoolean(),
+                "Retrying a completed local import did not return the existing immutable asset.");
         }));
 
         checks.Add(("disk uploads obey active benchmark bulk-transfer policy", async () =>
