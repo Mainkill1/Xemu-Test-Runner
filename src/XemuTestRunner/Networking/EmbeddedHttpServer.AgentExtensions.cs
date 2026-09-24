@@ -8,6 +8,13 @@ public sealed partial class EmbeddedHttpServer
     {
         try
         {
+            // This serves only a static viewer shell. Evidence bytes still use
+            // the existing ranged artifact endpoint and its operation policy.
+            if (request.Method == "GET" && request.Path == "/results/view")
+            {
+                await WriteHtmlAsync(stream, ArtifactViewerPage.Html, false, ct).ConfigureAwait(false);
+                return false;
+            }
             await ConsumeAgentActionBodyAsync(stream, request, ct).ConfigureAwait(false);
             var disks = await TryDiskAssetRoutesAsync(stream, request, ct).ConfigureAwait(false);
             if (disks.HasValue) return disks.Value;

@@ -58,7 +58,13 @@ internal static class BuildResultFormatting
     }
     private static string Statistics(BuildStatistics? value) => value is null ? "N/A" : $"{Number(value.Mean)} [{Number(value.Min)},{Number(value.Max)}]";
     private static string Improvement(double? value) => value is null ? "N/A" : (value > 0 ? "+" : "") + Number(value) + "%";
-    private static string Number(double? value) => value?.ToString("0.###", CultureInfo.InvariantCulture) ?? "N/A";
+    // Display only. The CSV exporter and canonical measurements retain full precision.
+    private static string Number(double? value)
+    {
+        if (value is null || !double.IsFinite(value.Value)) return "N/A";
+        var rounded = Math.Round(value.Value, 2, MidpointRounding.AwayFromZero);
+        return (rounded == 0 ? 0 : rounded).ToString("0.00", CultureInfo.InvariantCulture);
+    }
     private static string RawNumber(double? value) => value?.ToString("R", CultureInfo.InvariantCulture) ?? "";
     private static string Cell(string value) => BuildResultStore.Clip(value).Replace('|', '/').Replace('\r', ' ').Replace('\n', ' ');
     private static string Quote(string value)
