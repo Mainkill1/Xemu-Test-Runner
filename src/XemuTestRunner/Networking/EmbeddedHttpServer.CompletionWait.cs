@@ -35,7 +35,9 @@ public sealed partial class EmbeddedHttpServer
         const string tests = "/api/v1/test-runs/";
         var requested = request.Path.StartsWith(tests, StringComparison.Ordinal);
         var prefix = requested ? tests : jobs;
-        if (!request.Path.StartsWith(prefix, StringComparison.Ordinal) || !request.Path.EndsWith("/wait", StringComparison.Ordinal)) return null;
+        if (!request.Path.StartsWith(prefix, StringComparison.Ordinal) ||
+            !request.Path.EndsWith("/wait", StringComparison.Ordinal) ||
+            request.Path.Length <= prefix.Length + 5) return null;
         var encoded = request.Path[prefix.Length..^5];
         if (encoded.Length == 0 || encoded.Contains('/')) return null;
         var id = Uri.UnescapeDataString(encoded);
