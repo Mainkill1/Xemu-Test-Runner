@@ -45,6 +45,15 @@ class PerformanceClientChecks(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["outcome"]["comparison"], "ineligible")
         self.assertEqual(len(calls), 1)
 
+    def test_ssh_loopback_is_rejected_before_any_remote_request(self):
+        with fixture(respond) as (origin, calls):
+            env = {**os.environ, "XEMU_RUNNER_URL": origin, "SSH_CONNECTION": "10.0.0.1 12345 10.0.0.2 22"}
+            result = subprocess.run([sys.executable, str(SCRIPT), "connect"],
+                env=env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout)["code"], "ssh_loopback_forbidden")
+        self.assertEqual(calls, [])
+
     def test_connect_proves_http_access_from_this_machine_and_flags_loopback(self):
         with fixture(respond) as (origin, calls):
             result = self.invoke(origin, "connect")

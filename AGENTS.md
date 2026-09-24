@@ -2,7 +2,7 @@
 
 Operate the existing tester over HTTP. No SSH/remote process launch, queue-directory edits or policy bypass is part of normal testing. Operator bootstrap/upgrade/recovery is separate.
 
-Use scripts/runner_tests.py with runner_transport.py, runner_test_results.py and runner_wait.py beside it on the build/agent machine. Set XEMU_RUNNER_URL. First list and inspect saved configs. Config upload saves a named immutable revision; it never launches a test.
+Use scripts/runner_tests.py with runner_transport.py, runner_test_results.py and runner_wait.py beside it on the build/agent machine. Set XEMU_RUNNER_URL to the tester's LAN HTTP origin (for example http://10.0.7.1:9368), then run `runner_tests.py connect` from that same machine. Do not SSH to the tester just to run runner_tests.py against 127.0.0.1; the client rejects that pattern when it detects an SSH session. If direct HTTP is unreachable, report the network reachability problem instead of using remote shell execution as a tester API substitute. First list and inspect saved configs. Config upload saves a named immutable revision; it never launches a test.
 
 `upload DIR --exe EXE --id ID --tests ...` uploads one application and stores selected test requests only. Add --start to explicitly authorize execution, or call start with the returned request IDs later. `select APPLICATION --id PREFIX --tests ...` reuses an existing application and also defaults to no start. Active tests are not interrupted; requested work queues and waits for preparation/execution. Do not turn an upload request into a submit/run command.
 
