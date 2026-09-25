@@ -9,6 +9,8 @@ public sealed partial class EmbeddedHttpServer
         try
         {
             await ConsumeAgentActionBodyAsync(stream, request, ct).ConfigureAwait(false);
+            var xiso = await TryXisoRoutesAsync(stream, request, ct).ConfigureAwait(false);
+            if (xiso.HasValue) return xiso.Value;
             var application = await TryApplicationIdentityRouteAsync(stream, request, ct).ConfigureAwait(false);
             if (application.HasValue) return application.Value;
             var performance = await TryPerformanceRouteAsync(stream, request, ct).ConfigureAwait(false);

@@ -11,6 +11,9 @@ public sealed class RuntimeStateDefinition
     public List<RuntimeDiskAssetDefinition> DiskAssets { get; set; } = [];
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public RunIsolationDefinition? Isolation { get; set; }
+    private XisoExecution? _xiso;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public XisoExecution? Xiso { get => _xiso; set { value?.Validate(); _xiso = value; } }
 }
 
 public sealed class RuntimeFileDefinition
@@ -45,15 +48,9 @@ public sealed class WorkloadContract
     public bool RequirePlanCompletion { get; set; } = true;
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public GuestHddResultsDefinition? GuestHddResults { get; set; }
-
     private PerformanceAnalysisDefinition? _analysis;
-    // Do not add serialized defaults to existing immutable test revisions.
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public PerformanceAnalysisDefinition? Analysis
-    {
-        get => _analysis;
-        set { value?.Validate(); _analysis = value; }
-    }
+    public PerformanceAnalysisDefinition? Analysis { get => _analysis; set { value?.Validate(); _analysis = value; } }
 }
 
 public sealed class ArtifactCheckDefinition
@@ -70,7 +67,6 @@ public sealed class ArtifactCheckDefinition
     public string? ContainsText { get; set; }
     public string? EqualsText { get; set; }
 }
-
 public sealed class ImageRegionDefinition
 {
     public double X { get; set; }
@@ -78,7 +74,6 @@ public sealed class ImageRegionDefinition
     public double Width { get; set; } = 1;
     public double Height { get; set; } = 1;
 }
-
 public sealed class ReportedMetricDefinition
 {
     public string Name { get; set; } = "";
@@ -89,7 +84,6 @@ public sealed class ReportedMetricDefinition
     public string Direction { get; set; } = "neutral";
     public bool Required { get; set; } = true;
 }
-
 public sealed class ExperimentDefinition
 {
     public string? Id { get; set; }
@@ -102,7 +96,6 @@ public sealed class ExperimentDefinition
     public bool AllowOperatorIntervention { get; set; }
     public bool AllowDiagnostics { get; set; }
 }
-
 public sealed class OperationPolicyDefinition
 {
     public string Mode { get; set; } = "smoke";
@@ -111,15 +104,13 @@ public sealed class OperationPolicyDefinition
     public bool? AllowPauseResume { get; set; }
     public bool? AllowDiagnostics { get; set; }
     public bool? AllowBulkTransfers { get; set; }
-    [JsonIgnore]
-    public bool IsBenchmark => Mode.Equals("benchmark", StringComparison.OrdinalIgnoreCase);
+    [JsonIgnore] public bool IsBenchmark => Mode.Equals("benchmark", StringComparison.OrdinalIgnoreCase);
     public bool PreviewAllowed => AllowPreview ?? !IsBenchmark;
     public bool ManualInputAllowed => AllowManualInput ?? !IsBenchmark;
     public bool PauseResumeAllowed => AllowPauseResume ?? !IsBenchmark;
     public bool DiagnosticsAllowed => AllowDiagnostics ?? !IsBenchmark;
     public bool BulkTransfersAllowed => AllowBulkTransfers ?? !IsBenchmark;
 }
-
 public sealed class MeasurementSegmentDefinition
 {
     public string Name { get; set; } = "";
