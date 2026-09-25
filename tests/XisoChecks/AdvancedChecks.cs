@@ -93,6 +93,7 @@ internal static class AdvancedChecks
             await host.Json("/api/v1/xiso-campaigns/handoff/start", HttpMethod.Post, new { }, HttpStatusCode.Accepted);
             host.State.SetPhase("idle"); await Queued(host, "xc-handoff-001");
         });
+        await RecoveryChecks.Run(check, setup);
     }
     private static async Task<RuntimeStateDefinition> Definition(AgentFixture host, string id)
     {
