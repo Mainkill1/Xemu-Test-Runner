@@ -16,8 +16,7 @@ internal sealed partial class AgentJobStore
 {
     private readonly Dictionary<string, (long Length, long Modified, AgentOperationBrief Value)> _operationObservations = new(StringComparer.Ordinal);
 
-    // The observation path intentionally does not call BuildView/ReadDocument:
-    // neither a full job plan nor its payload manifest belongs in a status poll.
+    // No full plan or payload manifest belongs in a lifecycle observation.
     public AgentObservation Observe(string id, RunnerStateSnapshot runner, string epoch)
     {
         if (!File.Exists(System.IO.Path.Combine(Home(id), "request.json")))
@@ -51,7 +50,7 @@ internal sealed partial class AgentJobStore
             state = "held";
             blocker = new("attempt_held", "Inspect the preserved attempt through the control/result APIs; do not alter queue files.");
         }
-        if (state == "queued" && runner.CurrentJob is null && runner.QueueIssue is not null)
+        if (state == "queued" && runner.QueueNeedsAttention)
         {
             state = "blocked";
             blocker = new("queue_blocked", "Read /api/v1/status for the queue recovery issue. Keep this job ID.");
@@ -75,9 +74,6 @@ internal sealed partial class AgentJobStore
         return new(true, id, state, runId, cursor, true, new("GET", next), blocker, operation);
     }
 
-    // Old operation receipts can include a large validation result. Deserialize
-    // only the progress fields, once per receipt version, and bound the cache.
-    // No payload hashing, artifact enumeration, or hardware sampling occurs here.
     private AgentOperationBrief? ObserveOperation(string id, string packageState)
     {
         var path = OperationPath(id);

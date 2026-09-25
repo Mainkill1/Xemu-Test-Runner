@@ -69,13 +69,13 @@ def _register_disk_commands(subparsers) -> None:
     upload = _command(subparsers, "disk-upload", "Upload a shared HDD once; never starts a test.")
     upload.add_argument("id", help="Immutable catalog asset ID.")
     upload.add_argument("file", type=Path, help="Local prepared disk image.")
-    upload.add_argument("--kind", choices=("xiso-seed", "snapshot-carrier"), required=True)
+    upload.add_argument("--kind", choices=("xiso-seed", "snapshot-carrier", "readonly-input"), required=True)
     upload.add_argument("--description")
     import_disk = _command(subparsers, "disk-import", "Import an existing tester-side HDD without a network reupload.")
     import_disk.add_argument("id", help="Catalog asset ID.")
     import_disk.add_argument("--from-job", required=True, help="Retained source API job ID.")
     import_disk.add_argument("--path", required=True, help="Declared disk path inside the source package.")
-    import_disk.add_argument("--kind", choices=("xiso-seed", "snapshot-carrier"), required=True)
+    import_disk.add_argument("--kind", choices=("xiso-seed", "snapshot-carrier", "readonly-input"), required=True)
     import_disk.add_argument("--description")
     delete = _command(subparsers, "disk-delete", "Delete an unreferenced shared disk; referenced assets are refused.")
     delete.add_argument("id", help="Catalog asset ID.")
@@ -137,8 +137,7 @@ def selection(api: RunnerApi, selectors: list[str]) -> list[tuple[str, str]]:
             available = catalog(api) if available is None else available
             matches = [test for test in available if test["id"] == selector]
             if len(matches) != 1:
-                raise ClientError("test_selection_ambiguous",
-                                  "Test name is missing or has multiple revisions: " + selector,
+                raise ClientError("test_selection_ambiguous", "Test name is missing or has multiple revisions: " + selector,
                                   "List tests, then use NAME@FULL_REVISION.")
             name, revision = selector, matches[0]["revision"]
         selected.append((name, revision.lower()))
@@ -208,29 +207,33 @@ def _show_config(api: RunnerApi, args: argparse.Namespace) -> dict | str:
 def _save_config(api: RunnerApi, args: argparse.Namespace) -> dict:
     if args.file.stat().st_size > 1024 * 1024:
         raise ClientError("config_too_large", "Configuration exceeds 1 MiB.")
-    body = {
-        "sourceJobId": args.assets,
-        "job": json.loads(args.file.read_text(encoding="utf-8-sig")),
-        "description": args.description,
-    }
+    body = {"sourceJobId": args.assets,
+            "job": json.loads(args.file.read_text(encoding="utf-8-sig")), "description": args.description}
     if args.build_file:
         body["buildFiles"] = args.build_file
     return api.json("/api/v1/test-configs/" + urllib.parse.quote(args.name, safe=""), "POST", body)
 
 
-def _prepare_requested_tests(api: RunnerApi, args: argparse.Namespace) -> dict:
+def _prepare_requested_tests(api: RunnerApi, args: argparse.Namespace, capabilities=()) -> dict:
     if len(args.id) > 54 or len(args.tests) > 256:
         raise ClientError("selection_limit", "Use an ID up to 54 characters and at most 256 selected tests.")
     selected = selection(api, args.tests)
     if args.start and not selected:
         raise ClientError("tests_required", "--start requires at least one explicitly selected test.")
-
     executable_sha = None
     application_id = args.application if args.command == "select" else args.id
     if args.command == "upload":
         executable_sha = upload_application(api, args.directory.resolve(), args.exe, application_id)
+    identity_fields = {}
+    if "applicationIdentity" in capabilities:
+        # One small server declaration read, before starts. Never download a
+        # native binary to distinguish it from a launcher script on the client.
+        identity = api.json("/api/v1/applications/" + urllib.parse.quote(application_id, safe=""))
+        executable_sha = runner_test_results.sha(identity["sha256"])
+        identity_fields = {"launchSha256": runner_test_results.sha(identity["launchSha256"]),
+                           "executable": identity["executable"], "launchExecutable": identity["launchExecutable"]}
     requests = select_tests(api, application_id, args.id, selected, args.start)
-    return {"application": application_id, "sha256": executable_sha,
+    return {"application": application_id, "sha256": executable_sha, **identity_fields,
             "startRequested": args.start, "tests": requests}
 
 
@@ -246,10 +249,9 @@ def _execute_test_command(api: RunnerApi, args: argparse.Namespace) -> dict | st
     if args.command == "config-upload":
         return _save_config(api, args)
     if args.command in ("upload", "select"):
-        return _prepare_requested_tests(api, args)
+        return _prepare_requested_tests(api, args, info.get("capabilities", []))
     if args.command == "start":
-        replies = [api.json("/api/v1/test-runs/" + urllib.parse.quote(request_id, safe="") + "/start",
-                            "POST", {}) for request_id in args.ids]
+        replies = [api.json("/api/v1/test-runs/" + urllib.parse.quote(request_id, safe="") + "/start", "POST", {}) for request_id in args.ids]
         return {"tests": replies}
     return api.json("/api/v1/test-runs/" + urllib.parse.quote(args.id, safe=""))
 
@@ -261,15 +263,14 @@ def _import_disk(api: RunnerApi, args: argparse.Namespace) -> dict:
                         if file.get("path", file.get("Path")) == args.path), None)
     if source_file is None:
         raise ClientError("disk_source_missing", "The source job does not declare that file.")
-    # Accept the existing declaration casing; do not fetch the image to hash it.
     length = source_file.get("length", source_file.get("Length"))
     sha256 = source_file.get("sha256", source_file.get("Sha256"))
     api.json("/api/v1/disk-assets", "POST", {
         "id": args.id, "kind": args.kind, "length": length, "sha256": sha256,
         **({"description": args.description} if args.description is not None else {}),
     })
-    return api.json("/api/v1/disk-assets/" + urllib.parse.quote(args.id, safe="") + "/import",
-                    "POST", {"sourceJobId": args.from_job, "path": args.path})
+    return api.json("/api/v1/disk-assets/" + urllib.parse.quote(args.id, safe="") + "/import", "POST",
+                    {"sourceJobId": args.from_job, "path": args.path})
 
 
 def _upload_disk(api: RunnerApi, args: argparse.Namespace) -> dict:
@@ -297,8 +298,7 @@ def _upload_disk(api: RunnerApi, args: argparse.Namespace) -> dict:
 def _execute_disk_command(api: RunnerApi, args: argparse.Namespace) -> dict:
     info = api.json("/api/v1/help?topic=disk-assets")
     if not isinstance(info, dict) or info.get("capability") != "diskAssets":
-        raise ClientError("capability_missing", "The tester does not support disk assets.",
-                          "Deploy a compatible runner; do not copy HDDs through SSH.")
+        raise ClientError("capability_missing", "The tester does not support disk assets.", "Deploy a compatible runner; do not copy HDDs through SSH.")
     if args.command == "disk-list":
         return api.json("/api/v1/disk-assets")
     if args.command == "disk-show":
@@ -320,13 +320,11 @@ def main() -> int:
         print(json.dumps(error.document(), separators=(",", ":")))
         return 1
     except KeyboardInterrupt:
-        print(json.dumps({"ok": False, "code": "client_interrupted",
-                          "hint": "Inspect the same request IDs; a requested start may already be queued."}))
+        print(json.dumps({"ok": False, "code": "client_interrupted", "hint": "Inspect the same request IDs; a requested start may already be queued."}))
         return 130
     except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as error:
         print(json.dumps({"ok": False, "code": "test_client_error", "error": str(error)[:1024],
-                          "hint": "Inspect the same IDs. Upload/select never imply start; --start may already have queued some requests."},
-                         separators=(",", ":")))
+                          "hint": "Inspect the same IDs. Upload/select never imply start; --start may already have queued some requests."}, separators=(",", ":")))
         return 1
 
 

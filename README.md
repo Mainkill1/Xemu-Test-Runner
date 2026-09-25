@@ -15,6 +15,7 @@ runner_tests.py          Commands for normal test operation
 runner_transport.py      HTTP and resumable file transfers
 runner_test_results.py   Result, comparison and diagnostic commands
 runner_wait.py           Quiet completion waiting and read reconnects
+runner_xiso.py           Optional category/individual XISO campaigns
 ```
 
 Set the tester address once. In PowerShell:
@@ -77,6 +78,25 @@ python scripts/runner_tests.py upload ./candidate --exe xemu.exe --id build-150 
 
 Reuse identical IDs and inputs after a lost response. Use new IDs for intentional new attempts. Multi-test starts are separate durable requests, not an atomic batch. New bulk uploads can be refused during a benchmark; already-staged work can still be queued.
 
+## Select XISO subsystems or individual tests
+
+Once an operator registers a matched XISO suite and prepared clean seed, open `/xiso` for category checkboxes and individual-test selection. Categories are `cpu`, `commands`, `shaders`, `textures`, `geometry`, `surfaces`, and `scenarios`; future unmapped tests remain visible under `other`.
+
+```sh
+python scripts/runner_xiso.py suites
+python scripts/runner_xiso.py categories shader-pilot
+python scripts/runner_xiso.py tests shader-pilot --category shaders
+python scripts/runner_xiso.py select build-149 --id pr149-shaders --category shaders
+python scripts/runner_xiso.py start pr149-shaders
+python scripts/runner_xiso.py wait pr149-shaders
+```
+
+`shader-pilot` is an example registered name. Add `--suite NAME` when more than one suite is installed. Repeat `--category` or `--test STABLE_ID` to select a union. Most settings stay on the tester: missing values inherit the pinned suite defaults and `plan` shows the full frozen configuration. Selection never starts tests unless `--start` is present.
+
+The newest reviewed shader pilot has **160 leaves and five structural groups**, including six shader-lifecycle cases. `targets` reports its exact candidate ISO/catalog pins; it is not silently treated as a qualified baseline. The runner reads the catalog from the actual ISO, creates deterministic chunks, preserves required checkpoint groups, and launches shader-lifecycle cases independently. `--reference APPLICATION_ID` freezes an ABBA schedule per chunk.
+
+The runner injects a small plan into the private HDD before boot, retains exact guest results and plan receipts after exit, then deletes that transient disk. No guest network or ISO rewrite is needed. [XISO campaigns](docs/XISO-CAMPAIGNS.md) covers one-time registration, the prepared FATX slot, available defaults, and qualification limits.
+
 ## Use the right identifier
 
 | Identifier | Where it comes from | Used for |
@@ -84,6 +104,7 @@ Reuse identical IDs and inputs after a lost response. Use new IDs for intentiona
 | Test name + revision | `list` | Choosing an immutable configuration. |
 | Application ID | Your upload `--id`, e.g. `build-149` | Reusing the uploaded build with `select`. |
 | Test request ID | Upload/select receipt, e.g. `build-149-t001` | `start`, `status`, `wait`. |
+| Campaign ID | XISO `select --id` | Frozen multi-chunk selection, `start`, `status`, `wait`, `attempts`. |
 | Run ID | A started request's status/final reply | `diagnostics`, `state`, `csv`. |
 | Executable SHA-256 | Upload receipt | `result`, `baseline`, `compare`; filenames do not identify builds. |
 
@@ -134,6 +155,7 @@ Start with `GET /api/v1/health` for liveness and `GET /api/v1/agent?view=summary
 
 | Need | Reference |
 | --- | --- |
+| Category/individual XISO selection and campaigns | [XISO campaigns](docs/XISO-CAMPAIGNS.md) |
 | Understand or change the implementation | [Code guide](docs/CODE-GUIDE.md) |
 | Drafts, uploads, validation and submission | [Agent API](docs/AGENT-API.md) |
 | Small status replies and selected evidence | [Observations](docs/AGENT-OBSERVATIONS.md), [evidence](docs/AGENT-EVIDENCE.md) |

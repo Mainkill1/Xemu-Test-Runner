@@ -38,6 +38,12 @@ class RunnerApi:
             raise ClientError("runner_url_invalid", "Set --url or XEMU_RUNNER_URL to the runner HTTP(S) origin.")
         if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
             raise ClientError("runner_url_invalid", "The runner URL must not contain a path, query or fragment.")
+        if os.environ.get("SSH_CONNECTION") and (parsed.hostname or "").lower() in ("127.0.0.1", "localhost", "::1"):
+            raise ClientError(
+                "ssh_loopback_forbidden",
+                "The agent client is running inside SSH against the tester's loopback address.",
+                "Run runner_tests.py on the build/agent machine and use the tester LAN origin (for example http://TESTER_IP:9368). "
+                "If direct HTTP is unreachable, report network reachability instead of falling back to remote shell execution.")
         if not math.isfinite(timeout) or timeout <= 0:
             raise ClientError("timeout_invalid", "--timeout must be a positive finite number.")
         self.url, self.timeout = url.rstrip("/"), timeout
