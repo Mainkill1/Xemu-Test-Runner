@@ -32,10 +32,11 @@ internal sealed record XisoCampaignStatus(string Id, string Revision, string Sta
 internal sealed partial class AgentJobStore
 {
     private string XisoCampaignRoot => System.IO.Path.Combine(_paths.Pending, ".xiso-campaigns");
-    // Immutable plans and terminal assessments are read once, not reparsed on
-    // every heartbeat. Server mutations publish atomically before updating cache.
     private readonly Dictionary<string, XisoCampaign> _xisoCampaignCache = new(StringComparer.Ordinal);
     private readonly Dictionary<string, XisoAttemptStatus> _xisoTerminalCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTimeOffset> _xisoScheduled = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _xisoReadIssues = new(StringComparer.Ordinal);
+    private bool _xisoScheduleLoaded;
 
     public object CreateXisoCampaign(XisoCampaignRequest request)
     {
@@ -93,6 +94,7 @@ internal sealed partial class AgentJobStore
                 attempts.Add(new("xc-" + request.Id + "-" + (attempts.Count + 1).ToString("D3"), id, hash, chunk, label, variant));
         }
     }
+
     private XisoChunk BakeXisoChunk(XisoSuite suite, XisoLeaf[] leaves, XisoSettings settings, int index)
     {
         var source = suite.Data.Template;
@@ -117,6 +119,7 @@ internal sealed partial class AgentJobStore
         }
         return new(index, id, revision, execution.PlanId, ids, leaves.Select(x => x.Category).Distinct().ToArray(), job.RuntimeState);
     }
+
     public object StartXisoCampaign(string id)
     {
         lock (_xisoGate)
@@ -128,6 +131,7 @@ internal sealed partial class AgentJobStore
             return ObserveXisoCampaign(value);
         }
     }
+
     public object CancelXisoCampaign(string id)
     {
         lock (_xisoGate)
@@ -142,40 +146,45 @@ internal sealed partial class AgentJobStore
             return ObserveXisoCampaign(value);
         }
     }
-    // Invoked by the existing idle dispatcher, never by a status/read request.
+
+    // The existing idle loop owns dispatch. Scan history once per server start,
+    // then consider only authorized unfinished campaigns, not every old result.
     public void AdvanceXisoCampaigns()
     {
-        if (!Directory.Exists(XisoCampaignRoot)) return;
         lock (_xisoGate)
         {
-            var values = Directory.EnumerateFiles(XisoCampaignRoot, "*.json")
-                .Select(path => ReadXisoCampaign(System.IO.Path.GetFileNameWithoutExtension(path)))
-                .Where(x => x.StartRequestedUtc is not null && !x.CancelRequested && x.Error is null)
-                .OrderBy(x => x.StartRequestedUtc).ThenBy(x => x.Plan.Id, StringComparer.Ordinal);
-            foreach (var campaign in values)
+            LoadXisoSchedule();
+            foreach (var id in _xisoScheduled.OrderBy(x => x.Value).ThenBy(x => x.Key, StringComparer.Ordinal).Select(x => x.Key).ToArray())
             {
+                var campaign = TryReadXisoCampaign(id);
+                if (campaign is null) { _xisoScheduled.Remove(id); continue; }
+                if (campaign.CancelRequested || campaign.Error is not null) { _xisoScheduled.Remove(id); continue; }
+                var unfinished = false;
                 foreach (var attempt in campaign.Plan.Attempts)
                 {
                     var current = ObserveXisoAttempt(attempt);
                     if (current.Terminal) continue;
+                    unfinished = true;
                     if (current.State is not ("uncreated" or "uploaded")) return;
                     try
                     {
                         var application = ReadDocument(attempt.Application);
                         if (application.CreationHash != attempt.ApplicationIdentity) throw new InvalidDataException("Pinned application identity changed before dispatch.");
                         var chunk = campaign.Plan.Chunks.Single(x => x.Index == attempt.Chunk);
-                        // Creation may have completed before an interrupted start.
-                        // Replay this idempotent pair, not a new child or execution.
+                        // Recover interruption between these idempotent operations
+                        // using the same child, never a second execution identity.
                         _ = CreateRequestedTest(new(attempt.Id, attempt.Application, chunk.TestId, chunk.Revision));
                         _ = RequestTestStart(attempt.Id);
                     }
-                    catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException or AgentRequestException or JsonException)
-                    { SaveXisoCampaign(campaign with { Error = error.Message }); }
+                    catch (Exception error) when (XisoReadFailure(error))
+                    { SaveXisoCampaign(campaign with { Error = ClipXisoError(error.Message) }); }
                     return;
                 }
+                if (!unfinished) _xisoScheduled.Remove(id);
             }
         }
     }
+
     public XisoCampaignStatus XisoCampaignStatus(string id) { lock (_xisoGate) return ObserveXisoCampaign(ReadXisoCampaign(id)); }
     public object XisoCampaignPlan(string id) { lock (_xisoGate) return ReadXisoCampaign(id).Plan; }
     public object XisoCampaignAttempts(string id, int offset, int limit)
@@ -192,9 +201,20 @@ internal sealed partial class AgentJobStore
         {
             RunStateInventory.NoLinks(XisoCampaignRoot);
             var paths = Directory.Exists(XisoCampaignRoot) ? Directory.EnumerateFiles(XisoCampaignRoot, "*.json").Order(StringComparer.Ordinal).Skip(offset).Take(limit + 1).ToArray() : [];
-            return new { items = paths.Take(limit).Select(path => ObserveXisoCampaign(ReadXisoCampaign(System.IO.Path.GetFileNameWithoutExtension(path)))).ToArray(), nextOffset = paths.Length > limit ? (int?)(offset + limit) : null };
+            var values = new List<XisoCampaignStatus>();
+            foreach (var path in paths.Take(limit))
+            {
+                var value = TryReadXisoCampaign(System.IO.Path.GetFileNameWithoutExtension(path));
+                if (value is not null) values.Add(ObserveXisoCampaign(value));
+            }
+            return new {
+                items = values.ToArray(), nextOffset = paths.Length > limit ? (int?)(offset + limit) : null,
+                issues = _xisoReadIssues.Take(10).Select(x => new { id = x.Key, error = x.Value }).ToArray(),
+                moreIssues = Math.Max(0, _xisoReadIssues.Count - 10)
+            };
         }
     }
+
     private XisoAttemptStatus ObserveXisoAttempt(XisoAttempt attempt)
     {
         if (_xisoTerminalCache.TryGetValue(attempt.Id, out var cached)) return cached;
@@ -209,9 +229,9 @@ internal sealed partial class AgentJobStore
         }
         var value = new XisoAttemptStatus(attempt.Id, attempt.Label, attempt.Variant, attempt.Chunk, requested.State, requested.RunId, terminal,
             outcome?.Execution, outcome?.Correctness, outcome?.Evidence, outcome?.Comparison, error);
-        // Missing assessment evidence can arrive during final archival; do not
-        // cache that transient absence as the run's permanent result.
-        if (terminal && (requested.State != "tested" || outcome is not null)) _xisoTerminalCache[attempt.Id] = value;
+        // Never cache missing assessment evidence as a permanent terminal verdict.
+        if (terminal && (requested.State != "tested" || outcome is not null))
+            CacheXisoValue(_xisoTerminalCache, attempt.Id, value, 4096);
         return value;
     }
     private XisoCampaignStatus ObserveXisoCampaign(XisoCampaign campaign)
@@ -230,8 +250,27 @@ internal sealed partial class AgentJobStore
         return new(campaign.Plan.Id, campaign.Revision, state, terminal ? "finished" : attention ? "attention" : "heartbeat",
             terminal, campaign.StartRequestedUtc is not null, campaign.Plan.Tests.Length, campaign.Plan.Chunks.Length,
             attempts.Length, finished, passed, failed, Math.Max(0, finished - passed - failed), attempts.Length - finished,
-            active?.Id, campaign.Error ?? active?.Error, "/api/v1/xiso-campaigns/" + campaign.Plan.Id + "/wait",
+            active?.Id, ClipXisoError(campaign.Error ?? active?.Error), "/api/v1/xiso-campaigns/" + campaign.Plan.Id + "/wait",
             "/api/v1/xiso-campaigns/" + campaign.Plan.Id + "/attempts", eligible, campaign.Plan.Qualification);
+    }
+
+    private void LoadXisoSchedule()
+    {
+        if (_xisoScheduleLoaded) return;
+        RunStateInventory.NoLinks(XisoCampaignRoot);
+        if (Directory.Exists(XisoCampaignRoot))
+            foreach (var path in Directory.EnumerateFiles(XisoCampaignRoot, "*.json"))
+            {
+                var value = TryReadXisoCampaign(System.IO.Path.GetFileNameWithoutExtension(path));
+                if (value is not null) TrackXisoSchedule(value);
+            }
+        _xisoScheduleLoaded = true;
+    }
+    private void TrackXisoSchedule(XisoCampaign value)
+    {
+        if (value.StartRequestedUtc is { } started && !value.CancelRequested && value.Error is null)
+            _xisoScheduled[value.Plan.Id] = started;
+        else _xisoScheduled.Remove(value.Plan.Id);
     }
     private string XisoCampaignPath(string id)
     {
@@ -242,7 +281,8 @@ internal sealed partial class AgentJobStore
     private void SaveXisoCampaign(XisoCampaign value)
     {
         AtomicJson.Write(XisoCampaignPath(value.Plan.Id), value);
-        _xisoCampaignCache[value.Plan.Id] = value;
+        CacheXisoValue(_xisoCampaignCache, value.Plan.Id, value, 32);
+        TrackXisoSchedule(value);
     }
     private XisoCampaign ReadXisoCampaign(string id)
     {
@@ -250,8 +290,25 @@ internal sealed partial class AgentJobStore
         var path = XisoCampaignPath(id);
         if (!File.Exists(path)) throw new AgentRequestException(404, "xiso_campaign_not_found", "Unknown XISO campaign.", "Create a campaign without starting it, or list existing campaigns.");
         var value = ReadJson<XisoCampaign>(path);
-        if (value.Plan.Id != id || HashJson(value.Plan) != value.Revision || HashJson(value.Request) != value.RequestIdentity)
+        if (value.Plan is null || value.Request is null || value.Plan.Id != id || HashJson(value.Plan) != value.Revision || HashJson(value.Request) != value.RequestIdentity)
             throw new InvalidDataException("Stored campaign identity does not match its immutable plan.");
-        _xisoCampaignCache[id] = value; return value;
+        CacheXisoValue(_xisoCampaignCache, id, value, 32); return value;
+    }
+    private XisoCampaign? TryReadXisoCampaign(string id)
+    {
+        try { var value = ReadXisoCampaign(id); _xisoReadIssues.Remove(id); return value; }
+        catch (Exception error) when (XisoReadFailure(error))
+        {
+            CacheXisoValue(_xisoReadIssues, id, ClipXisoError(error.Message)!, 64);
+            return null;
+        }
+    }
+    private static bool XisoReadFailure(Exception error) => error is IOException or UnauthorizedAccessException or
+        InvalidDataException or ArgumentException or AgentRequestException or JsonException or InvalidOperationException or KeyNotFoundException;
+    private static string? ClipXisoError(string? value) => value?.Length > 512 ? value[..512] : value;
+    private static void CacheXisoValue<T>(Dictionary<string, T> cache, string id, T value, int limit)
+    {
+        if (cache.Count >= limit && !cache.ContainsKey(id)) cache.Remove(cache.Keys.First());
+        cache[id] = value;
     }
 }
