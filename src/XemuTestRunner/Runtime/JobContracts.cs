@@ -11,6 +11,8 @@ public sealed class RuntimeStateDefinition
     public List<RuntimeDiskAssetDefinition> DiskAssets { get; set; } = [];
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public RunIsolationDefinition? Isolation { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public XisoPlanDefinition? XisoPlan { get; set; }
 }
 
 public sealed class RuntimeFileDefinition
@@ -47,7 +49,6 @@ public sealed class WorkloadContract
     public GuestHddResultsDefinition? GuestHddResults { get; set; }
 
     private PerformanceAnalysisDefinition? _analysis;
-    // Do not add serialized defaults to existing immutable test revisions.
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public PerformanceAnalysisDefinition? Analysis
     {

@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using XemuTestRunner.Queue;
 using XemuTestRunner.Reliability;
 
 namespace XemuTestRunner.Runtime;
@@ -22,9 +23,7 @@ internal static class GuestHddResults
             var file = runtime.Files.SingleOrDefault(item => item.Destination.Replace('\\', '/') == definition.Image)
                 ?? throw new InvalidDataException("guest_image_undeclared: Image is not a materialized runtime file.");
             var image = Inside(runtime.Directory, definition.Image);
-            var seed = file.DiskAssetId is null
-                ? Inside(package, file.Source.Replace('\\', '/'))
-                : CatalogSeed(runtime.Directory, file.DiskAssetId);
+            var seed = file.DiskAssetId is null ? Inside(package, file.Source.Replace('\\', '/')) : CatalogSeed(runtime.Directory, file.DiskAssetId);
             var referencePath = Inside(package, definition.ExpectedResults);
             var reference = ReadBounded(referencePath, definition.MaximumResultBytes);
             if (!Hash(reference).Equals(definition.ExpectedResultsSha256, StringComparison.OrdinalIgnoreCase))
@@ -37,8 +36,7 @@ internal static class GuestHddResults
             var reader = new FatxResultReader(disk, definition.PartitionOffsetBytes, definition.PartitionLengthBytes);
             var raw = reader.ReadFile(definition.GuestPath, definition.MaximumResultBytes)
                 ?? throw new InvalidDataException("guest_result_missing: the stopped guest did not write the configured result path.");
-            var destination = Inside(results, "guest/results.txt");
-            Preserve(destination, raw);
+            Preserve(Inside(results, "guest/results.txt"), raw);
             AtomicJson.Write(Inside(results, "guest/extraction.json"), new
             {
                 schemaVersion = 1, runId = attempt.RunId, image = definition.Image, format = disk.Format,
@@ -46,59 +44,49 @@ internal static class GuestHddResults
                 referenceSha256 = Hash(reference), imageBytesRead = disk.BytesRead + seedDisk.BytesRead,
                 freshness = "result-path-absent-from-private-seed", parser = "xemu-perf-schema-1"
             });
-            // Preserve bytes and their extraction receipt BEFORE parsing; partial
-            // or failed guest output remains downloadable as diagnostic evidence.
+            // Reading the immutable archived job here keeps the legacy extractor
+            // contract unchanged. No live filesystem or raw result scan is added.
+            var plan = JobDefinition.LoadPackage(package).RuntimeState.XisoPlan;
+            if (plan is not null)
+                reference = XisoPlanEvidence.ReferenceForPlan(plan, raw, reference, reader, results, runtime.Directory);
             var evaluation = GuestResultParser.Evaluate(raw, reference, ct);
             AtomicJson.Write(Inside(results, "guest/normalized-results.json"), new
             {
                 schemaVersion = 1, runId = attempt.RunId, sourceSha256 = Hash(raw),
-                records = evaluation.Records, checks = evaluation.Checks,
-                measurements = evaluation.Measurements
+                records = evaluation.Records, checks = evaluation.Checks, measurements = evaluation.Measurements
             });
             checks.Add(new("guest_hdd_extraction", true, "evidence", "Read-only extraction retained byte-exact guest output and validated its pinned reference."));
             checks.AddRange(evaluation.Checks);
             return new(checks, evaluation.Measurements, evaluation.Records);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or
-            ArgumentException or InvalidOperationException or OverflowException or TimeoutException)
+            ArgumentException or InvalidOperationException or KeyNotFoundException or OverflowException or TimeoutException)
         {
             checks.Add(new("guest_hdd_extraction", false, "evidence", error.Message));
             return new(checks, [], []);
         }
     }
-
     private static string CatalogSeed(string runtimeDirectory, string assetId)
     {
-        var runtimeParent = Directory.GetParent(Path.GetFullPath(runtimeDirectory))
-            ?? throw new InvalidDataException("Runtime directory has no parent.");
-        if (!runtimeParent.Name.Equals("Runtime", StringComparison.Ordinal))
-            throw new InvalidDataException("Runtime directory is outside the runner Runtime root.");
-        var workspace = runtimeParent.Parent?.FullName
-            ?? throw new InvalidDataException("Runtime directory has no workspace parent.");
+        var runtimeParent = Directory.GetParent(Path.GetFullPath(runtimeDirectory)) ?? throw new InvalidDataException("Runtime directory has no parent.");
+        if (!runtimeParent.Name.Equals("Runtime", StringComparison.Ordinal)) throw new InvalidDataException("Runtime directory is outside the runner Runtime root.");
+        var workspace = runtimeParent.Parent?.FullName ?? throw new InvalidDataException("Runtime directory has no workspace parent.");
         var catalog = new DiskAssetCatalog(workspace);
         var manifest = catalog.GetRequired(assetId);
-        if (!catalog.IsReady(manifest))
-            throw new InvalidDataException("guest_asset_unavailable: catalog disk is not ready.");
+        if (!catalog.IsReady(manifest)) throw new InvalidDataException("guest_asset_unavailable: catalog disk is not ready.");
         return catalog.ContentPath(assetId);
     }
-
     private static string Inside(string root, string relative)
     {
         var result = RuntimeStateManager.ResolveInside(root, relative);
-        for (var path = result; path is not null; path = Path.GetDirectoryName(path))
-        {
-            if ((File.Exists(path) || Directory.Exists(path)) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-                throw new InvalidDataException("Linked guest image/reference/output paths are not supported.");
-        }
+        RunStateInventory.NoLinks(result);
         return result;
     }
     private static byte[] ReadBounded(string path, int maximum)
     {
         using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         if (file.Length > maximum) throw new InvalidDataException("Guest metadata exceeds the configured byte limit.");
-        var data = new byte[checked((int)file.Length)];
-        file.ReadExactly(data);
-        return data;
+        var data = new byte[checked((int)file.Length)]; file.ReadExactly(data); return data;
     }
     private static void Preserve(string path, byte[] raw)
     {
@@ -112,9 +100,8 @@ internal static class GuestHddResults
         var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            { output.Write(raw); output.Flush(true); }
-            File.Move(temporary, path); // Never overwrite another attempt's evidence.
+            using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { output.Write(raw); output.Flush(true); }
+            File.Move(temporary, path);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
