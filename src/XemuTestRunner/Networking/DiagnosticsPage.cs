@@ -17,6 +17,7 @@ internal static class DiagnosticsPage
 <nav><a href="/">Home</a><a href="/control">Test console</a><a href="/results">Evidence</a><a href="/diagnostics">Diagnostics</a></nav>
 <h1>Diagnostics</h1>
 <p class="muted">Recipes run against the current xemu process. Diagnostic runs intentionally mark benchmark evidence as operator/tool intervened.</p>
+<p><a id="viewRun" href="/results">View saved diagnostic files</a> — inspect images, CSV, JSON, and logs in the app; downloading the original is optional.</p>
 <div id="error" role="status"></div>
 <div class="panel"><h2>Tool readiness</h2><table><thead><tr><th>Tool</th><th>Status</th><th>Resolved path</th><th>Detail</th></tr></thead><tbody id="tools"></tbody></table></div>
 <div class="panel"><h2>Configured recipes</h2><table><thead><tr><th>ID</th><th>Type</th><th>Duration</th><th>Action</th></tr></thead><tbody id="recipes"></tbody></table></div>
@@ -28,7 +29,8 @@ async function load(){
  try{
   const [tools,recipes,state]=await Promise.all([api('/api/v1/diagnostics/tools'),api('/api/v1/diagnostics/recipes'),api('/api/v1/diagnostics')]);
   $('tools').replaceChildren(...tools.map(t=>{const tr=document.createElement('tr');for(const v of [t.Name,t.Available?'Ready':'Unavailable',t.ResolvedPath||'-',t.Detail]){const td=document.createElement('td');td.textContent=v;tr.append(td)}tr.children[1].className=t.Available?'ok':'bad';return tr}));
-  $('recipes').replaceChildren(...recipes.map(r=>{const tr=document.createElement('tr');for(const v of [r.Id,r.Type,String(r.DurationMs)+' ms']){const td=document.createElement('td');td.textContent=v;tr.append(td)}const td=document.createElement('td'),b=document.createElement('button');b.textContent='Run';b.disabled=!state.Active||!!state.CurrentDiagnostic;b.onclick=()=>run(r.Id);td.append(b);tr.append(td);return tr}));
+  $('recipes').replaceChildren(...recipes.map(r=>{const tr=document.createElement('tr');for(const v of [r.Id,r.Type,Number(r.DurationMs).toFixed(2)+' ms']){const td=document.createElement('td');td.textContent=v;tr.append(td)}const td=document.createElement('td'),b=document.createElement('button');b.textContent='Run';b.disabled=!state.Active||!!state.CurrentDiagnostic;b.onclick=()=>run(r.Id);td.append(b);tr.append(td);return tr}));
+  $('viewRun').href=state.RunId?'/results#'+encodeURIComponent(state.RunId):'/results';
   $('state').textContent=JSON.stringify(state,null,2);$('error').textContent='';
  }catch(e){$('error').textContent=e.message}
 }

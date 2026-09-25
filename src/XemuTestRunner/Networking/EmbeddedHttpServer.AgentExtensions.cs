@@ -8,6 +8,13 @@ public sealed partial class EmbeddedHttpServer
     {
         try
         {
+            // This serves only a static viewer shell. Evidence bytes still use
+            // the existing ranged artifact endpoint and its operation policy.
+            if (request.Method == "GET" && request.Path == "/results/view")
+            {
+                await WriteHtmlAsync(stream, ArtifactViewerPage.Html, false, ct).ConfigureAwait(false);
+                return false;
+            }
             await ConsumeAgentActionBodyAsync(stream, request, ct).ConfigureAwait(false);
             var xiso = await TryXisoRoutesAsync(stream, request, ct).ConfigureAwait(false);
             if (xiso.HasValue) return xiso.Value;
