@@ -99,7 +99,8 @@ await Check("private plan injection does not change the seed or grow the image",
     var config = Encoding.UTF8.GetString(disk, 16384, 65536).TrimEnd(' ');
     using var actual = JsonDocument.Parse(config);
     Require(actual.RootElement.GetProperty("resolved_plan").GetProperty("selected_leaf_count").GetInt32() == 1, "Resolved plan was not injected.");
-    Require(before.SequenceEqual(SHA256.HashData(await File.ReadAllBytesAsync(seedPath))), "Shared seed was edited.");
+    var after = SHA256.HashData(await File.ReadAllBytesAsync(seedPath));
+    Require(before.SequenceEqual(after), "Shared seed was edited.");
 });
 Console.WriteLine($"XISO checks: {count - failures}/{count} passed.");
 return failures == 0 ? 0 : 1;
