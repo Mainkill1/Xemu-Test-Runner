@@ -17,3 +17,11 @@ jobs:
         with:
           global-json-file: global.json
       - run: dotnet run --project tests/XisoChecks -c Release
+  client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - run: python -m unittest discover -s tests -p test_runner_api_xiso.py -v

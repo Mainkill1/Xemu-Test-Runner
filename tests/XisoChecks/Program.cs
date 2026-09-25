@@ -15,7 +15,6 @@ async Task Check(string name, Func<Task> run)
     try { await run(); Console.WriteLine("PASS " + name); }
     catch (Exception error) { failures++; Console.Error.WriteLine("FAIL " + name + ": " + error); }
 }
-
 await Check("known shader target is pinned and explicitly candidate", async () =>
 {
     await using var host = new AgentFixture();
@@ -102,6 +101,7 @@ await Check("private plan injection does not change the seed or grow the image",
     var after = SHA256.HashData(await File.ReadAllBytesAsync(seedPath));
     Require(before.SequenceEqual(after), "Shared seed was edited.");
 });
+await AdvancedChecks.Run(Check, Setup, Seed);
 Console.WriteLine($"XISO checks: {count - failures}/{count} passed.");
 return failures == 0 ? 0 : 1;
 
