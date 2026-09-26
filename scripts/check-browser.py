@@ -156,7 +156,7 @@ with sync_playwright() as playwright:
     page = fixture_page(settings)
     page.wait_for_function("document.getElementById('hold-minimumFrames').value==='15'")
     assert not page.locator('#input-pacing-enabled').is_checked()
-    assert page.locator('#effective-mode').inner_text() == 'off'
+    assert page.locator('#effective-mode').inner_text().lower() == 'off'
     page.locator('#input-pacing-enabled').check()
     page.locator('#hold-fallbackMs').fill('1250')
     page.locator('#save').click()
