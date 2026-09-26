@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using XemuTestRunner.Authoring;
 
 var failures = 0;
@@ -16,7 +17,9 @@ async Task Check(string name, Func<Task> test)
     }
 }
 
-static void Assert(bool condition, string message)
+static void Assert(
+    [DoesNotReturnIf(false)] bool condition,
+    string message)
 {
     if (!condition)
         throw new InvalidOperationException(message);
@@ -42,16 +45,13 @@ await Check("execution and authoring leases are mutually exclusive", () =>
     var coordinator = new RunnerActivityCoordinator();
     Assert(!coordinator.Snapshot().IsBusy, "A new coordinator was not idle.");
 
-    if (!coordinator.TryAcquire(
+    Assert(coordinator.TryAcquire(
             RunnerActivityKind.TestExecution,
             "run-001",
             out var execution,
-            out var unexpectedConflict) ||
-        execution is null)
-    {
-        throw new InvalidOperationException(
-            "The execution lease was rejected: " + unexpectedConflict);
-    }
+            out var unexpectedConflict) &&
+        execution is not null,
+        "The execution lease was rejected: " + unexpectedConflict);
 
     Assert(!coordinator.TryAcquire(
             RunnerActivityKind.TestAuthoring,
@@ -71,16 +71,13 @@ await Check("execution and authoring leases are mutually exclusive", () =>
     execution.Dispose();
     Assert(!coordinator.Snapshot().IsBusy, "Disposing the execution lease did not release ownership.");
 
-    if (!coordinator.TryAcquire(
+    Assert(coordinator.TryAcquire(
             RunnerActivityKind.TestAuthoring,
             "authoring-001",
             out var authoring,
-            out var authoringConflict) ||
-        authoring is null)
-    {
-        throw new InvalidOperationException(
-            "The authoring lease was rejected after execution released it: " + authoringConflict);
-    }
+            out var authoringConflict) &&
+        authoring is not null,
+        "The authoring lease was rejected after execution released it: " + authoringConflict);
 
     authoring.Dispose();
     AssertThrows<ArgumentOutOfRangeException>(
@@ -97,27 +94,23 @@ await Check("execution and authoring leases are mutually exclusive", () =>
 await Check("disposing a stale lease cannot release a newer owner", () =>
 {
     var coordinator = new RunnerActivityCoordinator();
-    if (!coordinator.TryAcquire(
+    Assert(coordinator.TryAcquire(
             RunnerActivityKind.TestAuthoring,
             "authoring-old",
             out var oldLease,
-            out _) ||
-        oldLease is null)
-    {
-        throw new InvalidOperationException("Could not acquire the initial authoring lease.");
-    }
+            out _) &&
+        oldLease is not null,
+        "Could not acquire the initial authoring lease.");
 
     oldLease.Dispose();
 
-    if (!coordinator.TryAcquire(
+    Assert(coordinator.TryAcquire(
             RunnerActivityKind.TestExecution,
             "run-new",
             out var newLease,
-            out _) ||
-        newLease is null)
-    {
-        throw new InvalidOperationException("Could not acquire the replacement execution lease.");
-    }
+            out _) &&
+        newLease is not null,
+        "Could not acquire the replacement execution lease.");
 
     oldLease.Dispose();
     var snapshot = coordinator.Snapshot();
@@ -133,15 +126,13 @@ await Check("activity snapshots retain owner and acquisition time", () =>
 {
     var coordinator = new RunnerActivityCoordinator();
     var before = DateTimeOffset.UtcNow;
-    if (!coordinator.TryAcquire(
+    Assert(coordinator.TryAcquire(
             RunnerActivityKind.TestAuthoring,
             "authoring-snapshot",
             out var lease,
-            out _) ||
-        lease is null)
-    {
-        throw new InvalidOperationException("Could not acquire the authoring lease.");
-    }
+            out _) &&
+        lease is not null,
+        "Could not acquire the authoring lease.");
 
     var snapshot = coordinator.Snapshot();
     Assert(snapshot.Kind == RunnerActivityKind.TestAuthoring, "Snapshot lost the activity kind.");
