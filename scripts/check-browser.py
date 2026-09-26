@@ -30,8 +30,9 @@ control = html_page(control_a + stats + control_b, 'const refreshMs=500;const pr
 evidence = re.findall(r'"""\n(.*?)\n"""', (networking / "EvidencePage.cs").read_text(), re.S)[0]
 diagnostics = re.findall(r'"""\n(.*?)\n"""', (networking / "DiagnosticsPage.cs").read_text(), re.S)[0]
 viewer = re.findall(r'"""\n(.*?)\n"""', (networking / "ArtifactViewerPage.cs").read_text(), re.S)[0]
+settings = re.findall(r'"""\n(.*?)\n"""', (networking / "InputPacingSettingsPage.cs").read_text(), re.S)[0]
 with tempfile.TemporaryDirectory(prefix="runner-ui-check-") as directory:
-    for name, html in [("home", home), ("control", control), ("evidence", evidence), ("diagnostics", diagnostics), ("viewer", viewer)]:
+    for name, html in [("home", home), ("control", control), ("evidence", evidence), ("diagnostics", diagnostics), ("viewer", viewer), ("settings", settings)]:
         script = Path(directory) / (name + ".js")
         script.write_text(re.search(r'<script>(.*?)</script>', html, re.S)[1])
         subprocess.run(["node", "--check", str(script)], check=True)
@@ -61,7 +62,18 @@ fixtures = {
         {'Name':'RenderDoc Python','Available':False,'ResolvedPath':None,'Detail':'module unavailable'}
     ],
     '/api/v1/diagnostics/recipes': [{'Id':'cpu-window','Type':'perf','DurationMs':30000}],
-    '/api/v1/diagnostics': {'Active':True,'RunId':'run-1','CurrentDiagnostic':None,'StartedUtc':None,'Completed':[]}}
+    '/api/v1/diagnostics': {'Active':True,'RunId':'run-1','CurrentDiagnostic':None,'StartedUtc':None,'Completed':[]},
+    '/api/v1/settings/input-pacing': {
+        'revision': 1, 'updatedUtc': None, 'effectiveMode': 'off',
+        'capabilities': {'framePacingAvailable': False, 'frameProvider': 'unavailable'},
+        'settings': {
+            'enabled': False, 'allowTimeOnlyFallback': True,
+            'preparation': {'minimumMs': 0, 'minimumFrames': 0, 'fallbackMs': 0, 'maximumMs': 15000},
+            'hold': {'minimumMs': 250, 'minimumFrames': 15, 'fallbackMs': 1000, 'maximumMs': 5000},
+            'neutral': {'minimumMs': 250, 'minimumFrames': 1, 'fallbackMs': 250, 'maximumMs': 5000}
+        }
+    }
+}
 
 with sync_playwright() as playwright:
     options = {'headless': True}
@@ -74,13 +86,25 @@ with sync_playwright() as playwright:
         page = browser.new_page(viewport={'width': 1400, 'height': 1100})
         page.on('pageerror', lambda error: errors.append(str(error)))
         page.evaluate("""fixtures => {
-          const record={Recording:false,Plan:[],SavedFile:null}; window.testPosts=[]; window.testGets=[];
+          const record={Recording:false,Plan:[],SavedFile:null};
+          window.testPosts=[]; window.testPuts=[]; window.testBodies=[]; window.testGets=[];
           window.fetch=async(url,options={})=>{
             const path=String(url).split('?')[0];
-            if(options.method==='POST'){
+            const method=String(options.method||'GET').toUpperCase();
+            if(method==='POST'){
               window.testPosts.push(path);
               if(path.endsWith('/start'))record.Recording=true;
               if(path==='/api/v1/input/press')record.Plan.push({Type:'button',Button:JSON.parse(options.body).Button,DurationMs:100});
+            } else if(method==='PUT'){
+              const submitted=JSON.parse(options.body||'{}');
+              window.testPuts.push(path); window.testBodies.push(submitted);
+              if(path==='/api/v1/settings/input-pacing'){
+                const current=fixtures[path];
+                const updated={...current,revision:current.revision+1,updatedUtc:'2026-09-26T22:00:00Z',settings:submitted.settings,
+                  effectiveMode:submitted.settings.enabled?(current.capabilities.framePacingAvailable?'hybrid':(submitted.settings.allowTimeOnlyFallback?'timeOnlyFallback':'unavailable')):'off'};
+                fixtures[path]=updated;
+                return new Response(JSON.stringify(updated),{status:200,headers:{'Content-Type':'application/json'}});
+              }
             } else window.testGets.push(path);
             if(path==='/api/v1/preview'){
               const png=Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jYhUAAAAASUVORK5CYII='),c=>c.charCodeAt(0));
@@ -129,6 +153,21 @@ with sync_playwright() as playwright:
     page.wait_for_function("window.testPosts.includes('/api/v1/diagnostics/run')")
     assert 'RenderDoc Python' in page.locator('#tools').inner_text()
     page.close()
+    page = fixture_page(settings)
+    page.wait_for_function("document.getElementById('hold-minimumFrames').value==='15'")
+    assert not page.locator('#input-pacing-enabled').is_checked()
+    assert page.locator('#effective-mode').inner_text() == 'off'
+    page.locator('#input-pacing-enabled').check()
+    page.locator('#hold-fallbackMs').fill('1250')
+    page.locator('#save').click()
+    page.wait_for_function("window.testPuts.includes('/api/v1/settings/input-pacing')")
+    payload = page.evaluate('window.testBodies[window.testBodies.length-1]')
+    assert payload['expectedRevision'] == 1
+    assert payload['settings']['enabled'] is True
+    assert payload['settings']['hold']['minimumFrames'] == 15
+    assert payload['settings']['hold']['fallbackMs'] == 1250
+    page.wait_for_function("document.getElementById('effective-mode').textContent==='timeOnlyFallback'")
+    page.close()
     assert not errors, errors
     browser.close()
-print('PASS: embedded JavaScript syntax, two-decimal telemetry, evidence viewer links, optional tails, input, recorder, preview and diagnostics. No C# server or xemu was executed.')
+print('PASS: embedded JavaScript syntax, two-decimal telemetry, evidence viewer links, optional tails, input, recorder, preview, diagnostics and input-pacing settings. No C# server or xemu was executed.')
