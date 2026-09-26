@@ -7,6 +7,9 @@ internal static class AgentApiCatalog
     private static readonly Route[] Routes =
     [
         new("GET", "/api/v1/agent", "discoverAgentWorkflow", "Start here. Read the no-SSH workflow, limits and existing control/result links."),
+        new("GET", "/api/v1/settings", "getRunnerSettings", "Read the compact runner-owned settings summary."),
+        new("GET", "/api/v1/settings/input-pacing", "getInputPacingSettings", "Read the persisted input-pacing profile, revision, capabilities and effective mode."),
+        new("PUT", "/api/v1/settings/input-pacing", "updateInputPacingSettings", "Replace input-pacing settings using the expected revision so concurrent edits cannot be lost.", "inputPacingSettings"),
         new("GET", "/api/v1/jobs", "listAgentJobs", "List API-owned jobs using offset and limit (maximum 100)."),
         new("POST", "/api/v1/jobs", "createJobDraft", "Create an editable draft. Repeating the same ID and creation document is safe; different content conflicts.", "create"),
         new("GET", "/api/v1/jobs/{id}", "getAgentJob", "Read state, revision, plan, current run link and legal next actions."),
@@ -64,6 +67,8 @@ internal static class AgentApiCatalog
         {
             status = "/api/v1/status", metrics = "/api/v1/metrics/latest", queue = "/api/v1/queue",
             runs = "/api/v1/runs", control = "/api/v1/control", diagnostics = "/api/v1/diagnostics",
+            settings = "/api/v1/settings", inputPacingSettings = "/api/v1/settings/input-pacing",
+            inputPacingUi = "/settings/input-pacing",
             pause = new AgentAction("POST", "/api/v1/xemu/pause", "Inspection only where the active operation policy allows it."),
             resume = new AgentAction("POST", "/api/v1/xemu/resume", "Resume the controlled VM."),
             quit = new AgentAction("POST", "/api/v1/xemu/quit", "Request target shutdown; not a correctness assertion."),
@@ -74,6 +79,7 @@ internal static class AgentApiCatalog
         boundaries = new[]
         {
             "Draft edits and unclaimed withdrawals are supported. Active execution plans and completed evidence are not editable.",
+            "Input-pacing settings are runner-owned configuration. Read the current revision before PUT; a stale revision is rejected instead of overwriting another operator's update.",
             "Job APIs manage their own agent-* packages; existing manually staged packages remain on the legacy queue APIs.",
             "HTTP is deliberately LAN-only and unauthenticated. HTTPS/service installation/remote app restart are not added by this workflow.",
             "The runner must stay running: do not launch it with --once or --one-shot for remote queue operation.",
@@ -127,6 +133,21 @@ internal static class AgentApiCatalog
                     "binary" => new { type = "string", format = "binary" },
                     "clone" => new { type = "object", required = new[] { "newId" }, properties = new { newId = new { type = "string" } } },
                     "plan" => new { type = "object", description = "Full JobDefinition document, same format as job.json. Id must remain the API job ID." },
+                    "inputPacingSettings" => new
+                    {
+                        type = "object",
+                        required = new[] { "expectedRevision", "settings" },
+                        properties = new
+                        {
+                            expectedRevision = new { type = "integer", minimum = 1 },
+                            settings = new
+                            {
+                                type = "object",
+                                required = new[] { "enabled", "allowTimeOnlyFallback", "preparation", "hold", "neutral" },
+                                description = "Complete input-pacing profile. Each interval declares minimumMs, minimumFrames, fallbackMs and maximumMs."
+                            }
+                        }
+                    },
                     _ => new
                     {
                         type = "object", required = new[] { "id", "job", "files" },
@@ -150,7 +171,7 @@ internal static class AgentApiCatalog
             methods[route.Method.ToLowerInvariant()] = operation;
         }
         return new { openapi = "3.1.0", info = new { title = "Xemu Test Runner agent package workflow", version = "1.0.0",
-            description = "New package workflow only. Existing xemu controls/results are documented by GET /api/v1/help." },
+            description = "Package workflow plus runner settings. Existing xemu controls/results are documented by GET /api/v1/help." },
             servers = new[] { new { url = "/" } }, paths };
     }
 
