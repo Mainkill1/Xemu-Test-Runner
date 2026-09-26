@@ -81,7 +81,7 @@ internal static class InputPacingSettingsChecks
             HttpMethod.Put,
             SettingsRequest(revision, enabled: false, holdFrames: 15, holdFallbackMs: 1000),
             HttpStatusCode.Conflict);
-        AgentFixture.Require(stale.GetProperty("error").GetProperty("code").GetString() ==
+        AgentFixture.Require(stale.GetProperty("code").GetString() ==
             "settings_revision_conflict",
             "A stale writer must receive a revision conflict rather than overwrite newer settings.");
     }
@@ -109,7 +109,7 @@ internal static class InputPacingSettingsChecks
             HttpMethod.Put,
             invalid,
             HttpStatusCode.BadRequest);
-        AgentFixture.Require(response.GetProperty("error").GetProperty("code").GetString() ==
+        AgentFixture.Require(response.GetProperty("code").GetString() ==
             "input_pacing_settings_invalid",
             "Invalid pacing bounds need a stable API error code.");
 
