@@ -18,6 +18,7 @@ else
     TemplateChecks.Register(checks);
     EvidenceChecks.Register(checks);
     ActionBodyChecks.Register(checks);
+    InputPacingSettingsChecks.Register(checks);
     RequestedTestChecks.Register(checks);
     HashResultChecks.Register(checks);
     ReuseStressChecks.Register(checks);
