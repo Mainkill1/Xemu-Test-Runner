@@ -14,6 +14,9 @@ import check_os_gamepad as checks
 
 class Observer3(checks.Observer):
     def __init__(self):
+        # SDL3 snapshots the environment on first use. Set the launch mapping
+        # before loading/calling SDL, not after an unrelated SDL_SetHint call.
+        checks.configure_mapping()
         self.sdl = C.CDLL(os.environ['SDL3_LIBRARY'])
 
         def bind(name, result, *args):
@@ -56,7 +59,9 @@ class Observer3(checks.Observer):
         self.axis = bind('SDL_GetGamepadAxis', C.c_int16, C.c_void_p, C.c_int)
         self.button = bind('SDL_GetGamepadButton', C.c_bool, C.c_void_p, C.c_int)
         self.name = bind('SDL_GetGamepadName', C.c_char_p, C.c_void_p)
-        checks.configure_mapping()
+        if sys.platform == 'linux':
+            hint = bind('SDL_GetHint', C.c_char_p, C.c_char_p)(b'SDL_GAMECONTROLLERCONFIG')
+            assert hint == os.environ['SDL_GAMECONTROLLERCONFIG'].encode(), 'SDL cached a different launch mapping'
         assert initialize(0x2000), self.error()
         self.pad = None
         self.pump()
