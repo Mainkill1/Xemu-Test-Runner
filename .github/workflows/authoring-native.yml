@@ -1,0 +1,35 @@
+name: authoring-native
+on:
+  pull_request:
+    paths:
+      - 'native/authoring/**'
+      - 'tests/native/**'
+      - '.github/workflows/authoring-native.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux-media:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install native development and media packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cmake ninja-build pkg-config libx11-dev libgstreamer1.0-dev libgstreamer-plugins-bad1.0-dev libjson-glib-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-nice
+      - name: Build real media worker
+        run: cmake -S native/authoring -B native-build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build native-build
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Install browser fixture
+        run: python -m pip install playwright==1.55.0 aiohttp && python -m playwright install --with-deps chromium
+      - name: Verify native shutdown and capture refusal
+        run: python tests/native/check_media_worker.py native-build/xemu-authoring-media
+      - name: Verify real H.264 WebRTC and browser input channels
+        run: python tests/native/check_webrtc.py native-build/xemu-authoring-media
+      - uses: actions/upload-artifact@v7
+        with:
+          name: authoring-media-linux-x64
+          path: native-build/xemu-authoring-media
+          if-no-files-found: error
