@@ -19,12 +19,15 @@ jobs:
           - os: ubuntu-latest
             python: x64
             arch: x64
+            workerArch: x64
           - os: windows-11-arm
             python: x64
             arch: x64
+            workerArch: ARM64
           - os: windows-11-arm
             python: arm64
             arch: ARM64
+            workerArch: ARM64
     runs-on: ${{ matrix.os }}
     env:
       SDL_JOYSTICK_RAWINPUT: '0'
@@ -64,7 +67,7 @@ jobs:
         run: cmake -S native/gamepad -B gamepad-build -DCMAKE_BUILD_TYPE=Release
       - name: Configure native Windows user-mode adapter
         if: runner.os == 'Windows'
-        run: cmake -S native/gamepad -B gamepad-build -A ${{ matrix.arch }}
+        run: cmake -S native/gamepad -B gamepad-build -A ${{ matrix.workerArch }}
       - id: native-build
         run: cmake --build gamepad-build --config Release --parallel 4
       - run: ctest --test-dir gamepad-build -C Release --output-on-failure
@@ -119,6 +122,7 @@ jobs:
             gamepad-sdl3-results.json
             gamepad-build/Release/xemu-gamepad.exe
             gamepad-build/xemu-gamepad
+            gamepad-build/linux-sdl-mapping.txt
           if-no-files-found: warn
 
   windows-server-capability:
