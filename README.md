@@ -4,6 +4,219 @@ Run repeatable xemu tests on a Windows or Linux tester over HTTP. The tester own
 
 **Upload does not start a test. Start explicitly. Wait until it finishes. Download raw evidence only when needed.**
 
+## Upstream v0.8.136 baseline compatibility
+
+> **TESTING REQUIRED.** No retained per-test results verified in this audit establish that upstream **v0.8.136** passes or fails the pinned XISO below on OpenGL or Vulkan. Every unverified case is explicitly **Needs testing**. The earlier **144 OpenGL PASS observations belong to a different fork executable and XISO**, not this release. Do not use them as this baseline's reference.
+
+Baseline: [official xemu v0.8.136](https://github.com/xemu-project/xemu/releases/tag/v0.8.136), source `fc24584ce88f0915ad7f04775bb7712c2e3f49ee`. The supplied run requests target the official Windows x86-64 release package. Other platforms require their own executable and environment identities.
+
+This inventory covers **all 160 individual tests in the runner-pinned `shader-pilot-51bc23d` XISO**, plus five separately listed structural groups. It does not claim to cover every later test-suite revision.
+
+| Workload identity | Exact pin |
+| --- | --- |
+| XISO source | `51bc23d3706dea771b76545594256376d8588364` |
+| XISO SHA-256 | `b944d317035779afb15b7f7a0d90b0e35dd93b2257addba78c073438979cbf14` |
+| Catalog ID | `sha256:8307fde80201084ce39706e9490cbdf16cddfb1aa21fc19fecf34942fa2f3dd4` |
+| Source inventory | [Pinned catalog with descriptions, revisions and measurement classes](https://github.com/Mainkill1/xemu-perf-tests/blob/51bc23d3706dea771b76545594256376d8588364/resources/catalog.json) |
+
+| Verified evidence in this audit | OpenGL | Vulkan |
+| --- | ---: | ---: |
+| Confirmed working individual tests | 0 | 0 |
+| Confirmed failing individual tests | 0 | 0 |
+| Individual tests still needing execution/validation | 160 | 160 |
+| Approved performance-reference tests | 0 | 0 |
+
+Zero confirmed failures is **not** a claim that everything works. The tester HTTP health request was refused; no native test was started. See the [run instructions and setup prerequisites](baselines/v0.8.136/README.md), [OpenGL run JSON](baselines/v0.8.136/opengl.campaign.json), [Vulkan run JSON](baselines/v0.8.136/vulkan.campaign.json), and [machine-readable compatibility inventory](baselines/v0.8.136/compatibility.json).
+
+**How to read the table:** **Works** requires completed selected work and passing required correctness evidence on this exact baseline/backend. **Fails** requires retained evidence of a failed test. **Blocked** identifies a setup/capability failure, not an emulator correctness verdict. **Needs testing** means no qualifying result has been established. A crash that prevents later tests from running does not make those later tests FAIL. Correctness compatibility and performance-reference approval are separate.
+
+### Every individual test
+
+The IDs are the exact selectors accepted by `runner_xiso.py --test`; the pinned catalog above supplies each test's detailed workload contract.
+
+<!-- BEGIN V08136 TEST MATRIX -->
+| Individual test ID | OpenGL | Vulkan |
+| --- | --- | --- |
+| `busy_pfifo.pfifo_saturation` | Needs testing | Needs testing |
+| `busy_pfifo.pgraph_pattern_polling` | Needs testing | Needs testing |
+| `cpu_floating_point.sse_scalar` | Needs testing | Needs testing |
+| `cpu_floating_point.x87_scalar` | Needs testing | Needs testing |
+| `cpu_translation_blocks.direct_loop` | Needs testing | Needs testing |
+| `cpu_translation_blocks.indirect_dispatch` | Needs testing | Needs testing |
+| `cpu_translation_blocks.indirect_dispatch_stress` | Needs testing | Needs testing |
+| `fill_rate.solid` | Needs testing | Needs testing |
+| `fill_rate.textured` | Needs testing | Needs testing |
+| `game_load.cross_title_hotpath.blend_constant_reuse` | Needs testing | Needs testing |
+| `game_load.cross_title_hotpath.gpu_wait_control` | Needs testing | Needs testing |
+| `game_load.cross_title_hotpath.pgr2_lagspot_inline_elements` | Needs testing | Needs testing |
+| `game_load.cross_title_hotpath.pgr2_small_draws` | Needs testing | Needs testing |
+| `game_load.cross_title_hotpath.pipeline_state_churn` | Needs testing | Needs testing |
+| `game_load.cross_title_hotpath.queued_vertex_cpu_writes` | Needs testing | Needs testing |
+| `game_load.cross_title_hotpath.s3tc_streaming_fenced_draws` | Needs testing | Needs testing |
+| `game_load.cross_title_hotpath.scaled_surface_pressure` | Needs testing | Needs testing |
+| `game_load.cross_title_hotpath.surface_reuse` | Needs testing | Needs testing |
+| `game_load.cross_title_hotpath.texture_binding_reuse` | Needs testing | Needs testing |
+| `game_load.cross_title_hotpath.texture_update_reuse` | Needs testing | Needs testing |
+| `game_load.doax_menu_representative.cpu_only` | Needs testing | Needs testing |
+| `game_load.doax_menu_representative.cpu_pfifo_gpu` | Needs testing | Needs testing |
+| `game_load.doax_menu_representative.cpu_pfifo_gpu_streaming` | Needs testing | Needs testing |
+| `game_load.doax_menu_representative.full_system` | Needs testing | Needs testing |
+| `game_load.doax_menu_representative.gpu_only` | Needs testing | Needs testing |
+| `game_load.doax_menu_representative.pfifo_only` | Needs testing | Needs testing |
+| `game_load.doax_menu_representative.streaming_only` | Needs testing | Needs testing |
+| `game_load.doax_menu_stress.cpu_only` | Needs testing | Needs testing |
+| `game_load.doax_menu_stress.cpu_pfifo_gpu` | Needs testing | Needs testing |
+| `game_load.doax_menu_stress.cpu_pfifo_gpu_streaming` | Needs testing | Needs testing |
+| `game_load.doax_menu_stress.full_system` | Needs testing | Needs testing |
+| `game_load.doax_menu_stress.gpu_only` | Needs testing | Needs testing |
+| `game_load.doax_menu_stress.pfifo_only` | Needs testing | Needs testing |
+| `game_load.doax_menu_stress.streaming_only` | Needs testing | Needs testing |
+| `game_load.long_unlocked_scene.alpha_overdraw` | Needs testing | Needs testing |
+| `game_load.long_unlocked_scene.combined` | Needs testing | Needs testing |
+| `game_load.long_unlocked_scene.cpu` | Needs testing | Needs testing |
+| `game_load.long_unlocked_scene.full_system` | Needs testing | Needs testing |
+| `game_load.long_unlocked_scene.pfifo` | Needs testing | Needs testing |
+| `game_load.long_unlocked_scene.streaming_surface_reuse` | Needs testing | Needs testing |
+| `game_load.pgr2_ai_backup.cpu_only` | Needs testing | Needs testing |
+| `game_load.pgr2_ai_backup.cpu_pfifo_gpu` | Needs testing | Needs testing |
+| `game_load.pgr2_ai_backup.cpu_pfifo_gpu_streaming` | Needs testing | Needs testing |
+| `game_load.pgr2_ai_backup.full_system` | Needs testing | Needs testing |
+| `game_load.pgr2_ai_backup.gpu_only` | Needs testing | Needs testing |
+| `game_load.pgr2_ai_backup.pfifo_only` | Needs testing | Needs testing |
+| `game_load.pgr2_ai_backup.streaming_only` | Needs testing | Needs testing |
+| `game_load.repeated_display` | Needs testing | Needs testing |
+| `game_load.repeated_display_boosted` | Needs testing | Needs testing |
+| `game_load.s3tc_sync_factor.bc2_bordered_fallback` | Needs testing | Needs testing |
+| `game_load.s3tc_sync_factor.bc2_native_eligible` | Needs testing | Needs testing |
+| `game_load.s3tc_sync_factor.bc3_bordered_fallback` | Needs testing | Needs testing |
+| `game_load.s3tc_sync_factor.bc3_native_eligible` | Needs testing | Needs testing |
+| `game_load.s3tc_sync_factor.dxt1_dirty_once_redraw` | Needs testing | Needs testing |
+| `game_load.s3tc_sync_factor.dxt1_ring_payload_generations` | Needs testing | Needs testing |
+| `game_load.s3tc_sync_factor.dxt1_same_address_queued` | Needs testing | Needs testing |
+| `game_load.s3tc_sync_factor.dxt1_same_address_wait` | Needs testing | Needs testing |
+| `game_load.s3tc_sync_factor.rgba8_dirty_once_redraw` | Needs testing | Needs testing |
+| `game_load.s3tc_sync_factor.rgba8_ring_payload_generations` | Needs testing | Needs testing |
+| `game_load.s3tc_sync_factor.rgba8_same_address_queued` | Needs testing | Needs testing |
+| `game_load.s3tc_sync_factor.rgba8_same_address_wait` | Needs testing | Needs testing |
+| `high_vertex_count.arrays` | Needs testing | Needs testing |
+| `high_vertex_count.inline_arrays` | Needs testing | Needs testing |
+| `high_vertex_count.inline_buffers` | Needs testing | Needs testing |
+| `high_vertex_count.inline_elements` | Needs testing | Needs testing |
+| `pfifo_array_elements.array_element16` | Needs testing | Needs testing |
+| `pfifo_array_elements.array_element32` | Needs testing | Needs testing |
+| `pfifo_array_elements.array_element_pgr2` | Needs testing | Needs testing |
+| `pfifo_packet_boundary.array_element16_overflow` | Needs testing | Needs testing |
+| `pfifo_packet_boundary.array_element32_overflow` | Needs testing | Needs testing |
+| `pfifo_packet_boundary.incrementing_inline_fallback` | Needs testing | Needs testing |
+| `pfifo_packet_boundary.inline_array_overflow` | Needs testing | Needs testing |
+| `pipeline_texture_switch.clear_texture_normal` | Needs testing | Needs testing |
+| `pipeline_texture_switch.palette_dma_remap` | Needs testing | Needs testing |
+| `pipeline_texture_switch.palette_only_update` | Needs testing | Needs testing |
+| `pipeline_texture_switch.sampler_only_identity` | Needs testing | Needs testing |
+| `pipeline_texture_switch.shader_negative_control` | Needs testing | Needs testing |
+| `pipeline_texture_switch.shared_page_overlap` | Needs testing | Needs testing |
+| `pipeline_texture_switch.texture_dma_remap` | Needs testing | Needs testing |
+| `pipeline_texture_switch.texture_switch` | Needs testing | Needs testing |
+| `primitive_type.line_loop.fixed_function` | Needs testing | Needs testing |
+| `primitive_type.line_loop.vertex_shader` | Needs testing | Needs testing |
+| `primitive_type.line_strip.fixed_function` | Needs testing | Needs testing |
+| `primitive_type.line_strip.vertex_shader` | Needs testing | Needs testing |
+| `primitive_type.lines.fixed_function` | Needs testing | Needs testing |
+| `primitive_type.lines.vertex_shader` | Needs testing | Needs testing |
+| `primitive_type.points.fixed_function` | Needs testing | Needs testing |
+| `primitive_type.points.vertex_shader` | Needs testing | Needs testing |
+| `primitive_type.polygon.fixed_function` | Needs testing | Needs testing |
+| `primitive_type.polygon.vertex_shader` | Needs testing | Needs testing |
+| `primitive_type.quad_strip.fixed_function` | Needs testing | Needs testing |
+| `primitive_type.quad_strip.vertex_shader` | Needs testing | Needs testing |
+| `primitive_type.quads.fixed_function` | Needs testing | Needs testing |
+| `primitive_type.quads.vertex_shader` | Needs testing | Needs testing |
+| `primitive_type.triangle_fan.fixed_function` | Needs testing | Needs testing |
+| `primitive_type.triangle_fan.vertex_shader` | Needs testing | Needs testing |
+| `primitive_type.triangle_strip.fixed_function` | Needs testing | Needs testing |
+| `primitive_type.triangle_strip.vertex_shader` | Needs testing | Needs testing |
+| `primitive_type.triangles.fixed_function` | Needs testing | Needs testing |
+| `primitive_type.triangles.vertex_shader` | Needs testing | Needs testing |
+| `report_query.clear_boundary` | Needs testing | Needs testing |
+| `report_query.dma_descriptor_rewrite` | Needs testing | Needs testing |
+| `report_query.dma_range_guard` | Needs testing | Needs testing |
+| `report_query.dma_target_switch` | Needs testing | Needs testing |
+| `report_query.fifo_producer_ordering` | Needs testing | Needs testing |
+| `report_query.multiple_boundaries` | Needs testing | Needs testing |
+| `report_query.single_boundary` | Needs testing | Needs testing |
+| `report_query.zero_query` | Needs testing | Needs testing |
+| `shader_lifecycle.pipeline_capacity_c` | Needs testing | Needs testing |
+| `shader_lifecycle.pipeline_capacity_c_minus_one` | Needs testing | Needs testing |
+| `shader_lifecycle.pipeline_capacity_c_plus_one` | Needs testing | Needs testing |
+| `shader_lifecycle.pipeline_identical_replay` | Needs testing | Needs testing |
+| `shader_lifecycle.pipeline_train` | Needs testing | Needs testing |
+| `shader_lifecycle.pipeline_uniform_only` | Needs testing | Needs testing |
+| `surface.basic` | Needs testing | Needs testing |
+| `surface.cpu_read_after_gpu_write` | Needs testing | Needs testing |
+| `surface.cpu_read_clean_surface` | Needs testing | Needs testing |
+| `surface.framebuffer_working_set_002` | Needs testing | Needs testing |
+| `surface.framebuffer_working_set_008` | Needs testing | Needs testing |
+| `surface.framebuffer_working_set_032` | Needs testing | Needs testing |
+| `surface.framebuffer_working_set_064` | Needs testing | Needs testing |
+| `surface.full_clear_elision_guard` | Needs testing | Needs testing |
+| `surface.overlapping_surface_churn_representative` | Needs testing | Needs testing |
+| `surface.overlapping_surface_churn_stress` | Needs testing | Needs testing |
+| `surface.partial_channel_clear_guard` | Needs testing | Needs testing |
+| `surface.surface_download_path` | Needs testing | Needs testing |
+| `surface.surface_list_lookup_002` | Needs testing | Needs testing |
+| `surface.surface_list_lookup_008` | Needs testing | Needs testing |
+| `surface.surface_list_lookup_032` | Needs testing | Needs testing |
+| `surface.surface_list_lookup_128` | Needs testing | Needs testing |
+| `surface.vulkan_memory_pressure.representative.alias_resize` | Needs testing | Needs testing |
+| `surface.vulkan_memory_pressure.representative.growth` | Needs testing | Needs testing |
+| `surface.vulkan_memory_pressure.representative.idle_retention` | Needs testing | Needs testing |
+| `surface.vulkan_memory_pressure.representative.plateau` | Needs testing | Needs testing |
+| `surface.vulkan_memory_pressure.representative.reuse` | Needs testing | Needs testing |
+| `surface.vulkan_memory_pressure.stress.alias_resize` | Needs testing | Needs testing |
+| `surface.vulkan_memory_pressure.stress.growth` | Needs testing | Needs testing |
+| `surface.vulkan_memory_pressure.stress.idle_retention` | Needs testing | Needs testing |
+| `surface.vulkan_memory_pressure.stress.plateau` | Needs testing | Needs testing |
+| `surface.vulkan_memory_pressure.stress.reuse` | Needs testing | Needs testing |
+| `texture_cubemap_fallback.unbordered_subblock_dxt1` | Needs testing | Needs testing |
+| `tiny_draw.arrays.fixed_function` | Needs testing | Needs testing |
+| `tiny_draw.arrays.vertex_shader` | Needs testing | Needs testing |
+| `tiny_draw.inline_arrays.fixed_function` | Needs testing | Needs testing |
+| `tiny_draw.inline_arrays.vertex_shader` | Needs testing | Needs testing |
+| `tiny_draw.inline_buffers.fixed_function` | Needs testing | Needs testing |
+| `tiny_draw.inline_buffers.vertex_shader` | Needs testing | Needs testing |
+| `tiny_draw.inline_elements.fixed_function` | Needs testing | Needs testing |
+| `tiny_draw.inline_elements.vertex_shader` | Needs testing | Needs testing |
+| `uniform_thrash.uniform_thrash` | Needs testing | Needs testing |
+| `vertex_buffer_allocation.disjoint_same_page` | Needs testing | Needs testing |
+| `vertex_buffer_allocation.mixed.arrays` | Needs testing | Needs testing |
+| `vertex_buffer_allocation.mixed.inline_arrays` | Needs testing | Needs testing |
+| `vertex_buffer_allocation.mixed.inline_buffers` | Needs testing | Needs testing |
+| `vertex_buffer_allocation.mixed.inline_elements` | Needs testing | Needs testing |
+| `vertex_buffer_allocation.rising_transient_growth` | Needs testing | Needs testing |
+| `vertex_buffer_allocation.tiny.arrays` | Needs testing | Needs testing |
+| `vertex_buffer_allocation.tiny.inline_arrays` | Needs testing | Needs testing |
+| `vertex_buffer_allocation.tiny.inline_buffers` | Needs testing | Needs testing |
+| `vertex_buffer_allocation.tiny.inline_elements` | Needs testing | Needs testing |
+<!-- END V08136 TEST MATRIX -->
+
+### Structural groups and special handling
+
+These five records describe child completion; they are **not five additional timing benchmarks**:
+
+| Structural group | OpenGL | Vulkan |
+| --- | --- | --- |
+| `game_load.long_unlocked_scene` | Needs testing | Needs testing |
+| `game_load.cross_title_hotpath` | Needs testing | Needs testing |
+| `game_load.s3tc_sync_factor` | Needs testing | Needs testing |
+| `surface.vulkan_memory_pressure.representative` | Needs testing | Needs testing |
+| `surface.vulkan_memory_pressure.stress` | Needs testing | Needs testing |
+
+The four `pfifo_packet_boundary.*` leaves require the xemu-only opt-in and are correctness-only. The two `report_query.dma_descriptor_rewrite` / `report_query.dma_range_guard` leaves and all six `shader_lifecycle.*` leaves are also correctness-only in this catalog; their elapsed times are not approved performance references. Shader-lifecycle cases need the runner's separate-process handling and additional host evidence for shader-mechanism claims. Memory-pressure checkpoints must retain their complete route. The word `vulkan` in a test ID does not establish that it passed on Vulkan or that its OpenGL control is invalid.
+
+Use the **same pinned ISO, catalog/test revision, selection/route, fixed work, renderer, configuration, seed/cache policy, environment and metric contract** for baseline/candidate comparisons. Record each executable's own SHA-256 separately. A failing baseline followed by a passing candidate is a compatibility repair, not a percentage speedup. Never replace the fixed upstream baseline with a newer fork merely to make the suite pass.
+
+The [earlier fork-cycle audit](docs/HISTORICAL-FORK-XISO-COMPATIBILITY.md) is retained as historical evidence only. Update this table and the JSON together when exact-baseline evidence is available; attach run IDs, hashes and per-test outcomes rather than deriving PASS from a successful API request.
+
 ## Connect from the agent/build machine
 
 The tester must already be running; [operator setup](#operator-setup-on-the-tester) is separate from running tests remotely.
