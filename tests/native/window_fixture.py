@@ -4,6 +4,8 @@ import ctypes
 import ctypes.util
 import os
 import tkinter
+import time
+from collections import OrderedDict
 
 class WindowFixture:
     def __init__(self):
@@ -13,6 +15,8 @@ class WindowFixture:
         self.canvas=tkinter.Canvas(self.root,bg='#205080',highlightthickness=0)
         self.canvas.pack(fill='both',expand=True)
         self.box=self.canvas.create_rectangle(20,350,80,410,fill='#f08020',outline='')
+        self.barcode=[self.canvas.create_rectangle(20+i*10,20,30+i*10,40,fill='black',outline='') for i in range(32)]
+        self.paint_times=OrderedDict()
         self.root.update()
         self.window_id=self.root.winfo_id()
         lib=ctypes.CDLL(ctypes.util.find_library('X11'))
@@ -31,6 +35,13 @@ class WindowFixture:
     async def animate(self):
         frame=0
         while True:
+            submitted=time.monotonic()
+            code=frame & 65535
+            for i,rectangle in enumerate(self.barcode):
+                bit=((code if i<16 else code^65535)>>(i%16))&1
+                self.canvas.itemconfigure(rectangle,fill='white' if bit else 'black')
+            self.paint_times[code]=submitted
+            if len(self.paint_times)>512:self.paint_times.popitem(last=False)
             x=20+(frame*4)%480
             self.canvas.coords(self.box,x,350,x+60,410)
             self.root.update()

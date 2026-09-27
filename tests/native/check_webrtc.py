@@ -180,6 +180,8 @@ async def qualify(args):
                     assert 15<center[0]<50 and 60<center[1]<105 and 105<center[2]<155,center
                     window.resize()
                     await page.wait_for_function("events.some(e=>e.type==='surface-changed' && e.sourceWidth===800 && e.sourceHeight===450 && e.surfaceVersion>1)",timeout=5000)
+                    from latency_probe import measure
+                    print('PASS decoded visual latency probe',json.dumps(await measure(page,window)))
                 echo_ms=[]
                 for sequence,channel in enumerate(['input-state','session-control'],1):
                     state={'sequence':sequence,'browserTimestampUs':100*sequence,'controllerIndex':0,

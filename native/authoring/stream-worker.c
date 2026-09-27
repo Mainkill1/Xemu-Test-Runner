@@ -23,6 +23,12 @@
 
 #define LINE_LIMIT (1024 * 1024)
 #define DATA_LIMIT 4096
+#define COMMAND_COUNT_LIMIT 128
+#define COMMAND_BYTES_LIMIT (2 * 1024 * 1024)
+typedef struct { gchar *text; gsize bytes; } QueuedCommand;
+static GMutex command_lock;
+static guint command_count;
+static gsize command_bytes;
 static GMainLoop *loop;
 static GstElement *pipeline, *peer;
 static GstWebRTCDataChannel *control_channel, *state_channel;
@@ -329,7 +335,9 @@ static gint64 command_integer(JsonObject *obj, const char *name) {
     return json_node_get_int(node);
 }
 static gboolean command(gpointer raw) {
-    char *line = raw; JsonParser *parser = json_parser_new(); GError *error = NULL;
+    QueuedCommand *item = raw;
+    char *line = item->text; JsonParser *parser = json_parser_new(); GError *error = NULL;
+    if (g_atomic_int_get(&stopping) || g_atomic_int_get(&failed)) goto done;
     if (!json_parser_load_from_data(parser, line, -1, &error) || !JSON_NODE_HOLDS_OBJECT(json_parser_get_root(parser))) {
         fail("Invalid worker command JSON."); g_clear_error(&error); goto done;
     }
@@ -394,12 +402,33 @@ static gboolean command(gpointer raw) {
         g_mutex_unlock(&channel_lock); g_clear_error(&error);
     } else fail("Unsupported worker command.");
 done:
-    g_object_unref(parser); g_free(line); return G_SOURCE_REMOVE;
+    g_object_unref(parser); return G_SOURCE_REMOVE;
+}
+static void release_command(gpointer raw) {
+    QueuedCommand *item = raw;
+    g_mutex_lock(&command_lock);
+    command_count--; command_bytes -= item->bytes;
+    g_mutex_unlock(&command_lock);
+    g_free(item->text); g_free(item);
+}
+static gboolean enqueue_command(const GString *line) {
+    g_mutex_lock(&command_lock);
+    if (command_count >= COMMAND_COUNT_LIMIT || line->len + 1 > COMMAND_BYTES_LIMIT - command_bytes) {
+        g_mutex_unlock(&command_lock);
+        fail("Worker command queue exceeded its bounded capacity.");
+        return FALSE;
+    }
+    command_count++; command_bytes += line->len + 1;
+    g_mutex_unlock(&command_lock);
+    QueuedCommand *item = g_new(QueuedCommand, 1);
+    item->text = g_strdup(line->str); item->bytes = line->len + 1;
+    g_idle_add_full(G_PRIORITY_DEFAULT, command, item, release_command);
+    return TRUE;
 }
 static gpointer read_input(gpointer unused) {
     (void)unused;
     char chunk[2048]; GString *line = g_string_sized_new(2048);
-    while (!g_atomic_int_get(&stopping)) {
+    while (!g_atomic_int_get(&stopping) && !g_atomic_int_get(&failed)) {
 #ifdef _WIN32
         int count = _read(0, chunk, sizeof(chunk));
 #else
@@ -408,7 +437,8 @@ static gpointer read_input(gpointer unused) {
         if (count <= 0) break;
         for (size_t i = 0; i < (size_t)count; i++) {
             if (chunk[i] == '\n') {
-                g_idle_add(command, g_strdup(line->str)); g_string_truncate(line, 0);
+                if (!enqueue_command(line)) goto done;
+                g_string_truncate(line, 0);
             } else if (chunk[i] == 0 || line->len >= LINE_LIMIT) {
                 fail("Oversized or invalid worker protocol line."); goto done;
             } else g_string_append_c(line, chunk[i]);

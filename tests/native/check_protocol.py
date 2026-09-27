@@ -30,6 +30,32 @@ async def session(worker, commands, *options, expect_error=True):
         if proc.returncode is None:
             proc.kill();await proc.wait()
 
+
+async def overload(worker):
+    # Deliberately throttle the supervisor's output reader. Message count alone
+    # is not overload: under instrumentation, an unthrottled consumer may keep up.
+    proc=await asyncio.create_subprocess_exec(str(worker),'--fixture','--encoder','x264',
+        stdin=asyncio.subprocess.PIPE,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE,limit=4096)
+    try:
+        ready=json.loads(await asyncio.wait_for(proc.stdout.readline(),10))
+        assert ready['stage']=='signaling-ready',ready
+        line=(json.dumps({'type':'bitrate','bitrateKbps':3000})+'\n').encode()
+        proc.stdin.write(line*20000+b'{"type":"stop"}\n')
+        events=[]
+        async def slow_reader():
+            while data:=await proc.stdout.readline():
+                value=json.loads(data);events.append(value)
+                if value['type']=='error':break
+                await asyncio.sleep(0.02)
+        await asyncio.wait_for(slow_reader(),20)
+        out,err=await asyncio.wait_for(proc.communicate(),5)
+        events.extend(json.loads(x) for x in out.splitlines())
+        assert proc.returncode==3 and any('command queue' in e.get('error','') for e in events),(proc.returncode,events[-4:],err[-512:])
+    finally:
+        if proc.returncode is None:
+            proc.kill();await proc.communicate()
+
+
 async def main():
     worker=Path(sys.argv[1]).resolve()
     await session(worker,None,expect_error=False)
@@ -42,5 +68,7 @@ async def main():
     print('PASS wrong JSON types fail structurally instead of crashing native code')
     await session(worker,[{'type':'ice','candidate':'candidate:1 1 UDP 1 127.0.0.1 9000 typ host','sdpMLineIndex':0}]*129)
     print('PASS pending ICE is bounded')
+    await overload(worker)
+    print('PASS command flood fails explicitly instead of building an unbounded queue')
 
 asyncio.run(main())
