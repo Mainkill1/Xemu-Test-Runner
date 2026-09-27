@@ -12,7 +12,7 @@ async def main():
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     out, _ = await asyncio.wait_for(proc.communicate(), 5)
     assert proc.returncode != 0, "Desktop/root capture was accepted."
-    proc = await asyncio.create_subprocess_exec(str(worker), "--fixture", stdin=asyncio.subprocess.PIPE,
+    proc = await asyncio.create_subprocess_exec(str(worker), "--fixture", "--encoder", "x264", stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
         line = await asyncio.wait_for(proc.stdout.readline(), 10)
