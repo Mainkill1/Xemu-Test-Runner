@@ -13,7 +13,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, windows-11-arm]
+        include:
+          - os: ubuntu-latest
+            python: x64
+            arch: x64
+          - os: windows-latest
+            python: x64
+            arch: x64
+          - os: windows-11-arm
+            python: arm64
+            arch: ARM64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -21,49 +30,78 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
-          architecture: x64
+          architecture: ${{ matrix.python }}
       - name: Provision built-in Linux input on isolated CI host
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libsdl2-2.0-0
+          sudo apt-get install -y --no-install-recommends libsdl2-2.0-0 libudev-dev
           sudo modprobe uinput
           sudo chown "$(id -u):$(id -g)" /dev/uinput
           sudo chmod 0600 /dev/uinput
           echo "SUBSYSTEM==\"input\", KERNEL==\"event*\", ATTRS{name}==\"Xemu Runner Gamepad\", OWNER=\"$(id -u)\", MODE=\"0600\"" | sudo tee /etc/udev/rules.d/90-xtr-gamepad-ci.rules
           sudo udevadm control --reload-rules
-      - name: Fetch pinned SDL observer runtime (no driver)
-        if: runner.os == 'Windows'
+      - name: Fetch pinned SDL2 observer runtime (no driver)
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
         shell: pwsh
         run: |
           Invoke-WebRequest 'https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10-win32-x64.zip' -OutFile sdl.zip
           if ((Get-FileHash sdl.zip -Algorithm SHA256).Hash.ToLower() -ne '6cf9706eefd0a4a06dc764007934d428afaf029fabdd408a9e646048c91e18fb') { throw 'SDL checksum mismatch' }
           Expand-Archive sdl.zip -DestinationPath sdl
           "SDL2_LIBRARY=$((Get-ChildItem sdl -Recurse -Filter SDL2.dll | Select-Object -First 1).FullName)" >> $env:GITHUB_ENV
+      - name: Record Windows context
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
           whoami /groups
           Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture
       - name: Configure Linux user-mode adapter
         if: runner.os == 'Linux'
         run: cmake -S native/gamepad -B gamepad-build -DCMAKE_BUILD_TYPE=Release
-      - name: Configure Windows x64 user-mode adapter
+      - name: Configure native Windows user-mode adapter
         if: runner.os == 'Windows'
-        run: cmake -S native/gamepad -B gamepad-build -A x64
-      - run: cmake --build gamepad-build --config Release --parallel 2
+        run: cmake -S native/gamepad -B gamepad-build -A ${{ matrix.arch }}
+      - run: cmake --build gamepad-build --config Release --parallel 4
       - run: ctest --test-dir gamepad-build -C Release --output-on-failure
-      - name: Independent SDL input and cleanup qualification
+      - name: SDL2 input and cleanup qualification
+        if: matrix.arch == 'x64'
         shell: bash
         run: |
           set -euo pipefail
           exe=gamepad-build/xemu-gamepad
           if [ "$RUNNER_OS" = Windows ]; then exe=gamepad-build/Release/xemu-gamepad.exe; fi
           python tests/gamepad/check_os_gamepad.py "$exe" 2>&1 | tee gamepad-qualification.log
+      - uses: actions/checkout@v7
+        with:
+          repository: libsdl-org/SDL
+          ref: 877399b2b2cf21e67554ed9046410f268ce1d1b2
+          path: .ci-sdl3
+          persist-credentials: false
+      - name: Build pinned SDL3 input observer library
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch=()
+          if [ "$RUNNER_OS" = Windows ]; then arch=(-A "${{ matrix.arch }}"); fi
+          cmake -S .ci-sdl3 -B sdl3-build "${arch[@]}" -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TESTS=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_EXAMPLES=OFF -DSDL_AUDIO=OFF -DSDL_VIDEO=OFF -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF
+          cmake --build sdl3-build --config Release --parallel 4
+          python -c "from pathlib import Path; import os; p=next(Path('sdl3-build').rglob('SDL3.dll' if os.name=='nt' else 'libSDL3.so.0')); open(os.environ['GITHUB_ENV'],'a').write('SDL3_LIBRARY='+str(p.resolve())+'\n')"
+      - name: SDL3 input and cleanup qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=gamepad-build/xemu-gamepad
+          if [ "$RUNNER_OS" = Windows ]; then exe=gamepad-build/Release/xemu-gamepad.exe; fi
+          python tests/gamepad/check_sdl3.py "$exe" 2>&1 | tee gamepad-sdl3-qualification.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: os-gamepad-${{ matrix.os }}
           path: |
             gamepad-qualification.log
+            gamepad-sdl3-qualification.log
             gamepad-results.json
+            gamepad-sdl3-results.json
             gamepad-build/Release/xemu-gamepad.exe
             gamepad-build/xemu-gamepad
           if-no-files-found: warn
