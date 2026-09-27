@@ -1,0 +1,11 @@
+{
+  "id": "v08136-gl-r1",
+  "application": "upstream-v08136-win-x64",
+  "suite": "v08136-gl",
+  "mode": "full",
+  "settings": {
+    "warmup_iterations": 0,
+    "measurement_iterations_multiplier": 1,
+    "gpu_completion_mode": "per_iteration"
+  }
+}
