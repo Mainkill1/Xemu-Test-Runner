@@ -26,6 +26,8 @@ class Observer:
         self.pump = bind('SDL_PumpEvents', None)
         self.update = bind('SDL_GameControllerUpdate', None)
         self.open = bind('SDL_GameControllerOpen', C.c_void_p, C.c_int)
+        self.add_mapping = bind('SDL_GameControllerAddMapping', C.c_int, C.c_char_p)
+        self.joystick_name = bind('SDL_JoystickNameForIndex', C.c_char_p, C.c_int)
         self.close = bind('SDL_GameControllerClose', None, C.c_void_p)
         self.attached = bind('SDL_GameControllerGetAttached', C.c_int, C.c_void_p)
         self.axis = bind('SDL_GameControllerGetAxis', C.c_int16, C.c_void_p, C.c_int)
@@ -45,10 +47,17 @@ class Observer:
         while time.monotonic() < deadline:
             self.pump()
             if self.count() == 1:
+                guid = bytes(self.guid(0)).hex()
+                mapping = None
+                if sys.platform == 'linux':
+                    assert self.joystick_name(0) == b'Xemu Runner Gamepad'
+                    template = Path(__file__).resolve().parents[2] / 'native/gamepad/linux-sdl-mapping.txt'
+                    mapping = template.read_text().strip().format(guid=guid)
+                    assert self.add_mapping(mapping.encode()) >= 0, self.error()
                 self.pad = self.open(0)
                 if self.pad:
                     assert not self.virtual(0), 'Process-local SDL virtual joystick cannot qualify OS injection.'
-                    return {'controllerName': self.name(self.pad).decode(), 'guid': bytes(self.guid(0)).hex()}
+                    return {'controllerName': self.name(self.pad).decode(), 'guid': guid, 'sdlMapping': mapping}
             await asyncio.sleep(0.01)
         raise AssertionError(('OS gamepad not visible through SDL', self.count(), self.error()))
 
