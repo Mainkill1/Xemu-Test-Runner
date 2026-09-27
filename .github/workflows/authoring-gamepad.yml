@@ -1,0 +1,63 @@
+name: authoring-gamepad
+on:
+  pull_request:
+    paths:
+      - 'native/gamepad/**'
+      - 'tests/gamepad/**'
+      - '.github/workflows/authoring-gamepad.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  os-input:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Provision built-in Linux input on isolated CI host
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libsdl2-2.0-0
+          sudo modprobe uinput
+          sudo chown "$(id -u):$(id -g)" /dev/uinput
+          sudo chmod 0600 /dev/uinput
+          echo "SUBSYSTEM==\"input\", KERNEL==\"event*\", ATTRS{name}==\"Xemu Runner Gamepad\", OWNER=\"$(id -u)\", MODE=\"0600\"" | sudo tee /etc/udev/rules.d/90-xtr-gamepad-ci.rules
+          sudo udevadm control --reload-rules
+      - name: Fetch pinned SDL observer runtime (no driver)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest 'https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10-win32-x64.zip' -OutFile sdl.zip
+          if ((Get-FileHash sdl.zip -Algorithm SHA256).Hash.ToLower() -ne '6cf9706eefd0a4a06dc764007934d428afaf029fabdd408a9e646048c91e18fb') { throw 'SDL checksum mismatch' }
+          Expand-Archive sdl.zip -DestinationPath sdl
+          "SDL2_LIBRARY=$((Get-ChildItem sdl -Recurse -Filter SDL2.dll | Select-Object -First 1).FullName)" >> $env:GITHUB_ENV
+          whoami /groups
+      - name: Compile user-mode adapter and unit checks
+        run: cmake -S native/gamepad -B gamepad-build -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build gamepad-build --config Release --parallel 2
+      - run: ctest --test-dir gamepad-build -C Release --output-on-failure
+      - name: Independent SDL input and cleanup qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=gamepad-build/xemu-gamepad
+          if [ "$RUNNER_OS" = Windows ]; then exe=gamepad-build/Release/xemu-gamepad.exe; fi
+          python tests/gamepad/check_os_gamepad.py "$exe" 2>&1 | tee gamepad-qualification.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: os-gamepad-${{ runner.os }}
+          path: |
+            gamepad-qualification.log
+            gamepad-results.json
+            gamepad-build/Release/xemu-gamepad.exe
+            gamepad-build/xemu-gamepad
+          if-no-files-found: warn
