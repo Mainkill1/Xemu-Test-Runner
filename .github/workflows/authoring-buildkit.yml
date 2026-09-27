@@ -1,0 +1,35 @@
+name: authoring-buildkit
+on:
+  pull_request:
+    paths: ['.github/workflows/authoring-buildkit.yml']
+permissions:
+  contents: read
+jobs:
+  offline-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - name: Restore public dependencies
+        run: dotnet restore tests/AuthoringRuntimeChecks/AuthoringRuntimeChecks.csproj
+      - name: Package public SDK and public NuGet packages only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p kit/dotnet kit/packages
+          cp /usr/share/dotnet/dotnet /usr/share/dotnet/LICENSE.txt /usr/share/dotnet/ThirdPartyNotices.txt kit/dotnet/
+          for area in sdk host/fxr shared/Microsoft.NETCore.App shared/Microsoft.AspNetCore.App packs/Microsoft.NETCore.App.Ref packs/Microsoft.AspNetCore.App.Ref packs/Microsoft.NETCore.App.Host.linux-x64; do
+            mkdir -p "kit/dotnet/$area"
+            for version in /usr/share/dotnet/"$area"/10.*; do
+              if [ -d "$version" ]; then cp -a "$version" "kit/dotnet/$area/"; fi
+            done
+          done
+          cp -a "$HOME/.nuget/packages/." kit/packages/
+          tar -C kit -czf authoring-buildkit.tar.gz .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: authoring-buildkit
+          path: authoring-buildkit.tar.gz
+          retention-days: 1
