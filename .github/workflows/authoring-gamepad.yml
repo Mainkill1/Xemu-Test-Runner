@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, windows-11-arm]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -21,6 +21,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
+          architecture: x64
       - name: Provision built-in Linux input on isolated CI host
         if: runner.os == 'Linux'
         run: |
@@ -40,8 +41,13 @@ jobs:
           Expand-Archive sdl.zip -DestinationPath sdl
           "SDL2_LIBRARY=$((Get-ChildItem sdl -Recurse -Filter SDL2.dll | Select-Object -First 1).FullName)" >> $env:GITHUB_ENV
           whoami /groups
-      - name: Compile user-mode adapter and unit checks
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture
+      - name: Configure Linux user-mode adapter
+        if: runner.os == 'Linux'
         run: cmake -S native/gamepad -B gamepad-build -DCMAKE_BUILD_TYPE=Release
+      - name: Configure Windows x64 user-mode adapter
+        if: runner.os == 'Windows'
+        run: cmake -S native/gamepad -B gamepad-build -A x64
       - run: cmake --build gamepad-build --config Release --parallel 2
       - run: ctest --test-dir gamepad-build -C Release --output-on-failure
       - name: Independent SDL input and cleanup qualification
@@ -54,7 +60,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: os-gamepad-${{ runner.os }}
+          name: os-gamepad-${{ matrix.os }}
           path: |
             gamepad-qualification.log
             gamepad-results.json
