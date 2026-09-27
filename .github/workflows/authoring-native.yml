@@ -16,7 +16,7 @@ jobs:
       - name: Install native development and media packages
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends cmake ninja-build pkg-config libx11-dev libgstreamer1.0-dev libgstreamer-plugins-bad1.0-dev libjson-glib-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-nice
+          sudo apt-get install -y --no-install-recommends cmake ninja-build pkg-config libx11-dev libgirepository1.0-dev libgstreamer1.0-dev libgstreamer-plugins-bad1.0-dev libjson-glib-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-nice
       - name: Build real media worker
         run: cmake -S native/authoring -B native-build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build native-build
       - uses: actions/setup-python@v7
