@@ -7,14 +7,23 @@ import subprocess
 import time
 
 
-def echo_pipe():
+def echo_pipe(batch=False):
     print(json.dumps({'type': 'ready', 'additionalDriver': False,
                       'scope': 'pipe-fixture-not-a-gamepad'}), flush=True)
+    delayed = []
     for line in sys.stdin:
         if line.strip() == 'stop':
             return
-        print(json.dumps({'type': 'applied', 'sequence': int(line.split()[1]),
-                          'appliedAtUs': time.monotonic_ns() // 1000}), flush=True)
+        reply = json.dumps({'type': 'applied', 'sequence': int(line.split()[1]),
+                            'appliedAtUs': time.monotonic_ns() // 1000})
+        if batch:
+            delayed.append(reply)
+            if len(delayed) < 8:
+                continue
+            print('\n'.join(delayed), flush=True)
+            batch = False
+        else:
+            print(reply, flush=True)
 
 
 async def check():
@@ -48,13 +57,31 @@ async def check():
     finally:
         await sender.dispose()
         await sender.dispose()  # A second owner cleanup must be harmless.
+    sender = await Producer.start([sys.executable, str(Path(__file__).resolve()), '--batch-echo'])
+    try:
+        deadline = time.monotonic() + 2
+        while sender.sequence < 8 and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert sender.sequence >= 8, 'Delayed receipts blocked fresh input submission'
+        deadline = time.monotonic() + 2
+        while (sender.last_receipt or {}).get('sequence', 0) < 8 and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert (sender.last_receipt or {}).get('sequence', 0) >= 8, 'Submitted input was not independently acknowledged'
+        assert sender.failure is None, sender.failure
+        await sender.stop_heartbeat()
+        assert sender.last_receipt['sequence'] == sender.sequence, 'Shutdown lost pending receipts'
+        print('PASS delayed receipts do not block bounded fresh-state submission')
+    finally:
+        if sender.sequence < 8:
+            sender.proc.kill()
+        await sender.dispose()
 
 
 if __name__ == '__main__':
     if sys.argv[1:] == ['--fail']:
         print('intentional startup error', file=sys.stderr, flush=True)
         sys.exit(3)
-    if sys.argv[1:] == ['--echo']:
-        echo_pipe()
+    if sys.argv[1:] in (['--echo'], ['--batch-echo']):
+        echo_pipe(sys.argv[1:] == ['--batch-echo'])
     else:
         asyncio.run(check())

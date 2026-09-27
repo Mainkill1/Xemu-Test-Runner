@@ -200,6 +200,9 @@ async def roundtrip(executable, teardown):
                 'workerExit': producer.proc.poll(), 'heartbeatFailure': repr(producer.failure),
                 'lastReceipt': producer.last_receipt, 'receiptTimes': producer.receipt_times,
                 'failureTime': time.monotonic(), 'requestedState': producer.state}), flush=True)
+            if os.name == 'nt':
+                from check_xinput import snapshot
+                print('INDEPENDENT XINPUT DIAGNOSTICS', json.dumps(snapshot()), flush=True)
         raise
     finally:
         if producer:

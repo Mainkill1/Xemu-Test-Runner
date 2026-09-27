@@ -16,6 +16,29 @@ class Gamepad(C.Structure):
 class State(C.Structure):
     _fields_ = [('packet', C.c_uint32), ('gamepad', Gamepad)]
 
+def snapshot():
+    """Failure diagnostics: compare the named API with the ordinal SDL uses."""
+    if os.name != 'nt':
+        return None
+    dll = C.WinDLL('XInput1_4.dll')
+    result = {}
+    for label, symbol in (('XInputGetState', 'XInputGetState'), ('SDL-ordinal-100', 100)):
+        try:
+            fn = dll[symbol]
+        except AttributeError:
+            result[label] = {'available': False}
+            continue
+        fn.argtypes, fn.restype = [C.c_uint32, C.POINTER(State)], C.c_uint32
+        slots = []
+        for slot in range(4):
+            state = State()
+            code = fn(slot, C.byref(state))
+            slots.append({'slot': slot, 'code': code, 'packet': state.packet,
+                          'state': [getattr(state.gamepad, n) for n, _ in Gamepad._fields_]})
+        result[label] = slots
+    return result
+
+
 async def main():
     assert os.name == 'nt', 'XInput qualification requires Windows'
     dll = C.WinDLL('XInput1_4.dll')
