@@ -8,17 +8,35 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: authoring-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   linux-media:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - name: Install native development and media packages
+        shell: bash
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends cmake ninja-build pkg-config libx11-dev libgirepository1.0-dev libgstreamer1.0-dev libgstreamer-plugins-bad1.0-dev libjson-glib-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-nice
+          sudo apt-get install -y --no-install-recommends cmake ninja-build pkg-config libx11-dev libgstreamer1.0-dev libgstreamer-plugins-bad1.0-dev libjson-glib-dev gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-nice xvfb > /tmp/native-install.log 2>&1 || { tail -100 /tmp/native-install.log; exit 1; }
       - name: Build real media worker
         run: cmake -S native/authoring -B native-build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build native-build
+      - name: Package reproducible native test inputs
+        shell: bash
+        run: |
+          mkdir -p native-evidence
+          cp native-build/xemu-authoring-media native-evidence/
+          git rev-parse HEAD > native-evidence/source-commit.txt
+          tar -czf native-evidence/source.tar.gz native/authoring tests/native
+          # Public development headers let the same C code be diagnosed on an offline
+          # host with GStreamer's runtime libraries. No private SDK or credentials.
+          tar -czf native-evidence/headers.tar.gz -C /usr include/gstreamer-1.0 include/glib-2.0 include/json-glib-1.0 lib/x86_64-linux-gnu/glib-2.0/include
+          cp /usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstnice.so native-evidence/
+          gst-inspect-1.0 --version > native-evidence/gstreamer-version.txt
+          gst-inspect-1.0 x264enc > native-evidence/encoder-properties.txt
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
@@ -27,9 +45,14 @@ jobs:
       - name: Verify native shutdown and capture refusal
         run: python tests/native/check_media_worker.py native-build/xemu-authoring-media
       - name: Verify real H.264 WebRTC and browser input channels
-        run: python tests/native/check_webrtc.py native-build/xemu-authoring-media
+        shell: bash
+        run: |
+          set -o pipefail
+          python tests/native/check_webrtc.py native-build/xemu-authoring-media 2>&1 | tee native-evidence/browser-test.log
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: authoring-media-linux-x64
-          path: native-build/xemu-authoring-media
+          path: native-evidence/
           if-no-files-found: error
+          retention-days: 7
