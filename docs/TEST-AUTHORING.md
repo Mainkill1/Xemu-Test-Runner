@@ -2,7 +2,19 @@
 
 Test Authoring is the planned interactive path for creating reusable xemu tests through a secure browser session. It is tracked by [issue #65](https://github.com/Mainkill1/Xemu-Test-Runner/issues/65).
 
-Phase 0 defines architecture, state, input, window-coordinate, and provider contracts. It does not yet expose runtime routes or start a media worker.
+The branch includes authoring contracts, a native H.264/WebRTC media worker,
+and built-in OS gamepad injection with a managed process adapter. The complete
+HTTPS/browser/queue/recording workflow is still under construction; ordinary
+runner startup does not automatically launch these helpers.
+
+Current subsystem implementations and qualification boundaries:
+
+- [Native media](AUTHORING-MEDIA.md)
+- [OS gamepad input without an additional driver](AUTHORING-GAMEPAD.md)
+
+The gamepad document supersedes the original design's deferred Windows driver
+selection: Windows uses built-in InputInjector; Linux uses kernel uinput. No
+additional controller driver or target-process hook is required by this path.
 
 ## Three separate operating paths
 
@@ -118,12 +130,16 @@ The existing HTTP control plane can link to the secure authoring origin without 
 
 The complete feature requires real-host qualification for:
 
-- Windows 10/11 window capture, DPI changes, modal windows, H.264 encoding, and a maintained virtual Xbox-compatible device;
+- Windows window capture, DPI changes, modal windows, H.264 encoding, and authorized built-in InputInjector access;
 - Linux X11 capture/input;
 - Wayland/Steam Deck ScreenCast/PipeWire capture and qualified input path;
-- Linux uinput/libevdev virtual controller;
+- Linux uinput virtual controller with operator-provisioned permissions and the installed SDL mapping;
 - browser/controller disconnect and worker-crash neutralization;
 - no-media assertions during normal execution.
+
+OS gamepad readback qualification is distinct from actual xemu gameplay and from
+media qualification. Native and x64-emulated Windows 11 results must not be
+presented as qualification of every Windows 10/11 or Server host.
 
 A platform/backend that cannot meet the contract is reported unsupported. It does not activate a lower-fidelity authoring mode.
 

@@ -51,12 +51,12 @@ class Observer3(checks.Observer):
         self.guid = lambda index: guid_id(self.ids[index])
         self.joystick_name = lambda index: name_id(self.ids[index])
         self.virtual = lambda index: virtual_id(self.ids[index])
-        self.add_mapping = bind('SDL_AddGamepadMapping', C.c_int, C.c_char_p)
         self.close = bind('SDL_CloseGamepad', None, C.c_void_p)
         self.attached = bind('SDL_GamepadConnected', C.c_bool, C.c_void_p)
         self.axis = bind('SDL_GetGamepadAxis', C.c_int16, C.c_void_p, C.c_int)
         self.button = bind('SDL_GetGamepadButton', C.c_bool, C.c_void_p, C.c_int)
         self.name = bind('SDL_GetGamepadName', C.c_char_p, C.c_void_p)
+        checks.configure_mapping()
         assert initialize(0x2000), self.error()
         self.pad = None
         self.pump()
@@ -66,7 +66,7 @@ class Observer3(checks.Observer):
 async def main():
     checks.Observer = Observer3
     results = []
-    for teardown in ('stop', 'watchdog', 'malformed', 'kill'):
+    for teardown in checks.TEARDOWNS:
         result = await checks.roundtrip(str(Path(sys.argv[1]).resolve()), teardown)
         result['observerApi'] = 'SDL3'
         results.append(result)

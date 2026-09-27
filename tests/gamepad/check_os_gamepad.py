@@ -10,7 +10,22 @@ from pathlib import Path
 import platform
 import sys
 import time
+import threading
 from producer import Producer
+
+TEARDOWNS = ('stop', 'watchdog', 'malformed', 'kill', 'eof', 'partial', 'stale', 'backpressure')
+
+
+def configure_mapping():
+    if sys.platform == 'linux':
+        path = Path(__file__).resolve().parents[2] / 'native/gamepad/linux-sdl-mapping.txt'
+        mapping = path.read_text().strip()
+        assert len(mapping.split(',')[0]) == 32 and '{' not in mapping
+        os.environ['SDL_GAMECONTROLLERCONFIG'] = mapping
+    elif os.name == 'nt':
+        # The supervisor puts this in only the target environment before SDL init.
+        assert os.environ.get('SDL_JOYSTICK_RAWINPUT') == '0'
+
 
 class Guid(C.Structure):
     _fields_ = [('data', C.c_ubyte * 16)]
@@ -27,7 +42,6 @@ class Observer:
         self.pump = bind('SDL_PumpEvents', None)
         self.update = bind('SDL_GameControllerUpdate', None)
         self.open = bind('SDL_GameControllerOpen', C.c_void_p, C.c_int)
-        self.add_mapping = bind('SDL_GameControllerAddMapping', C.c_int, C.c_char_p)
         self.joystick_name = bind('SDL_JoystickNameForIndex', C.c_char_p, C.c_int)
         self.close = bind('SDL_GameControllerClose', None, C.c_void_p)
         self.attached = bind('SDL_GameControllerGetAttached', C.c_int, C.c_void_p)
@@ -38,6 +52,7 @@ class Observer:
         self.virtual = bind('SDL_JoystickIsVirtual', C.c_int, C.c_int)
         self.error = bind('SDL_GetError', C.c_char_p)
         self.quit = bind('SDL_Quit', None)
+        configure_mapping()
         assert self.init(0x2000) == 0, self.error()
         self.pad = None
         self.pump()
@@ -52,9 +67,9 @@ class Observer:
                 mapping = None
                 if sys.platform == 'linux':
                     assert self.joystick_name(0) == b'Xemu Runner Gamepad'
-                    template = Path(__file__).resolve().parents[2] / 'native/gamepad/linux-sdl-mapping.txt'
-                    mapping = template.read_text().strip().format(guid=guid)
-                    assert self.add_mapping(mapping.encode()) >= 0, self.error()
+                    mapping = os.environ['SDL_GAMECONTROLLERCONFIG']
+                    assert mapping.split(',')[0] == guid, ('Installed mapping GUID mismatch', guid)
+                    # No SDL_AddMapping call: unmodified xemu gets the same launch environment.
                 self.pad = self.open(0)
                 if self.pad:
                     assert not self.virtual(0), 'Process-local SDL virtual joystick cannot qualify OS injection.'
@@ -126,6 +141,42 @@ async def roundtrip(executable, teardown):
         elif teardown == 'kill':
             await producer.stop_heartbeat()
             producer.proc.kill(); await asyncio.to_thread(producer.proc.wait, 3)
+        elif teardown == 'backpressure':
+            await producer.stop_heartbeat()
+            # Fill stdout without reading receipts. The native device thread
+            # must expire even while the protocol thread is blocked in output.
+            payload = ''.join('state ' + str(producer.sequence + i) +
+                              ' 4096 255 255 10000 10000 -10000 -10000\n'
+                              for i in range(1, 20_001)).encode()
+            def flood():
+                try:
+                    producer.proc.stdin.write(payload)
+                    producer.proc.stdin.flush()
+                except OSError:
+                    pass  # Expected after killing the blocked fixture process.
+            writer = threading.Thread(target=flood, name='backpressure-fixture', daemon=True)
+            writer.start()
+            try:
+                await observer.disconnected()
+                assert producer.proc.poll() is None and writer.is_alive(), (
+                    'Did not establish blocked output while device disappeared')
+            finally:
+                if producer.proc.poll() is None:
+                    producer.proc.kill()
+                await asyncio.to_thread(producer.proc.wait, 3)
+                await asyncio.to_thread(writer.join, 3)
+                assert not writer.is_alive(), 'Backpressure test leaked its writer'
+        elif teardown in ('eof', 'partial', 'stale'):
+            await producer.stop_heartbeat()
+            if teardown == 'eof':
+                producer.proc.stdin.close()
+            elif teardown == 'partial':
+                producer.proc.stdin.write(b'state 9999 '); producer.proc.stdin.flush()
+            else:
+                producer.proc.stdin.write(('state ' + str(producer.sequence) + ' 0 0 0 0 0 0 0\n').encode())
+                producer.proc.stdin.flush()
+            await asyncio.to_thread(producer.proc.wait, 3)
+            assert producer.proc.returncode == (0 if teardown == 'eof' else 3)
         elif teardown == 'malformed':
             await producer.stop_heartbeat()
             producer.proc.stdin.write(b'state 9999 0 999 0 0 0 0 0\n'); producer.proc.stdin.flush()
@@ -139,6 +190,7 @@ async def roundtrip(executable, teardown):
             'producerProcess':producer.proc.pid,'backend':producer.ready,'device':device,
             'teardown':teardown,'buttonsChecked':len(buttons),'analogPatternsChecked':len(patterns),
             'lastAppliedReceipt':producer.last_receipt,
+            'launchEnvironment': {key: os.environ[key] for key in ('SDL_JOYSTICK_RAWINPUT', 'SDL_GAMECONTROLLERCONFIG') if key in os.environ},
             'scope':'OS API submission and independent SDL readback, not guest consumption'}
         print(json.dumps(result), flush=True)
         return result
@@ -159,7 +211,7 @@ async def roundtrip(executable, teardown):
 async def main():
     executable = str(Path(sys.argv[1]).resolve())
     results = []
-    for teardown in ('stop', 'watchdog', 'malformed', 'kill'):
+    for teardown in TEARDOWNS:
         results.append(await roundtrip(executable, teardown))
     Path('gamepad-results.json').write_text(json.dumps(results, indent=2))
 

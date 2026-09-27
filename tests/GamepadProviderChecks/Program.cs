@@ -11,6 +11,7 @@ if (args.Length == 2 && args[0] == "--pipe-fixture")
     string mode = args[1];
     if (mode == "startup-error") { Console.Error.WriteLine("fixture startup denied"); return 3; }
     if (mode == "startup-hang") { await Task.Delay(30_000); return 3; }
+    if (mode == "stderr-flood") Console.Error.Write(new string('e', 100_000));
     Console.WriteLine(JsonSerializer.Serialize(new
     {
         type = "ready", protocolVersion = 1,
@@ -20,7 +21,11 @@ if (args.Length == 2 && args[0] == "--pipe-fixture")
     }));
     while (Console.ReadLine() is { } line)
     {
-        if (line == "stop") return 0;
+        if (line == "stop")
+        {
+            if (mode == "slow-stop") await Task.Delay(150);
+            return 0;
+        }
         if (mode == "reply-hang") { await Task.Delay(30_000); return 3; }
         if (mode == "oversized") { Console.WriteLine(new string('x', 5000)); continue; }
         string[] fields = line.Split(' ');
@@ -30,7 +35,7 @@ if (args.Length == 2 && args[0] == "--pipe-fixture")
         Console.WriteLine(JsonSerializer.Serialize(new
         {
             type = "applied", sequence = mode == "wrong-sequence" ? sequence + 1 : sequence,
-            appliedAtUs = (long)(Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1_000_000.0))
+            appliedAtUs = mode == "backward-clock" ? 100 - sequence : (long)(Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1_000_000.0))
         }));
     }
     return 0;
@@ -137,6 +142,32 @@ await Check("bounded receipt timeout kills the child", async () =>
     await provider.CreateAsync(1, CancellationToken.None);
     await Throws<TimeoutException>(() => provider.ApplyStateAsync(0, default, CancellationToken.None));
     Assert(provider.LastApplied is null, "Timed-out input was acknowledged."); Exited(provider.WorkerProcessId);
+});
+await Check("stderr is drained without blocking device readiness", async () =>
+{
+    await using var provider = Provider("stderr-flood");
+    await provider.CreateAsync(1, CancellationToken.None);
+    await provider.ApplyStateAsync(0, default, CancellationToken.None);
+    Assert(provider.LastApplied is not null, "Stderr blocked input submission.");
+});
+await Check("receipt clock cannot regress", async () =>
+{
+    await using var provider = Provider("backward-clock");
+    await provider.CreateAsync(1, CancellationToken.None);
+    await provider.ApplyStateAsync(0, default, CancellationToken.None);
+    await Throws<IOException>(() => provider.ApplyStateAsync(0, default, CancellationToken.None));
+    Assert(provider.LastApplied is { Sequence: 1 }, "Rejected state replaced last valid receipt.");
+    Exited(provider.WorkerProcessId);
+});
+await Check("concurrent disposal waits for actual exit", async () =>
+{
+    var provider = Provider("slow-stop");
+    await provider.CreateAsync(1, CancellationToken.None);
+    int? pid = provider.WorkerProcessId;
+    Task first = provider.DisposeAsync().AsTask();
+    await provider.DisposeAsync();
+    Assert(first.IsCompleted, "Second disposal returned before the first cleanup.");
+    Exited(pid);
 });
 Console.WriteLine($"Managed gamepad checks: {count - failures}/{count} passed (pipe fixtures, not OS qualification).");
 return failures == 0 ? 0 : 1;

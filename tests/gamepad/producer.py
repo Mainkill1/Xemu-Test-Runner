@@ -75,9 +75,12 @@ class Producer:
         await self.stop_heartbeat()
         if self.proc.poll() is None:
             try:
-                self.proc.stdin.write(b'stop\n')
-                self.proc.stdin.flush()
-                await asyncio.to_thread(self.proc.wait, 3)
+                if self.proc.stdin.closed:
+                    await asyncio.to_thread(self.proc.wait, 3)
+                else:
+                    self.proc.stdin.write(b'stop\n')
+                    self.proc.stdin.flush()
+                    await asyncio.to_thread(self.proc.wait, 3)
             except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
                 if self.proc.poll() is None:
                     self.proc.kill()
