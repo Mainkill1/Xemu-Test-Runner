@@ -5,44 +5,22 @@ on:
 permissions:
   contents: read
 jobs:
-  offline-validation:
+  native-validation-dependencies:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-dotnet@v6
-        with:
-          global-json-file: global.json
-      - name: Restore public dependencies
-        run: dotnet restore tests/AuthoringRuntimeChecks/AuthoringRuntimeChecks.csproj
-      - name: Install native development headers
-        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libgstreamer1.0-dev libgstreamer-plugins-bad1.0-dev libjson-glib-dev libxcb-present-dev
-      - name: Package selected public SDK and dependencies only
+      - name: Install public native test dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends gstreamer1.0-nice libxcb-xtest0 libxcb-xtest0-dev
+      - name: Package native test dependencies only
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p kit/dotnet kit/packages kit/native
-          cp /usr/share/dotnet/dotnet /usr/share/dotnet/LICENSE.txt /usr/share/dotnet/ThirdPartyNotices.txt kit/dotnet/
-          for area in sdk host/fxr shared/Microsoft.NETCore.App shared/Microsoft.AspNetCore.App packs/Microsoft.NETCore.App.Ref packs/Microsoft.AspNetCore.App.Ref packs/Microsoft.NETCore.App.Host.linux-x64; do
-            mkdir -p "kit/dotnet/$area"
-            version=$(find /usr/share/dotnet/"$area" -mindepth 1 -maxdepth 1 -type d -name '10.*' | sort -V | tail -1)
-            if [ -n "$version" ]; then cp -a "$version" "kit/dotnet/$area/"; fi
-          done
-          python3 - <<'PY'
-          import json, pathlib, shutil
-          assets=json.load(open('tests/AuthoringRuntimeChecks/obj/project.assets.json'))
-          root=pathlib.Path.home()/'.nuget/packages'
-          for name,info in assets['libraries'].items():
-              if info.get('type')!='package': continue
-              relative=name.lower()
-              shutil.copytree(root/relative,pathlib.Path('kit/packages')/relative)
-          PY
-          for path in /usr/include/gstreamer-1.0 /usr/include/glib-2.0 /usr/lib/x86_64-linux-gnu/glib-2.0/include /usr/include/json-glib-1.0 /usr/include/xcb; do
-            cp -a --parents "$path" kit/native/
-          done
-          tar -C kit -czf authoring-buildkit.tar.gz .
-          ls -lh authoring-buildkit.tar.gz
+          mkdir -p native/lib native/plugins native/include
+          cp -L /usr/lib/x86_64-linux-gnu/libxcb-xtest.so.0 native/lib/
+          cp -L /usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstnice.so native/plugins/
+          cp /usr/include/xcb/xtest.h native/include/
+          tar -C native -czf authoring-native-dependencies.tar.gz .
       - uses: actions/upload-artifact@v7
         with:
-          name: authoring-buildkit-slim
-          path: authoring-buildkit.tar.gz
+          name: authoring-native-dependencies
+          path: authoring-native-dependencies.tar.gz
           retention-days: 1
