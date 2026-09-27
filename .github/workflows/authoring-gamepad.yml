@@ -24,6 +24,8 @@ jobs:
             python: arm64
             arch: ARM64
     runs-on: ${{ matrix.os }}
+    env:
+      SDL_JOYSTICK_RAWINPUT: '0'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -61,10 +63,15 @@ jobs:
       - name: Configure native Windows user-mode adapter
         if: runner.os == 'Windows'
         run: cmake -S native/gamepad -B gamepad-build -A ${{ matrix.arch }}
-      - run: cmake --build gamepad-build --config Release --parallel 4
+      - id: native-build
+        run: cmake --build gamepad-build --config Release --parallel 4
       - run: ctest --test-dir gamepad-build -C Release --output-on-failure
+      - name: Independent XInput readback
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python tests/gamepad/check_xinput.py gamepad-build/Release/xemu-gamepad.exe 2>&1 | Tee-Object gamepad-xinput-qualification.log
       - name: SDL2 input and cleanup qualification
-        if: matrix.arch == 'x64'
+        if: always() && steps.native-build.outcome == 'success' && matrix.arch == 'x64'
         shell: bash
         run: |
           set -euo pipefail
@@ -72,12 +79,15 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then exe=gamepad-build/Release/xemu-gamepad.exe; fi
           python tests/gamepad/check_os_gamepad.py "$exe" 2>&1 | tee gamepad-qualification.log
       - uses: actions/checkout@v7
+        if: always() && steps.native-build.outcome == 'success'
         with:
           repository: libsdl-org/SDL
           ref: 877399b2b2cf21e67554ed9046410f268ce1d1b2
           path: .ci-sdl3
           persist-credentials: false
       - name: Build pinned SDL3 input observer library
+        id: sdl3-build
+        if: always() && steps.native-build.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -87,6 +97,7 @@ jobs:
           cmake --build sdl3-build --config Release --parallel 4
           python -c "from pathlib import Path; import os; p=next(Path('sdl3-build').rglob('SDL3.dll' if os.name=='nt' else 'libSDL3.so.0')); open(os.environ['GITHUB_ENV'],'a').write('SDL3_LIBRARY='+str(p.resolve())+'\n')"
       - name: SDL3 input and cleanup qualification
+        if: always() && steps.sdl3-build.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -100,6 +111,8 @@ jobs:
           path: |
             gamepad-qualification.log
             gamepad-sdl3-qualification.log
+            gamepad-xinput-qualification.log
+            gamepad-xinput-results.json
             gamepad-results.json
             gamepad-sdl3-results.json
             gamepad-build/Release/xemu-gamepad.exe

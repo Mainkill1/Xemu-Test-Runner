@@ -3,6 +3,7 @@ import asyncio
 import json
 from pathlib import Path
 import sys
+import subprocess
 import time
 
 
@@ -18,6 +19,21 @@ def echo_pipe():
 
 async def check():
     from producer import Producer
+    exited = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--fail'],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    await asyncio.to_thread(exited.wait, 3)
+    exited.stdin.write(b'buffered-before-exit')
+    failed_sender = Producer(exited)
+    await failed_sender.dispose()
+    await failed_sender.dispose()
+    assert 'intentional startup error' in failed_sender.details
+    # Failure diagnostics must survive both start() cleanup paths.
+    try:
+        await Producer.start([sys.executable, str(Path(__file__).resolve()), '--fail'])
+    except AssertionError as error:
+        assert 'intentional startup error' in str(error), str(error)
+    else:
+        raise AssertionError('A failed worker was accepted')
     sender = await Producer.start([sys.executable, str(Path(__file__).resolve()), '--echo'])
     try:
         deadline = time.monotonic() + 3
@@ -31,9 +47,13 @@ async def check():
         print('PASS heartbeat sender progresses while consumer thread blocks')
     finally:
         await sender.dispose()
+        await sender.dispose()  # A second owner cleanup must be harmless.
 
 
 if __name__ == '__main__':
+    if sys.argv[1:] == ['--fail']:
+        print('intentional startup error', file=sys.stderr, flush=True)
+        sys.exit(3)
     if sys.argv[1:] == ['--echo']:
         echo_pipe()
     else:

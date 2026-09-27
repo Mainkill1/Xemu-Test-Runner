@@ -85,4 +85,9 @@ class Producer:
         if not self.proc.stderr.closed:
             self.details = self.proc.stderr.read().decode(errors='replace')
         for pipe in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
-            pipe.close()
+            # Buffered stdin can fail a second flush when the child exited.
+            # Preserve its original startup/apply error instead of masking it.
+            try:
+                pipe.close()
+            except OSError:
+                pass
