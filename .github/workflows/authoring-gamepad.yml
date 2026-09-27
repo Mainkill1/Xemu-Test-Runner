@@ -4,6 +4,8 @@ on:
     paths:
       - 'native/gamepad/**'
       - 'tests/gamepad/**'
+      - 'tests/GamepadProviderChecks/**'
+      - 'src/XemuTestRunner/Authoring/**'
       - '.github/workflows/authoring-gamepad.yml'
   workflow_dispatch:
 permissions:
@@ -17,7 +19,7 @@ jobs:
           - os: ubuntu-latest
             python: x64
             arch: x64
-          - os: windows-latest
+          - os: windows-11-arm
             python: x64
             arch: x64
           - os: windows-11-arm
@@ -107,7 +109,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: os-gamepad-${{ matrix.os }}
+          name: os-gamepad-${{ matrix.os }}-${{ matrix.arch }}
           path: |
             gamepad-qualification.log
             gamepad-sdl3-qualification.log
@@ -118,3 +120,38 @@ jobs:
             gamepad-build/Release/xemu-gamepad.exe
             gamepad-build/xemu-gamepad
           if-no-files-found: warn
+
+  windows-server-capability:
+    name: Server capability refusal (not controller qualification)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - run: cmake -S native/gamepad -B gamepad-build -A x64
+      - run: cmake --build gamepad-build --config Release --parallel 4
+      - run: ctest --test-dir gamepad-build -C Release --output-on-failure
+      - run: python tests/gamepad/check_unavailable.py gamepad-build/Release/xemu-gamepad.exe
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gamepad-server-capability
+          path: gamepad-unavailable.json
+          if-no-files-found: warn
+
+  managed-provider:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - name: Verify actual managed provider using isolated pipe fixtures
+        run: dotnet run --project tests/GamepadProviderChecks -c Release
