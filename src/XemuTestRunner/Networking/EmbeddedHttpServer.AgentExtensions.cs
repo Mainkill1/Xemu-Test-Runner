@@ -16,6 +16,8 @@ public sealed partial class EmbeddedHttpServer
                 return false;
             }
             await ConsumeAgentActionBodyAsync(stream, request, ct).ConfigureAwait(false);
+            var settings = await TryInputPacingSettingsRoutesAsync(stream, request, ct).ConfigureAwait(false);
+            if (settings.HasValue) return settings.Value;
             var xiso = await TryXisoRoutesAsync(stream, request, ct).ConfigureAwait(false);
             if (xiso.HasValue) return xiso.Value;
             var application = await TryApplicationIdentityRouteAsync(stream, request, ct).ConfigureAwait(false);
