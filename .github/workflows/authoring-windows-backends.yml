@@ -1,0 +1,56 @@
+name: authoring-windows-backends
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/authoring-windows-backends.yml'
+      - 'native/gamepad/**'
+      - 'tests/gamepad/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sdl-backend:
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [xinput, wgi]
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    env:
+      SDL_JOYSTICK_RAWINPUT: '0'
+      SDL_JOYSTICK_HIDAPI: '0'
+      SDL_JOYSTICK_GAMEINPUT: '0'
+      SDL_XINPUT_ENABLED: ${{ matrix.backend == 'xinput' && '1' || '0' }}
+      SDL_JOYSTICK_WGI: ${{ matrix.backend == 'wgi' && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          architecture: x64
+      - name: Build native OS adapter and retain emulated consumer context
+        shell: pwsh
+        run: |
+          cmake -S native/gamepad -B gamepad-build -A ARM64
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build gamepad-build --config Release --parallel 4
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Invoke-WebRequest 'https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10-win32-x64.zip' -OutFile sdl.zip
+          if ((Get-FileHash sdl.zip -Algorithm SHA256).Hash.ToLower() -ne '6cf9706eefd0a4a06dc764007934d428afaf029fabdd408a9e646048c91e18fb') { throw 'SDL checksum mismatch' }
+          Expand-Archive sdl.zip -DestinationPath sdl
+          "SDL2_LIBRARY=$((Get-ChildItem sdl -Recurse -Filter SDL2.dll | Select-Object -First 1).FullName)" >> $env:GITHUB_ENV
+          Get-ChildItem Env:SDL* | Format-List | Out-File backend-environment.txt
+      - name: Exercise real SDL button axes and all teardown conditions
+        shell: pwsh
+        run: |
+          python tests/gamepad/check_os_gamepad.py gamepad-build/Release/xemu-gamepad.exe 2>&1 | Tee-Object backend-qualification.log
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-sdl-backend-${{ matrix.backend }}
+          path: |
+            backend-environment.txt
+            backend-qualification.log
+            gamepad-results.json
+          if-no-files-found: error
