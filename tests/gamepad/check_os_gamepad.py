@@ -104,6 +104,7 @@ class Producer:
         self.failure = None
         self.last_receipt = None
         self.pulse = None
+        self.receipt_times = []
 
     @classmethod
     async def start(cls, executable):
@@ -131,6 +132,8 @@ class Producer:
                 response = await asyncio.wait_for(self.proc.stdout.readline(), 2)
                 assert response, 'Input worker exited without an applied receipt.'
                 self.last_receipt = json.loads(response)
+                self.receipt_times.append(time.monotonic())
+                self.receipt_times = self.receipt_times[-32:]
                 assert self.last_receipt['type'] == 'applied' and self.last_receipt['sequence'] == self.sequence, self.last_receipt
                 await asyncio.sleep(0.025)
         except asyncio.CancelledError:
@@ -159,7 +162,9 @@ async def roundtrip(executable, teardown):
     producer = None
     try:
         producer = await Producer.start(executable)
+        print('OS helper ready', json.dumps(producer.ready), flush=True)
         device = await observer.connect()
+        print('Independent consumer connected', json.dumps(device), flush=True)
         await observer.expect([0] * 7)
         # Individually test every core button, preventing swapped aliases from hiding in a combined mask.
         buttons = [1,2,4,8,0x10,0x20,0x40,0x80,0x100,0x200,0x1000,0x2000,0x4000,0x8000]
@@ -197,8 +202,19 @@ async def roundtrip(executable, teardown):
             'scope':'OS API submission and independent SDL readback, not guest consumption'}
         print(json.dumps(result), flush=True)
         return result
+    except BaseException:
+        if producer:
+            print('FAIL controller diagnostics', json.dumps({
+                'workerExit': producer.proc.returncode, 'heartbeatFailure': repr(producer.failure),
+                'lastReceipt': producer.last_receipt, 'receiptTimes': producer.receipt_times,
+                'failureTime': time.monotonic(), 'requestedState': producer.state}), flush=True)
+        raise
     finally:
-        if producer: await producer.dispose()
+        if producer:
+            await producer.dispose()
+            details = await asyncio.wait_for(producer.proc.stderr.read(), 3)
+            if details:
+                print('WORKER STDERR:', details.decode(errors='replace'), flush=True)
         observer.dispose()
 
 async def main():

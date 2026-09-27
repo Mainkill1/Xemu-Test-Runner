@@ -81,7 +81,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          arch=()
+          arch=(-DSDL_UNIX_CONSOLE_BUILD=ON)
           if [ "$RUNNER_OS" = Windows ]; then arch=(-A "${{ matrix.arch }}"); fi
           cmake -S .ci-sdl3 -B sdl3-build "${arch[@]}" -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TESTS=OFF -DSDL_TEST_LIBRARY=OFF -DSDL_EXAMPLES=OFF -DSDL_AUDIO=OFF -DSDL_VIDEO=OFF -DSDL_RENDER=OFF -DSDL_GPU=OFF -DSDL_CAMERA=OFF
           cmake --build sdl3-build --config Release --parallel 4
