@@ -10,6 +10,7 @@ from pathlib import Path
 import platform
 import sys
 import time
+from producer import Producer
 
 class Guid(C.Structure):
     _fields_ = [('data', C.c_ubyte * 16)]
@@ -96,67 +97,6 @@ class Observer:
         if self.pad: self.close(self.pad)
         self.quit()
 
-class Producer:
-    def __init__(self, proc):
-        self.proc = proc
-        self.state = [0] * 7
-        self.sequence = 0
-        self.failure = None
-        self.last_receipt = None
-        self.pulse = None
-        self.receipt_times = []
-
-    @classmethod
-    async def start(cls, executable):
-        proc = await asyncio.create_subprocess_exec(executable, stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        producer = cls(proc)
-        try:
-            line = await asyncio.wait_for(proc.stdout.readline(), 15)
-            assert line, (await proc.stderr.read()).decode(errors='replace')
-            producer.ready = json.loads(line)
-            assert producer.ready['type'] == 'ready' and not producer.ready['additionalDriver'], producer.ready
-            producer.pulse = asyncio.create_task(producer.heartbeat())
-            return producer
-        except BaseException:
-            if proc.returncode is None: proc.kill()
-            await proc.wait()
-            raise
-
-    async def heartbeat(self):
-        try:
-            while True:
-                self.sequence += 1
-                line = 'state ' + ' '.join(map(str, [self.sequence] + self.state)) + '\n'
-                self.proc.stdin.write(line.encode()); await self.proc.stdin.drain()
-                response = await asyncio.wait_for(self.proc.stdout.readline(), 2)
-                assert response, 'Input worker exited without an applied receipt.'
-                self.last_receipt = json.loads(response)
-                self.receipt_times.append(time.monotonic())
-                self.receipt_times = self.receipt_times[-32:]
-                assert self.last_receipt['type'] == 'applied' and self.last_receipt['sequence'] == self.sequence, self.last_receipt
-                await asyncio.sleep(0.025)
-        except asyncio.CancelledError:
-            raise
-        except BaseException as error:
-            self.failure = error
-
-    async def stop_heartbeat(self):
-        if self.pulse:
-            self.pulse.cancel()
-            await asyncio.gather(self.pulse, return_exceptions=True)
-            self.pulse = None
-
-    async def dispose(self):
-        await self.stop_heartbeat()
-        if self.proc.returncode is None:
-            try:
-                self.proc.stdin.write(b'stop\n'); await self.proc.stdin.drain()
-                await asyncio.wait_for(self.proc.wait(), 3)
-            except (BrokenPipeError, ConnectionResetError, asyncio.TimeoutError):
-                if self.proc.returncode is None: self.proc.kill()
-                await self.proc.wait()
-
 async def roundtrip(executable, teardown):
     observer = Observer()
     producer = None
@@ -181,15 +121,15 @@ async def roundtrip(executable, teardown):
         assert producer.failure is None, producer.failure
         if teardown == 'watchdog':
             await producer.stop_heartbeat()
-            await asyncio.wait_for(producer.proc.wait(), 3)
+            await asyncio.to_thread(producer.proc.wait, 3)
             assert producer.proc.returncode == 3
         elif teardown == 'kill':
             await producer.stop_heartbeat()
-            producer.proc.kill(); await producer.proc.wait()
+            producer.proc.kill(); await asyncio.to_thread(producer.proc.wait, 3)
         elif teardown == 'malformed':
             await producer.stop_heartbeat()
-            producer.proc.stdin.write(b'state 9999 0 999 0 0 0 0 0\n'); await producer.proc.stdin.drain()
-            await asyncio.wait_for(producer.proc.wait(), 3)
+            producer.proc.stdin.write(b'state 9999 0 999 0 0 0 0 0\n'); producer.proc.stdin.flush()
+            await asyncio.to_thread(producer.proc.wait, 3)
             assert producer.proc.returncode == 3
         else:
             await producer.dispose()
@@ -205,16 +145,15 @@ async def roundtrip(executable, teardown):
     except BaseException:
         if producer:
             print('FAIL controller diagnostics', json.dumps({
-                'workerExit': producer.proc.returncode, 'heartbeatFailure': repr(producer.failure),
+                'workerExit': producer.proc.poll(), 'heartbeatFailure': repr(producer.failure),
                 'lastReceipt': producer.last_receipt, 'receiptTimes': producer.receipt_times,
                 'failureTime': time.monotonic(), 'requestedState': producer.state}), flush=True)
         raise
     finally:
         if producer:
             await producer.dispose()
-            details = await asyncio.wait_for(producer.proc.stderr.read(), 3)
-            if details:
-                print('WORKER STDERR:', details.decode(errors='replace'), flush=True)
+            if producer.details:
+                print('WORKER STDERR:', producer.details, flush=True)
         observer.dispose()
 
 async def main():
