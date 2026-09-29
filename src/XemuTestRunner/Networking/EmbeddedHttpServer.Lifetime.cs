@@ -36,7 +36,7 @@ public sealed partial class EmbeddedHttpServer
         while (true)
         {
             bool pending;
-            lock (_agentStoreGate) pending = _agentStore?.HasPendingOperations ?? false;
+            lock (_agentStoreGate) pending = (_agentStore?.HasPendingOperations ?? false) || (_localDiskImports?.HasPendingOperations ?? false);
             // Handlers can still publish a final receipt after their connection
             // is closed. Do not release the server lifetime while those writers
             // still own the workspace. Waiting is bounded and never reruns work.

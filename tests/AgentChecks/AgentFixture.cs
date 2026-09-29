@@ -21,7 +21,7 @@ internal sealed class AgentFixture : IAsyncDisposable
     public RunnerState State { get; } = new();
     public HttpClient Client { get; }
 
-    public AgentFixture()
+    public AgentFixture(Action<HttpOptions>? configureHttp = null)
     {
         Paths = new RunnerPaths(Path.Combine(Root, "runner.json"), Root,
             Path.Combine(Root, "Pending"), Path.Combine(Root, "Testing"),
@@ -35,6 +35,7 @@ internal sealed class AgentFixture : IAsyncDisposable
         var port = ((IPEndPoint)probe.LocalEndpoint).Port;
         probe.Stop();
         var http = new HttpOptions { BindAddress = "127.0.0.1", Port = port };
+        configureHttp?.Invoke(http);
         var server = new EmbeddedHttpServer(http, new UiOptions(), Paths, State,
             new JobQueue(new RunnerConfig(), Paths), _control, () => _stop.Cancel())
         {
@@ -93,12 +94,17 @@ internal sealed class AgentFixture : IAsyncDisposable
         AtomicJson.Write(path, assessment);
     }
 
+    public async Task StopAsync()
+    {
+        _stop.Cancel();
+        try { await _server.WaitAsync(TimeSpan.FromSeconds(10)); }
+        catch (OperationCanceledException) { }
+    }
+
     public async ValueTask DisposeAsync()
     {
         Client.Dispose();
-        _stop.Cancel();
-        try { await _server.WaitAsync(TimeSpan.FromSeconds(5)); }
-        catch (OperationCanceledException) { }
+        await StopAsync();
         _control.Dispose();
         _stop.Dispose();
         if (Directory.Exists(Root)) Directory.Delete(Root, true);
