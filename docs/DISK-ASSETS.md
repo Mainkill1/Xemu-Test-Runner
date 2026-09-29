@@ -133,7 +133,7 @@ most 4,096 entries/8 MiB of directory metadata, and never starts xemu. A nonzero
 VM-state size distinguishes a VM snapshot from a disk-only snapshot; it does not
 prove compatibility with another xemu build, firmware, DVD or device configuration.
 Pin the ready asset's SHA-256 and use an actually listed snapshot name in a new
-immutable test revision's `RuntimeState.SnapshotName`.
+immutable test revision's top-level `JobDefinition.SnapshotName`.
 
 These routes retain the existing bulk-transfer benchmark policy. Copying, saved
 snapshot discovery and test execution remain separate actions. Deploy the

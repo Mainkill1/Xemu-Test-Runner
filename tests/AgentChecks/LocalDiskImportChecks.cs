@@ -84,9 +84,20 @@ internal static class LocalDiskImportChecks
             Require(outcome.GetProperty("state").GetString() == "cancelled", outcome.ToString());
             await host.Json("/api/v1/disk-assets/large", expected: HttpStatusCode.NotFound);
             Require(new FileInfo(path).Length == 128 * 1024 * 1024, "Cancellation touched the original carrier.");
-            var conflict = await host.Json("/api/v1/disk-assets", HttpMethod.Post,
-                new { id = "large", kind = "readonly-input", length = 1, sha256 = new string('a', 64) }, HttpStatusCode.Conflict);
-            Require(conflict.GetProperty("code").GetString() == "disk_asset_conflict", "A cancelled import ID was reassigned to unrelated content.");
+            // The terminal cancellation receipt may be visible while the
+            // worker still removes staging. Wait for that ownership release
+            // before checking the distinct persisted-definition refusal.
+            var persisted = false;
+            for (var attempt = 0; attempt < 500; attempt++)
+            {
+                var conflict = await host.Json("/api/v1/disk-assets", HttpMethod.Post,
+                    new { id = "large", kind = "readonly-input", length = 1, sha256 = new string('a', 64) }, HttpStatusCode.Conflict);
+                var code = conflict.GetProperty("code").GetString();
+                if (code == "disk_asset_conflict") { persisted = true; break; }
+                Require(code == "disk_asset_source_busy", "Unexpected import-ID refusal.");
+                await Task.Delay(10);
+            }
+            Require(persisted, "Cancelled import never released cleanup ownership.");
         }));
         checks.Add(("server shutdown releases all local import files before returning", async () =>
         {
