@@ -67,6 +67,21 @@ internal static class PerformanceAnalysisChecks
             Require(result.Measurements.Single(m => m.Name == "monitor/cpu_mean").Value == 20,
                 "Quoted monitor segment did not select the intended samples.");
         }));
+        checks.Add(("saved analysis reads completed timing logs while a writer handle is closing", async () =>
+        {
+            if (!OperatingSystem.IsWindows()) return;
+            await using var host = new AgentFixture();
+            await Analyze(host);
+            var root = Path.Combine(host.Paths.Results, "analysis-run");
+            using var flipWriter = new FileStream(Path.Combine(root, "guest-flips.log"), FileMode.Open,
+                FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+            using var frameWriter = new FileStream(Path.Combine(root, "guest-frames.log"), FileMode.Open,
+                FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+            var result = await WorkloadEvaluator.EvaluateAsync(Job(), host.Root, root, null, 4, true, CancellationToken.None);
+            Require(result.Evidence == EvidenceOutcome.Complete, string.Join(";", result.Checks.Select(c => c.Detail)));
+            Require(result.Measurements.Any(m => m.Name == "guest/interval_p99_ms"),
+                "An unchanged frame log lost its performance distribution.");
+        }));
         checks.Add(("performance API reads precomputed summaries and preserves cleanup and outcomes", async () =>
         {
             await using var host = new AgentFixture();
