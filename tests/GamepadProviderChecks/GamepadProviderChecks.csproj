@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/XemuTestRunner/Authoring/NativeGamepadProvider.cs" Link="NativeGamepadProvider.cs" />
+    <Compile Include="../../src/XemuTestRunner/Authoring/AuthoringInputContracts.cs" Link="AuthoringInputContracts.cs" />
+    <Compile Include="../../src/XemuTestRunner/Authoring/AuthoringProviderContracts.cs" Link="AuthoringProviderContracts.cs" />
+    <Compile Include="../../src/XemuTestRunner/Authoring/AuthoringWindowContracts.cs" Link="AuthoringWindowContracts.cs" />
+    <Content Include="../../native/gamepad/linux-sdl-mapping.txt" Link="linux-sdl-mapping.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

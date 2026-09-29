@@ -1,0 +1,36 @@
+name: authoring-qualification
+on:
+  pull_request:
+    paths:
+      - 'src/XemuTestRunner/Authoring/**'
+      - 'src/XemuTestRunner/Queue/**'
+      - 'src/XemuTestRunner/Networking/**'
+      - 'tests/Authoring*Checks/**'
+      - 'native/authoring/**'
+      - '.github/workflows/authoring-qualification.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  runtime:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - name: Check runtime ownership and recording
+        run: dotnet run --project tests/AuthoringRuntimeChecks -c Release
+      - name: Retain exact source for qualification/reproduction
+        if: always() && runner.os == 'Linux'
+        run: git archive --format=zip --output=authoring-source.zip HEAD
+      - uses: actions/upload-artifact@v7
+        if: always() && runner.os == 'Linux'
+        with:
+          name: authoring-source-${{ github.sha }}
+          path: authoring-source.zip
+          retention-days: 3

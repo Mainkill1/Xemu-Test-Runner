@@ -1,0 +1,58 @@
+name: authoring-buildkit
+on:
+  pull_request:
+    paths: ['.github/workflows/authoring-buildkit.yml']
+permissions:
+  contents: read
+jobs:
+  native-validation-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install public native test dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends gstreamer1.0-nice libxcb-xtest0 libxcb-xtest0-dev
+      - name: Package native test dependencies only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p native/lib native/plugins native/include
+          cp -L /usr/lib/x86_64-linux-gnu/libxcb-xtest.so.0 native/lib/
+          cp -L /usr/lib/x86_64-linux-gnu/gstreamer-1.0/libgstnice.so native/plugins/
+          cp /usr/include/xcb/xtest.h native/include/
+          tar -C native -czf authoring-native-dependencies.tar.gz .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: authoring-native-dependencies
+          path: authoring-native-dependencies.tar.gz
+          retention-days: 1
+  managed-validation-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - name: Restore public dependencies
+        run: dotnet restore src/XemuTestRunner/XemuTestRunner.csproj
+      - name: Retain SDK and public package cache only
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$(dirname "$(readlink -f "$(command -v dotnet)")")"
+          sdk="$(dotnet --version)"
+          runtime="$(dotnet --list-runtimes | awk '$1=="Microsoft.NETCore.App" {print $2}' | sort -V | tail -1)"
+          aspnet="$(dotnet --list-runtimes | awk '$1=="Microsoft.AspNetCore.App" {print $2}' | sort -V | tail -1)"
+          mkdir -p managed/sdk/sdk managed/sdk/host managed/sdk/shared/Microsoft.NETCore.App managed/sdk/shared/Microsoft.AspNetCore.App managed/packages
+          cp "$root/dotnet" managed/sdk/
+          cp -a "$root/sdk/$sdk" managed/sdk/sdk/
+          cp -a "$root/host/fxr" managed/sdk/host/
+          cp -a "$root/shared/Microsoft.NETCore.App/$runtime" managed/sdk/shared/Microsoft.NETCore.App/
+          cp -a "$root/shared/Microsoft.AspNetCore.App/$aspnet" managed/sdk/shared/Microsoft.AspNetCore.App/
+          cp -a "$root/packs" managed/sdk/
+          cp -a "$HOME/.nuget/packages/." managed/packages/
+          dotnet --info > managed/sdk-info.txt
+          tar -C managed -czf authoring-managed-dependencies.tar.gz .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: authoring-managed-dependencies
+          path: authoring-managed-dependencies.tar.gz
+          retention-days: 1

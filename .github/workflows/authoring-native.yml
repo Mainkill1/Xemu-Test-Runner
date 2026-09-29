@@ -1,0 +1,121 @@
+name: authoring-native
+on:
+  pull_request:
+    paths:
+      - 'native/authoring/**'
+      - 'tests/native/**'
+      - '.github/workflows/authoring-native.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: authoring-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  linux-media:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install native development and media packages
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends cmake ninja-build pkg-config libx11-dev libgstreamer1.0-dev libgstreamer-plugins-bad1.0-dev libjson-glib-dev gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-nice xvfb xauth > /tmp/native-install.log 2>&1 || { tail -100 /tmp/native-install.log; exit 1; }
+      - name: Build real media worker
+        run: cmake -S native/authoring -B native-build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build native-build
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Install H264-capable browser
+        run: python -m pip install playwright==1.55.0 && python -m playwright install --with-deps chrome
+      - name: Preserve versions and exact source
+        shell: bash
+        run: |
+          mkdir -p native-evidence
+          cp native-build/xemu-authoring-media native-evidence/
+          git rev-parse HEAD > native-evidence/source-commit.txt
+          tar -czf native-evidence/source.tar.gz native/authoring tests/native
+          gst-inspect-1.0 --version > native-evidence/gstreamer-version.txt
+          gst-inspect-1.0 x264enc > native-evidence/encoder-properties.txt
+          google-chrome --version > native-evidence/browser-version.txt
+      - name: Qualify native codec and protocol failure paths
+        shell: bash
+        run: |
+          set -o pipefail
+          for check in check_media_worker check_encoder check_protocol; do
+            python tests/native/$check.py native-build/xemu-authoring-media 2>&1 | tee native-evidence/$check.log
+          done
+      - name: Qualify real browser media and data channels
+        shell: bash
+        run: |
+          set -o pipefail
+          python tests/native/check_webrtc.py native-build/xemu-authoring-media --payload 125 --early-ice 2>&1 | tee native-evidence/720p60.log
+          python tests/native/check_webrtc.py native-build/xemu-authoring-media --resolution 1920x1080 --peer-close 2>&1 | tee native-evidence/1080p60.log
+          python tests/native/check_webrtc.py native-build/xemu-authoring-media --no-h264 2>&1 | tee native-evidence/codec-refusal.log
+          python tests/native/check_webrtc.py native-build/xemu-authoring-media --bad-channel 2>&1 | tee native-evidence/channel-refusal.log
+      - name: Qualify owned X11 capture, letterboxing and resize
+        shell: bash
+        run: |
+          set -o pipefail
+          xvfb-run -a python tests/native/check_webrtc.py native-build/xemu-authoring-media --x11-window 2>&1 | tee native-evidence/window-capture.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: authoring-media-linux-x64
+          path: native-evidence/
+          if-no-files-found: warn
+          retention-days: 7
+
+  windows-media:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-gstreamer
+            mingw-w64-ucrt-x86_64-gst-plugins-bad
+            mingw-w64-ucrt-x86_64-gst-plugins-good
+            mingw-w64-ucrt-x86_64-gst-plugins-ugly
+            mingw-w64-ucrt-x86_64-libnice
+            mingw-w64-ucrt-x86_64-json-glib
+      - name: Build native Windows worker
+        shell: msys2 {0}
+        run: |
+          cmake -S native/authoring -B native-build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build native-build
+          echo "$(cygpath -w /ucrt64/bin)" >> "$GITHUB_PATH"
+          echo "GST_PLUGIN_SYSTEM_PATH_1_0=$(cygpath -m /ucrt64/lib/gstreamer-1.0)" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Install H264-capable browser
+        run: python -m pip install playwright==1.55.0; python -m playwright install chrome
+      - name: Qualify real Windows encoder and browser transport
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force native-evidence | Out-Null
+          Copy-Item native-build/xemu-authoring-media.exe native-evidence/
+          git rev-parse HEAD | Set-Content native-evidence/source-commit.txt
+          gst-inspect-1.0 --version | Set-Content native-evidence/gstreamer-version.txt
+          foreach ($check in @('check_media_worker', 'check_encoder', 'check_protocol')) {
+            python "tests/native/$check.py" native-build/xemu-authoring-media.exe 2>&1 | Tee-Object "native-evidence/$check.log"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          python tests/native/check_webrtc.py native-build/xemu-authoring-media.exe --payload 125 --early-ice --peer-close 2>&1 | Tee-Object native-evidence/browser-test.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: authoring-media-windows-x64
+          path: native-evidence/
+          if-no-files-found: warn
+          retention-days: 7
