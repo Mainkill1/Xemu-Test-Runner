@@ -108,7 +108,7 @@ internal sealed class PerformanceSource : IDisposable
                 if (c == '\r' && _reader.Peek() == '\n') Read();
                 CountRecord(); yield return fields.ToArray(); fields.Clear(); recordCharacters = 0;
             }
-            else if (c == '"' && !started && field.Length == 0) { quoted = true; started = true; }
+            else if (c == '"' && !afterQuote && field.Length == 0) { quoted = true; started = true; }
             else
             {
                 if (afterQuote || c == '"') throw new InvalidDataException("Malformed CSV quoting.");

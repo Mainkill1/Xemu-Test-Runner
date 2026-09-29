@@ -51,6 +51,22 @@ internal static class PerformanceAnalysisChecks
             Require(result.Evidence == EvidenceOutcome.Complete, string.Join(";", result.Checks.Select(c => c.Detail)));
             Require(File.Exists(Path.Combine(host.Paths.Results, "analysis-run", "performance.json")), "No precomputed report was saved.");
         }));
+        checks.Add(("saved analysis accepts quoted monitor fields after delimiters", async () =>
+        {
+            await using var host = new AgentFixture();
+            await Analyze(host);
+            var root = Path.Combine(host.Paths.Results, "analysis-run");
+            await File.WriteAllTextAsync(Path.Combine(root, "metrics.csv"),
+                "timestamp_utc,segment,process_cpu_core_pct,collector_duty_pct,overrun,note\r\n" +
+                "2026-09-29T20:42:53Z,\"\",999,9,0,\"\"\r\n" +
+                "2026-09-29T20:42:54Z,\"in-game-throttle\",10,0.1,0,\"first, sample\"\r\n" +
+                "2026-09-29T20:42:55Z,\"in-game-throttle\",20,0.2,1,\"second\"\r\n" +
+                "2026-09-29T20:42:56Z,\"in-game-throttle\",30,0.3,0,\"third\"\r\n");
+            var result = await WorkloadEvaluator.EvaluateAsync(Job(), host.Root, root, null, 4, true, CancellationToken.None);
+            Require(result.Evidence == EvidenceOutcome.Complete, string.Join(";", result.Checks.Select(c => c.Detail)));
+            Require(result.Measurements.Single(m => m.Name == "monitor/cpu_mean").Value == 20,
+                "Quoted monitor segment did not select the intended samples.");
+        }));
         checks.Add(("performance API reads precomputed summaries and preserves cleanup and outcomes", async () =>
         {
             await using var host = new AgentFixture();
