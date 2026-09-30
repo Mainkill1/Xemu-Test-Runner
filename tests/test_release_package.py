@@ -1,19 +1,45 @@
 import importlib.util
 import json
+import sys
 from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
+from types import SimpleNamespace
 import zipfile
 
 spec = importlib.util.spec_from_file_location('release_package', Path(__file__).resolve().parents[1] / 'scripts/release_package.py')
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+sys.modules['release_package'] = module
+
+publish_spec = importlib.util.spec_from_file_location('publish_release', Path(__file__).resolve().parents[1] / 'scripts/publish_release.py')
+publish_module = importlib.util.module_from_spec(publish_spec)
+publish_spec.loader.exec_module(publish_module)
 
 class ReleaseChecks(unittest.TestCase):
     def test_identity_rejects_unsafe_or_incomplete_values(self):
         for version, sha, rid in [('..', 'a'*40, 'linux-x64'), ('0.2.0','main','linux-x64'), ('0.2.0','a'*40,'../win')]:
             with self.assertRaises(ValueError): module.identity(version, sha, rid)
+
+    def test_draft_release_is_found_when_tag_endpoint_returns_404(self):
+        draft = {
+            'tag_name': 'runner-0.2.0-deadbeef',
+            'target_commitish': 'deadbeef' * 5,
+            'draft': True,
+            'assets': []
+        }
+        responses = [
+            SimpleNamespace(returncode=1, stderr='gh: Not Found (HTTP 404)', stdout=''),
+            SimpleNamespace(returncode=0, stderr='', stdout=json.dumps([draft]))
+        ]
+        with mock.patch.object(publish_module, 'gh', side_effect=responses) as gh:
+            release = publish_module.read_release('Mainkill1/Xemu-Test-Runner', draft['tag_name'])
+        self.assertEqual(release, draft)
+        self.assertEqual(
+            gh.call_args_list[1],
+            mock.call('api', 'repos/Mainkill1/Xemu-Test-Runner/releases?per_page=100', check=False))
 
     def test_package_requires_both_runner_and_helper(self):
         with tempfile.TemporaryDirectory() as temporary:
