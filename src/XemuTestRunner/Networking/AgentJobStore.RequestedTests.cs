@@ -183,16 +183,18 @@ internal sealed partial class AgentJobStore
         RequireStableSource(applicationLocation.State);
         RequireStableSource(assetLocation.State);
         var appExecutable = RelativeInput(applicationLocation.Package, application.Request.Job.Executable);
+        var appPayload = EmulatorPayloadPath(application.Request.Job, application.Request.Files);
         var job = JsonSerializer.Deserialize<JobDefinition>(JsonSerializer.Serialize(definition.Job, ConfigLoader.JsonOptions), ConfigLoader.JsonOptions)!;
         job.Id = input.Id;
         job.Tags.RemoveAll(tag => tag.StartsWith("test-definition:", StringComparison.Ordinal));
         job.Tags.Add("test-definition:" + definition.Id + "@" + baked.Revision);
         var executable = RelativeInput(assetLocation.Package, job.Executable);
+        var payload = EmulatorPayloadPath(job, definition.Files);
         var applicationFiles = application.Request.Files.ToDictionary(file => file.Path, StringComparer.Ordinal);
         var copies = definition.Files.Select(file =>
         {
             if (!definition.BuildFiles.Contains(file.Path, StringComparer.Ordinal)) return (File: file, Source: ResolveFile(assetLocation.Package, file.Path));
-            var sourcePath = file.Path == executable ? appExecutable : file.Path;
+            var sourcePath = file.Path == payload ? appPayload : file.Path == executable ? appExecutable : file.Path;
             if (!applicationFiles.TryGetValue(sourcePath, out var replacement)) throw new InvalidDataException("Application is missing build slot: " + sourcePath);
             return (File: replacement with { Path = file.Path, Executable = file.Executable || replacement.Executable },
                 Source: ResolveFile(applicationLocation.Package, sourcePath));
