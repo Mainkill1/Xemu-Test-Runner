@@ -32,7 +32,8 @@ internal sealed class PerformanceSource : IDisposable
         if (info.Length > 64L * 1024 * 1024) throw new InvalidDataException("Analysis source exceeds 64 MiB: " + relative);
         _length = info.Length;
         _modified = info.LastWriteTimeUtc;
-        _file = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.SequentialScan);
+        _file = new FileStream(_path, FileMode.Open, FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete, 65536, FileOptions.SequentialScan);
         _hash = SHA256.Create();
         _hashed = new CryptoStream(_file, _hash, CryptoStreamMode.Read, leaveOpen: true);
         _reader = new StreamReader(_hashed, new UTF8Encoding(false, true), true, 16384, leaveOpen: true);

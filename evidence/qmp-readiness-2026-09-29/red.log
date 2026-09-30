@@ -1,0 +1,67 @@
+
+Welcome to .NET 10.0!
+---------------------
+SDK Version: 10.0.401
+
+Telemetry
+---------
+The .NET tools collect usage data in order to help us improve your experience. It is collected by Microsoft and shared with the community. You can opt-out of telemetry by setting the DOTNET_CLI_TELEMETRY_OPTOUT environment variable to '1' or 'true' using your favorite shell.
+
+Read more about .NET CLI Tools telemetry: https://aka.ms/dotnet-cli-telemetry
+
+----------------
+Installed an ASP.NET Core HTTPS development certificate.
+To trust the certificate, run 'dotnet dev-certs https --trust'
+Learn about HTTPS: https://aka.ms/dotnet-https
+
+----------------
+Write your first app: https://aka.ms/dotnet-hello-world
+Find out what's new: https://aka.ms/dotnet-whats-new
+Explore documentation: https://aka.ms/dotnet-docs
+Report issues and find source on GitHub: https://github.com/dotnet/core
+Use 'dotnet --help' to see available commands or visit: https://aka.ms/dotnet-cli
+--------------------------------------------------------------------------------------
+FAIL QMP readiness retries a timed-out handshake: System.TimeoutException: QMP query-status exceeded 1500 ms.
+   at XemuTestRunner.Control.XemuQmpClient.ExecuteAsync(String command, Object arguments, TimeSpan timeout, CancellationToken cancellationToken) in /home/codex/xemu-shader-workbench-handoff/xemu-test-runner-local-import/src/XemuTestRunner/Control/XemuQmpClient.cs:line 38
+   at XemuTestRunner.Control.XemuControlManager.WaitUntilReadyAsync(CancellationToken cancellationToken) in /home/codex/xemu-shader-workbench-handoff/xemu-test-runner-local-import/src/XemuTestRunner/Control/XemuControlManager.cs:line 111
+   at Program.<>c__DisplayClass0_0.<<<Main>$>b__2>d.MoveNext() in /home/codex/xemu-shader-workbench-handoff/xemu-test-runner-local-import/tests/RunnerChecks/Program.cs:line 75
+--- End of stack trace from previous location ---
+   at Program.<>c__DisplayClass0_0.<<<Main>$>b__2>d.MoveNext() in /home/codex/xemu-shader-workbench-handoff/xemu-test-runner-local-import/tests/RunnerChecks/Program.cs:line 84
+--- End of stack trace from previous location ---
+   at Program.<>c__DisplayClass0_0.<<<Main>$>g__Check|0>d.MoveNext() in /home/codex/xemu-shader-workbench-handoff/xemu-test-runner-local-import/tests/RunnerChecks/Program.cs:line 52
+PASS HTTP defaults to a remotely reachable bind address
+PASS preflight validates exact executable hash
+PASS artifact checks reject blank screenshots when requested
+PASS artifact checks support thresholded image regions
+PASS workspace lease excludes a second owner and can be reacquired
+PASS recovery requires released ownership before archiving durable results
+PASS recovery retains durable retry intent and excludes cleanup failure
+PASS package archival retries transient file locks
+PASS watchdog trips only after consecutive failed probes
+PASS preview is single-flight and run-scoped
+PASS preview failure is backed off instead of repeatedly capturing
+PASS large evidence tail is bounded and ranges remain 64 bit
+PASS watchdog cancellation is not an unresponsive verdict
+PASS Win32 INPUT layout matches pointer width
+PASS transfer started while idle marks the next active run
+PASS diagnostic recipes reject ambiguous RenderDoc capture semantics
+PASS perf clock selection is explicit and opt-in
+PASS job package validates diagnostic references and ignores runtime package property
+PASS quit is accepted only as the final plan step
+PASS diagnostic tool catalog reports an explicit missing executable
+PASS QMP monitor and external recipes validate bounded configuration
+PASS benchmark intervention remains visible in final summary
+PASS workstation rendering risk flags lock display sleep and battery saver
+PASS runner publishes host telemetry while idle
+PASS queue holds incomplete and changing packages before claim
+PASS automation exit codes distinguish success failure and queue blockage
+PASS terminal display loss leaves the engine authoritative
+PASS engine failure survives terminal display loss
+PASS terminal error reporting preserves the original failure
+PASS missing terminal fallback cannot terminate the runner
+PASS one-shot runner processes at most one queued package
+PASS advertised HTTP address never reports wildcard when an override is supplied
+PASS system telemetry produces baseline process and memory values
+PASS runner completes a queued QMP job and retains its evidence
+PASS release identity is available to the CLI and evidence
+Failures: 1

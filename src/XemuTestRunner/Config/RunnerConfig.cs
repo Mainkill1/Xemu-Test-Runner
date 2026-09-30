@@ -52,6 +52,7 @@ public sealed class HttpOptions
     public string FileRoot { get; set; } = "Files";
     public int TransferBufferBytes { get; set; } = 1024 * 1024;
     public int MaxHeaderBytes { get; set; } = 64 * 1024;
+    public List<string> LocalDiskImportRoots { get; set; } = [];
 }
 public sealed class UiOptions
 {

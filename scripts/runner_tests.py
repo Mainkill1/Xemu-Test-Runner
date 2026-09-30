@@ -77,6 +77,16 @@ def _register_disk_commands(subparsers) -> None:
     import_disk.add_argument("--path", required=True, help="Declared disk path inside the source package.")
     import_disk.add_argument("--kind", choices=("xiso-seed", "snapshot-carrier", "readonly-input"), required=True)
     import_disk.add_argument("--description")
+    local = _command(subparsers, "disk-import-local", "Copy a tester-side QCOW2 into the immutable catalog; never starts xemu.")
+    local.add_argument("id", help="Stable import/catalog ID.")
+    local.add_argument("path", help="Absolute path on the tester, under an approved import root.")
+    local.add_argument("--description")
+    status = _command(subparsers, "disk-import-status", "Read local HDD import progress/outcome.")
+    status.add_argument("id")
+    cancel_import = _command(subparsers, "disk-import-cancel", "Cancel local disk acquisition; preserves the source HDD.")
+    cancel_import.add_argument("id")
+    snapshots = _command(subparsers, "disk-snapshots", "List saved snapshot names and VM-state presence without downloading the HDD.")
+    snapshots.add_argument("id")
     delete = _command(subparsers, "disk-delete", "Delete an unreferenced shared disk; referenced assets are refused.")
     delete.add_argument("id", help="Catalog asset ID.")
 
@@ -299,6 +309,21 @@ def _execute_disk_command(api: RunnerApi, args: argparse.Namespace) -> dict:
     info = api.json("/api/v1/help?topic=disk-assets")
     if not isinstance(info, dict) or info.get("capability") != "diskAssets":
         raise ClientError("capability_missing", "The tester does not support disk assets.", "Deploy a compatible runner; do not copy HDDs through SSH.")
+    if args.command in ("disk-import-local", "disk-import-status", "disk-import-cancel", "disk-snapshots"):
+        capability = "snapshots" if args.command == "disk-snapshots" else "importLocal"
+        if not info.get(capability):
+            raise ClientError("capability_missing", "The tester does not support local snapshot imports/enumeration.", "Deploy the matching runner; no shell fallback is supported.")
+        route = "/api/v1/disk-assets/" + urllib.parse.quote(args.id, safe="")
+        if args.command == "disk-snapshots":
+            return api.json(route + "/snapshots")
+        if args.command == "disk-import-cancel":
+            return api.json(route + "/import-local", "DELETE")
+        if args.command == "disk-import-status":
+            return api.json(route + "/import-local")
+        return api.json(route + "/import-local", "POST", {
+            "path": args.path,
+            **({"description": args.description} if args.description is not None else {}),
+        })
     if args.command == "disk-list":
         return api.json("/api/v1/disk-assets")
     if args.command == "disk-show":

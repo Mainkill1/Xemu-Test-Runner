@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.Json;
 using XemuTestRunner.Commands;
 using XemuTestRunner.Config;
+using XemuTestRunner.Control;
 using XemuTestRunner.Diagnostics;
 using XemuTestRunner.Monitoring.Providers;
 using XemuTestRunner.Networking;
@@ -56,6 +57,87 @@ var root = Path.Combine(Path.GetTempPath(), "xemu-runner-checks-" + Guid.NewGuid
 Directory.CreateDirectory(root);
 try
 {
+    await Check("QMP readiness retries a timed-out handshake", async () =>
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        var server = ServeReadinessAfterTimeoutAsync(listener, deadline.Token);
+        using var process = Process.GetCurrentProcess();
+        using var control = new XemuControlManager(new XemuControlOptions
+        {
+            ConnectTimeoutMs = 4500,
+            InputProvider = "unavailable"
+        });
+        control.Begin(process, root, ((IPEndPoint)listener.LocalEndpoint).Port);
+        try
+        {
+            await control.WaitUntilReadyAsync(deadline.Token);
+            var status = await control.QueryStatusAsync(deadline.Token);
+            await server;
+            Assert(status.GetProperty("status").GetString() == "paused",
+                "Ready control cannot query the endpoint after the first handshake timed out.");
+        }
+        finally
+        {
+            deadline.Cancel();
+            try { await server; } catch (OperationCanceledException) { }
+        }
+    });
+
+    await Check("QMP readiness stops at the configured deadline", async () =>
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        using var process = Process.GetCurrentProcess();
+        using var control = new XemuControlManager(new XemuControlOptions
+        {
+            ConnectTimeoutMs = 250,
+            InputProvider = "unavailable"
+        });
+        control.Begin(process, root, ((IPEndPoint)listener.LocalEndpoint).Port);
+        var started = Stopwatch.StartNew();
+        try
+        {
+            await control.WaitUntilReadyAsync(CancellationToken.None);
+            throw new Exception("Silent QMP endpoint became ready.");
+        }
+        catch (TimeoutException ex)
+        {
+            Assert(ex.InnerException is TimeoutException,
+                "The attempt timeout escaped instead of exhausting the readiness deadline.");
+            Assert(started.Elapsed < TimeSpan.FromSeconds(2),
+                "Silent QMP endpoint did not respect the readiness deadline.");
+        }
+    });
+
+    await Check("QMP readiness preserves caller cancellation", async () =>
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        using var process = Process.GetCurrentProcess();
+        using var control = new XemuControlManager(new XemuControlOptions
+        {
+            ConnectTimeoutMs = 4500,
+            InputProvider = "unavailable"
+        });
+        control.Begin(process, root, ((IPEndPoint)listener.LocalEndpoint).Port);
+        using var cancelled = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        var ready = control.WaitUntilReadyAsync(cancelled.Token);
+        using var accepted = await listener.AcceptTcpClientAsync(cancelled.Token);
+        cancelled.Cancel();
+        try
+        {
+            await ready.WaitAsync(TimeSpan.FromSeconds(2));
+            throw new Exception("Cancelled readiness returned success.");
+        }
+        catch (OperationCanceledException)
+        {
+            Assert(cancelled.IsCancellationRequested,
+                "Readiness was cancelled without a caller cancellation.");
+        }
+    });
+
     await Check("HTTP defaults to a remotely reachable bind address", () =>
     {
         var http = new HttpOptions();
@@ -1070,6 +1152,38 @@ static int AllocateTcpPort()
     listener.Start();
     try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
     finally { listener.Stop(); }
+}
+
+static async Task ServeReadinessAfterTimeoutAsync(TcpListener listener, CancellationToken ct)
+{
+    // Accept the first connection without a greeting until the real client
+    // exhausts its attempt timeout and closes it. The next connection is ready.
+    using (var stalled = await listener.AcceptTcpClientAsync(ct))
+    {
+        var bytes = new byte[1];
+        while (await stalled.GetStream().ReadAsync(bytes, ct) != 0) { }
+    }
+    for (var connection = 0; connection < 2; connection++)
+    {
+        using var client = await listener.AcceptTcpClientAsync(ct);
+        using var reader = new StreamReader(client.GetStream());
+        await using var writer = new StreamWriter(client.GetStream()) { AutoFlush = true };
+        await writer.WriteLineAsync("{\"QMP\":{}}");
+        for (var command = 0; command < 2; command++)
+        {
+            using var request = JsonDocument.Parse(await reader.ReadLineAsync(ct)
+                ?? throw new IOException("Readiness client disconnected before its query."));
+            var name = request.RootElement.GetProperty("execute").GetString();
+            if (name != (command == 0 ? "qmp_capabilities" : "query-status"))
+                throw new InvalidDataException("Unexpected readiness command: " + name);
+            var id = request.RootElement.GetProperty("id").GetInt32();
+            await writer.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                id,
+                @return = new { status = "paused" }
+            }));
+        }
+    }
 }
 
 static void WriteRgbPng(

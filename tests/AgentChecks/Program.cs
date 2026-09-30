@@ -15,6 +15,7 @@ else
     CompletionWaitChecks.Register(checks);
     DiskAssetSchemaChecks.Register(checks);
     DiskAssetApiChecks.Register(checks);
+    LocalDiskImportChecks.Register(checks);
     ObservationChecks.Register(checks);
     TemplateChecks.Register(checks);
     EvidenceChecks.Register(checks);

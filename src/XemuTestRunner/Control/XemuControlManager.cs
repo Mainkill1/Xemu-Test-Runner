@@ -120,7 +120,7 @@ public sealed class XemuControlManager : IDisposable
                     cancellationToken).ConfigureAwait(false);
                 return;
             }
-            catch (Exception ex) when (ex is SocketException or IOException or InvalidDataException or InvalidOperationException or OperationCanceledException)
+            catch (Exception ex) when (ex is SocketException or IOException or InvalidDataException or InvalidOperationException or OperationCanceledException or TimeoutException)
             {
                 if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
                     throw;

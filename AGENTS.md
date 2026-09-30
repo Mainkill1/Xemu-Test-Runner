@@ -35,3 +35,10 @@ HDD assets belong in the disk catalog, not every package. Use disk-list/disk-upl
 Honor benchmark transfer/control policy. Retain definition sources and raw evidence referenced by results. The lower-level runner_api.py run/submit/retry commands intentionally execute and are not upload substitutes. Configuration/results remain local; no external database or extra live sampler is needed.
 
 Remaining capability gaps are in docs/AGENT-WORKAROUND-AUDIT.md. Report them instead of replacing tester behavior with untracked files, analyzer scripts, guest networking or shell manipulation.
+
+Existing local QCOW2 snapshot HDDs can be imported with disk-import-local from the
+workspace or configured Http.LocalDiskImportRoots. Inspect disk-import-status and
+disk-snapshots before creating a pinned test revision. The import preserves the
+original and lists actual VM-state presence; it does not prove save-state
+compatibility. Missing local-import capability requires a server upgrade through
+the separate operator workflow, not an untracked helper/shell workaround.
