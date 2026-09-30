@@ -41,6 +41,41 @@ class ReleaseChecks(unittest.TestCase):
             gh.call_args_list[1],
             mock.call('api', 'repos/Mainkill1/Xemu-Test-Runner/releases?per_page=100', check=False))
 
+    def test_wait_release_retries_until_draft_becomes_visible(self):
+        draft = {
+            'tag_name': 'runner-0.2.0-deadbeef',
+            'target_commitish': 'deadbeef' * 5,
+            'draft': True,
+            'assets': []
+        }
+        with mock.patch.object(
+                publish_module, 'read_release',
+                side_effect=[None, None, draft]) as read_release, \
+             mock.patch('time.sleep') as sleep:
+            release = publish_module.wait_release(
+                'Mainkill1/Xemu-Test-Runner',
+                draft['tag_name'],
+                attempts=3,
+                delay=0.01)
+        self.assertEqual(release, draft)
+        self.assertEqual(read_release.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_wait_release_can_require_converged_asset_state(self):
+        partial = {'draft': True, 'assets': []}
+        complete = {'draft': True, 'assets': [{'name': 'runner.zip'}]}
+        with mock.patch.object(
+                publish_module, 'read_release',
+                side_effect=[partial, complete]), \
+             mock.patch('time.sleep'):
+            release = publish_module.wait_release(
+                'Mainkill1/Xemu-Test-Runner',
+                'runner-0.2.0-deadbeef',
+                predicate=lambda value: len(value['assets']) == 1,
+                attempts=2,
+                delay=0.01)
+        self.assertEqual(release, complete)
+
     def test_package_requires_both_runner_and_helper(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary); published=root/'published';published.mkdir()
