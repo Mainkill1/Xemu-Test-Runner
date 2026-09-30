@@ -88,3 +88,55 @@ Create catalog assets first, create new immutable test-config revisions referenc
 
 
 Catalog content download is intentionally not a normal API operation in this first version. The catalog exists to avoid moving HDD images repeatedly; raw disk export can be added later with its own retention/authorization contract rather than making agents fetch multi-gigabyte assets by default.
+
+## Import an existing local snapshot HDD
+
+An operator can approve additional source folders in the runner configuration:
+
+```json
+{"Http":{"LocalDiskImportRoots":["C:/xemu-lab/XEMU FILES"]}}
+```
+
+The runner workspace is already allowed. The roots are local absolute directories;
+network/device paths and linked files/directories are rejected. This enables an
+agent to register an existing QCOW2 directly over HTTP without putting the HDD in
+a package, using SSH, or writing to the original disk.
+
+```sh
+python scripts/runner_tests.py disk-import-local ghoulies-spider-v1 'C:/xemu-lab/XEMU FILES/xbox_hdd - GBTG.qcow2'
+python scripts/runner_tests.py disk-import-status ghoulies-spider-v1
+python scripts/runner_tests.py disk-snapshots ghoulies-spider-v1
+# Optional: stop acquisition while preserving the source HDD
+python scripts/runner_tests.py disk-import-cancel ghoulies-spider-v1
+```
+
+`POST /api/v1/disk-assets/{id}/import-local` accepts `{path,description?}` and
+returns 202 with a tracked acquisition receipt. Hashing/copying continue after a
+client disconnect. `GET` on the same route returns state, total/copied bytes,
+SHA-256 and any error. `DELETE` cancels only that acquisition. Identical retries
+recover the same operation; changed paths/descriptions conflict. Failed or
+interrupted acquisition can be retried with the original definition. A restart
+reconciles an already-published carrier, otherwise reports `interrupted`.
+
+The importer opens one read-only source handle, rejects active writers on
+Windows, copies the complete carrier, independently verifies retained bytes,
+and publishes the immutable catalog asset. It does not convert snapshots or
+modify the source. Dirty/corrupt QCOW2, backing files, encryption and external
+data files are rejected. On systems without enforced writer exclusion, a source
+length or modification-time change prevents publication; stop external writers
+before importing. Staging consumes space for a full byte-for-byte image.
+
+`GET /api/v1/disk-assets/{id}/snapshots` returns bounded metadata from the retained
+carrier, including IDs, names, VM-state sizes and `hasVmState`. Enumeration follows
+[QEMU's QCOW2 format](https://www.qemu.org/docs/master/interop/qcow2.html), reads at
+most 4,096 entries/8 MiB of directory metadata, and never starts xemu. A nonzero
+VM-state size distinguishes a VM snapshot from a disk-only snapshot; it does not
+prove compatibility with another xemu build, firmware, DVD or device configuration.
+Pin the ready asset's SHA-256 and use an actually listed snapshot name in a new
+immutable test revision's top-level `JobDefinition.SnapshotName`.
+
+These routes retain the existing bulk-transfer benchmark policy. Copying, saved
+snapshot discovery and test execution remain separate actions. Deploy the
+matching server before using these commands; missing capability never permits
+a shell fallback. Installation/upgrades use the operator workflow in AGENTS.md,
+preserving existing configuration, queue, assets, saved tests and baseline.

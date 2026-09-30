@@ -94,6 +94,9 @@ public static class ConfigLoader
                 "GPU SampleIntervalMs must be >= Monitoring.IntervalMs; SensorIntervalMs and CounterRefreshMs must be >= SampleIntervalMs.");
         if (c.Http.Port is < 1 or > 65535 || c.Http.TransferBufferBytes is < 65536 or > 16777216 || c.Http.MaxHeaderBytes is < 4096 or > 1048576)
             throw new InvalidDataException("Invalid HTTP port or buffer/header size.");
+        if (c.Http.LocalDiskImportRoots is null || c.Http.LocalDiskImportRoots.Count > 32 ||
+            c.Http.LocalDiskImportRoots.Any(root => string.IsNullOrWhiteSpace(root) || !Path.IsPathFullyQualified(root) || root.Length > 4096 || root.Any(char.IsControl)))
+            throw new InvalidDataException("Http.LocalDiskImportRoots must contain at most 32 absolute local directory paths.");
         if (c.XemuControl.QmpPort is < 0 or > 65535 || c.XemuControl.ConnectTimeoutMs <= 0 || c.XemuControl.ScreenshotTimeoutMs <= 0 ||
             c.XemuControl.DefaultButtonHoldMs is < 1 or > 60000)
             throw new InvalidDataException("Invalid xemu control port, timeout, or button duration.");

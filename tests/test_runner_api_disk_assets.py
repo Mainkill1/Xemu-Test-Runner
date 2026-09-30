@@ -86,6 +86,40 @@ class DiskAssetClientChecks(unittest.TestCase):
         self.assertFalse(any(method == "PUT" for method, _, _, _ in calls))
         self.assertFalse(any("/artifacts/" in path or "/files/" in path for _, path, _, _ in calls))
 
+    def test_local_import_sends_tester_path_without_reading_or_starting_game(self):
+        def local_respond(method, path, body, headers):
+            if path == "/api/v1/help?topic=disk-assets":
+                return 200, {"capability": "diskAssets", "importLocal": "supported"}, {}
+            if path == "/api/v1/disk-assets/ghoulies/import-local" and method == "POST":
+                return 202, {"id": "ghoulies", "state": "queued"}, {}
+            return 404, {"code": "unexpected", "error": path}, {}
+        with fixture(local_respond) as (origin, calls):
+            result = self.run_client(origin, "disk-import-local", "ghoulies", "C:/xemu-lab/XEMU FILES/xbox_hdd - GBTG.qcow2")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(calls[-1][2], {"path": "C:/xemu-lab/XEMU FILES/xbox_hdd - GBTG.qcow2"})
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(any("/start" in path or "/submit" in path for _, path, _, _ in calls))
+
+    def test_local_import_missing_capability_has_no_shell_fallback(self):
+        with fixture(respond) as (origin, calls):
+            result = self.run_client(origin, "disk-import-local", "ghoulies", "C:/example.qcow2")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["code"], "capability_missing")
+        self.assertEqual(len(calls), 1)
+
+    def test_snapshot_names_are_only_metadata_reads(self):
+        def snapshot_respond(method, path, body, headers):
+            if path == "/api/v1/help?topic=disk-assets":
+                return 200, {"capability": "diskAssets", "snapshots": "supported"}, {}
+            if path == "/api/v1/disk-assets/ghoulies/snapshots":
+                return 200, {"items": [{"name": "spider death", "hasVmState": True}]}, {}
+            return 404, {"code": "unexpected", "error": path}, {}
+        with fixture(snapshot_respond) as (origin, calls):
+            result = self.run_client(origin, "disk-snapshots", "ghoulies")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout)["items"][0]["name"], "spider death")
+        self.assertTrue(all(method == "GET" for method, _, _, _ in calls))
+
     def test_disk_list_is_a_single_catalog_read(self):
         with fixture(respond) as (origin, calls):
             result = self.run_client(origin, "disk-list")

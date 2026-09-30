@@ -13,6 +13,15 @@ public sealed partial class EmbeddedHttpServer
     [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     private sealed record DiskAssetImportRequest(string SourceJobId, string Path);
 
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+    private sealed record DiskAssetLocalImportRequest(string Path, string? Description = null);
+
+    private LocalDiskImportStore? _localDiskImports;
+    private LocalDiskImportStore LocalDiskImports
+    {
+        get { lock (_agentStoreGate) return _localDiskImports ??= new(_paths.Workspace, _options, Activity); }
+    }
+
     private DiskAssetCatalog DiskAssets => new(_paths.Workspace);
 
     private async Task<bool?> TryDiskAssetRoutesAsync(
@@ -29,6 +38,11 @@ public sealed partial class EmbeddedHttpServer
                 create = "POST /api/v1/disk-assets",
                 upload = "PUT /api/v1/disk-assets/{id}/content",
                 import = "POST /api/v1/disk-assets/{id}/import",
+                importLocal = "POST /api/v1/disk-assets/{id}/import-local {path,description?}; returns 202 tracked acquisition without starting xemu",
+                importCancel = "DELETE /api/v1/disk-assets/{id}/import-local; cancels acquisition, never deletes the original HDD",
+                importStatus = "GET /api/v1/disk-assets/{id}/import-local",
+                snapshots = "GET /api/v1/disk-assets/{id}/snapshots; hasVmState is presence, not build compatibility",
+                localImportRoots = new[] { _paths.Workspace }.Concat(_options.LocalDiskImportRoots).ToArray(),
                 detail = "GET /api/v1/disk-assets/{id}",
                 delete = "DELETE /api/v1/disk-assets/{id}",
                 runtime = "RuntimeState.DiskAssets[] pins AssetId + ExpectedSha256 + Destination; default Retention is deleteAfterEvidence.",
@@ -50,7 +64,14 @@ public sealed partial class EmbeddedHttpServer
                 DiskAssetManifest createdManifest;
                 try
                 {
-                    createdManifest = catalog.CreateOrGet(body.Id, body.Kind, body.Length, body.Sha256, body.Description, out _);
+                    lock (LocalDiskImports.OwnershipGate)
+                    {
+                        if (LocalDiskImports.IsRunning(body.Id))
+                            throw new AgentRequestException(409, "disk_asset_source_busy", "Local acquisition owns this ID.", "Inspect import-local status first.");
+                        if (LocalDiskImports.HasDefinition(body.Id))
+                            throw new AgentRequestException(409, "disk_asset_conflict", "This ID belongs to a retained local import definition.", "Retry its original import-local request or choose a new ID.");
+                        createdManifest = catalog.CreateOrGet(body.Id, body.Kind, body.Length, body.Sha256, body.Description, out _);
+                    }
                 }
                 catch (InvalidOperationException error)
                 {
@@ -86,9 +107,44 @@ public sealed partial class EmbeddedHttpServer
         var suffix = request.Path[(root.Length + 1)..];
         var parts = suffix.Split('/', 2);
         var id = Uri.UnescapeDataString(parts[0]);
+        if (parts.Length == 2 && parts[1] == "import-local")
+        {
+            if (request.Method == "POST")
+            {
+                if (!await EnsureOperationAllowedAsync(stream, "bulk_transfer", false, ct).ConfigureAwait(false)) return false;
+                var body = await ReadAgentBodyAsync<DiskAssetLocalImportRequest>(stream, request, ct).ConfigureAwait(false);
+                var operation = LocalDiskImports.Start(id, body.Path, body.Description, ct);
+                await WriteAgentJsonAsync(stream, operation, 202, cancellationToken: ct).ConfigureAwait(false);
+                return false;
+            }
+            if (request.Method == "DELETE")
+            {
+                if (!await EnsureOperationAllowedAsync(stream, "bulk_transfer", false, ct).ConfigureAwait(false)) return false;
+                await WriteAgentJsonAsync(stream, LocalDiskImports.Cancel(id), cancellationToken: ct).ConfigureAwait(false);
+                return false;
+            }
+            if (request.Method == "GET")
+            {
+                var operation = LocalDiskImports.Get(id) ?? throw new AgentRequestException(404, "disk_import_not_found", "No local import has this ID.", "Start import-local first.");
+                await WriteAgentJsonAsync(stream, operation, cancellationToken: ct).ConfigureAwait(false);
+                return false;
+            }
+        }
+        if (request.Method is not ("GET" or "HEAD") && LocalDiskImports.IsRunning(id))
+            throw new AgentRequestException(409, "disk_asset_source_busy", "Local acquisition owns this disk asset ID.", "Inspect its import-local status before changing the asset.");
         var manifest = catalog.TryGet(id)
             ?? throw new AgentRequestException(404, "disk_asset_not_found", "No disk asset has this ID.",
                 "List /api/v1/disk-assets or create the asset before referencing it.");
+
+        if (parts.Length == 2 && parts[1] == "snapshots" && request.Method == "GET")
+        {
+            if (manifest.Kind != "snapshot-carrier" || !catalog.IsReady(manifest))
+                throw new InvalidDataException("Snapshot enumeration requires a ready snapshot-carrier asset.");
+            using var source = new FileStream(catalog.ContentPath(id), FileMode.Open, FileAccess.Read, FileShare.Read);
+            var items = QcowSnapshotDirectory.Read(source);
+            await WriteAgentJsonAsync(stream, new { id, manifest.Sha256, items, compatibility = "VM state presence is not a guarantee of compatibility with another xemu build." }, cancellationToken: ct).ConfigureAwait(false);
+            return false;
+        }
 
         if (parts.Length == 1)
         {
