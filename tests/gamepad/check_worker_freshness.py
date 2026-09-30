@@ -24,11 +24,18 @@ def main():
         apply(1, 0)
         time.sleep(0.55)
         assert process.poll() is None, 'Neutral idle unexpectedly removed the controller'
+
         apply(2, 0x1000)
+        time.sleep(0.55)
+        assert process.poll() is None, (
+            'A transient refresh stall destroyed controller ownership instead of neutralizing safely')
+
+        apply(3, 0x2000)
+        process.stdin.write('stop\n')
+        process.stdin.flush()
         process.wait(timeout=3)
-        assert process.returncode == 3, 'A held button did not expire after freshness loss'
-        assert 'Controller heartbeat expired' in process.stderr.read()
-        print('PASS neutral idle survives; held input still expires')
+        assert process.returncode == 0, 'Recovered controller session did not shut down cleanly'
+        print('PASS neutral idle survives; held timeout neutralizes without destroying ownership')
     finally:
         if process.poll() is None:
             process.kill()
