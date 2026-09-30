@@ -64,7 +64,8 @@ async def main():
         patterns += [[0x3141, 64, 192, -32768, 32767, 16384, -16384],
                      [0x820a, 255, 0, 32767, -32768, -12345, 5432], [0] * 7]
         for pattern in patterns:
-            producer.state = pattern
+            after = producer.set_state(pattern)
+            await producer.wait_applied_state(pattern, after)
             deadline = time.monotonic() + 5
             last = None
             while time.monotonic() < deadline:
@@ -78,7 +79,8 @@ async def main():
                 await asyncio.sleep(0.01)
             else:
                 raise AssertionError({'requested': pattern, 'observed': last,
-                    'lastReceipt': producer.last_receipt, 'workerExit': producer.proc.poll()})
+                    'lastReceipt': producer.last_receipt, 'workerExit': producer.proc.poll(),
+                    'pipeBoundary': producer.snapshot()})
         await producer.dispose()
         assert producer.proc.returncode == 0, producer.details
         deadline = time.monotonic() + 3

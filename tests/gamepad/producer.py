@@ -21,11 +21,40 @@ class Producer:
         self._stopped = threading.Event()
         self._changed = threading.Condition()
         self._pending = deque()
+        self._applied = deque(maxlen=64)
         self._sender_done = False
         self._sending_sequence = None
         self._last_send_sequence = 0
+        self._last_send_state = None
         self._last_send_started_at = None
         self._last_send_completed_at = None
+
+    def set_state(self, state):
+        """Replace the complete requested state and return its sequence boundary."""
+        state = tuple(state)
+        assert len(state) == 7, 'A controller report needs seven values'
+        with self._changed:
+            before = self.sequence
+            self.state = state
+            return before
+
+    async def wait_applied_state(self, state, after_sequence):
+        """Wait for a real receipt paired with this exact report after the boundary."""
+        state = tuple(state)
+        def wait():
+            deadline = time.monotonic() + 3
+            with self._changed:
+                while True:
+                    for sequence, applied in self._applied:
+                        if sequence > after_sequence and applied == state:
+                            return {'sequence': sequence, 'state': list(applied)}
+                    if self.failure is not None:
+                        raise AssertionError('State was not applied: ' + repr(self.failure))
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise AssertionError('No matching applied receipt for state ' + repr(state))
+                    self._changed.wait(remaining)
+        return await asyncio.to_thread(wait)
 
     def snapshot(self):
         """Capture the sender/receipt boundary without treating writes as receipts."""
@@ -34,11 +63,13 @@ class Producer:
                 'sequence': self.sequence,
                 'sendingSequence': self._sending_sequence,
                 'lastSendSequence': self._last_send_sequence,
+                'lastSendState': list(self._last_send_state) if self._last_send_state else None,
                 'lastSendStartedAt': self._last_send_started_at,
                 'lastSendCompletedAt': self._last_send_completed_at,
                 'lastReceiptSequence': (self.last_receipt or {}).get('sequence', 0),
+                'lastReceiptState': list(self._applied[-1][1]) if self._applied else None,
                 'pendingCount': len(self._pending),
-                'oldestPendingSequence': self._pending[0] if self._pending else None,
+                'oldestPendingSequence': self._pending[0][0] if self._pending else None,
                 'senderAlive': self.pulse.is_alive() if self.pulse else False,
                 'receiptReaderAlive': self.receipts.is_alive() if self.receipts else False,
                 'senderDone': self._sender_done,
@@ -87,16 +118,17 @@ class Producer:
                     assert len(self._pending) < 16, 'Fixture receipt backlog exceeded 16 states'
                     self.sequence += 1
                     sequence = self.sequence
-                    self._pending.append(sequence)
+                    state = tuple(self.state)
+                    self._pending.append((sequence, state))
                     self._sending_sequence = sequence
                     self._last_send_started_at = started
                     self._changed.notify_all()
-                state = tuple(self.state)
                 line = 'state ' + ' '.join(map(str, (sequence,) + state)) + '\n'
                 self.proc.stdin.write(line.encode())
                 self.proc.stdin.flush()
                 with self._changed:
                     self._last_send_sequence = sequence
+                    self._last_send_state = state
                     self._last_send_completed_at = time.monotonic()
                     self._sending_sequence = None
                 self._stopped.wait(max(0, 0.025 - (time.monotonic() - started)))
@@ -116,7 +148,7 @@ class Producer:
                     self._changed.wait_for(lambda: self._pending or self._sender_done)
                     if not self._pending:
                         return
-                    expected = self._pending[0]
+                    expected, state = self._pending[0]
                 response = self.proc.stdout.readline(4097)
                 assert response and len(response) <= 4096, 'Missing or oversized applied receipt'
                 receipt = json.loads(response)
@@ -124,8 +156,10 @@ class Producer:
                 with self._changed:
                     self._pending.popleft()
                     self.last_receipt = receipt
+                    self._applied.append((expected, state))
                     self.receipt_times.append(time.monotonic())
                     self.receipt_times = self.receipt_times[-32:]
+                    self._changed.notify_all()
         except BaseException as error:
             self._fail(error)
 

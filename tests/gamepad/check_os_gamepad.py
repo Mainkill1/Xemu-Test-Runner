@@ -120,19 +120,20 @@ async def roundtrip(executable, teardown):
         print('OS helper ready', json.dumps(producer.ready), flush=True)
         device = await observer.connect()
         print('Independent consumer connected', json.dumps(device), flush=True)
-        await observer.expect([0] * 7)
+        async def apply_and_observe(state):
+            after = producer.set_state(state)
+            await producer.wait_applied_state(state, after)
+            return await observer.expect(state)
+        await apply_and_observe([0] * 7)
         # Individually test every core button, preventing swapped aliases from hiding in a combined mask.
         buttons = [1,2,4,8,0x10,0x20,0x40,0x80,0x100,0x200,0x1000,0x2000,0x4000,0x8000]
         for button in buttons:
-            producer.state = [button,0,0,0,0,0,0]
-            await observer.expect(producer.state)
+            await apply_and_observe([button,0,0,0,0,0,0])
         patterns = [[0x3141,64,192,-32768,32767,16384,-16384],
                     [0x820a,255,0,32767,-32768,-12345,5432], [0] * 7]
         for pattern in patterns:
-            producer.state = pattern
-            await observer.expect(pattern)
-        producer.state = [0x1000,255,255,10000,10000,-10000,-10000]
-        await observer.expect(producer.state)
+            await apply_and_observe(pattern)
+        await apply_and_observe([0x1000,255,255,10000,10000,-10000,-10000])
         assert producer.failure is None, producer.failure
         if teardown == 'watchdog':
             await producer.stop_heartbeat()

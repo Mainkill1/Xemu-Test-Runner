@@ -58,6 +58,10 @@ async def check():
         assert diagnostic['lastSendSequence'] >= before + 8
         assert diagnostic['lastReceiptSequence'] > 0
         assert diagnostic['pendingCount'] >= 0
+        state = [0x1000, 0, 0, 0, 0, 0, 0]
+        after = sender.set_state(state)
+        receipt = await sender.wait_applied_state(state, after)
+        assert receipt['sequence'] > after and receipt['state'] == state
         print('PASS heartbeat sender progresses while consumer thread blocks')
     finally:
         await sender.dispose()
