@@ -56,24 +56,40 @@ class Observer:
         assert self.init(0x2000) == 0, self.error()
         self.pad = None
         self.pump()
-        assert self.count() == 0, 'Use an isolated qualification host with no physical/other virtual controllers.'
+        self.baseline_count = self.count()
+        if sys.platform == 'linux':
+            self.expected_guid = os.environ['SDL_GAMECONTROLLERCONFIG'].split(',')[0]
+            assert all(bytes(self.guid(i)).hex() != self.expected_guid
+                       for i in range(self.baseline_count)), \
+                'A preexisting controller has the test helper GUID.'
+        else:
+            assert self.baseline_count == 0, \
+                'Use an isolated Windows qualification host with no other controllers.'
 
     async def connect(self):
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
             self.pump()
-            if self.count() == 1:
-                guid = bytes(self.guid(0)).hex()
+            if self.count() == self.baseline_count + 1:
+                if sys.platform == 'linux':
+                    matches = [i for i in range(self.count())
+                               if bytes(self.guid(i)).hex() == self.expected_guid]
+                    assert len(matches) == 1, ('Ambiguous helper GUID', matches)
+                    index = matches[0]
+                else:
+                    index = 0
+                guid = bytes(self.guid(index)).hex()
                 mapping = None
                 if sys.platform == 'linux':
-                    assert self.joystick_name(0) == b'Xemu Runner Gamepad'
+                    assert self.joystick_name(index) == b'Xemu Runner Gamepad'
                     mapping = os.environ['SDL_GAMECONTROLLERCONFIG']
                     assert mapping.split(',')[0] == guid, ('Installed mapping GUID mismatch', guid)
                     # No SDL_AddMapping call: unmodified xemu gets the same launch environment.
-                self.pad = self.open(0)
+                self.pad = self.open(index)
                 if self.pad:
-                    assert not self.virtual(0), 'Process-local SDL virtual joystick cannot qualify OS injection.'
-                    return {'controllerName': self.name(self.pad).decode(), 'guid': guid, 'sdlMapping': mapping}
+                    assert not self.virtual(index), 'Process-local SDL virtual joystick cannot qualify OS injection.'
+                    return {'controllerName': self.name(self.pad).decode(), 'guid': guid,
+                            'sdlMapping': mapping, 'preexistingControllers': self.baseline_count}
             await asyncio.sleep(0.01)
         raise AssertionError(('OS gamepad not visible through SDL', self.count(), self.error()))
 
