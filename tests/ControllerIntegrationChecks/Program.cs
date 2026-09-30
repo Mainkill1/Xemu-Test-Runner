@@ -39,13 +39,14 @@ await Check("button hold sends one semantic press and returns to neutral", async
     var fake = new FakeProvider();
     await using var session = await ControllerInputSession.StartAsync(fake, CancellationToken.None);
     await session.PressButtonAsync(XboxControllerButtons.A, 350, CancellationToken.None);
-    var states = fake.Applied.Select(x => x.State.Buttons).ToArray();
+    var receipts = fake.Applied.ToArray();
+    var states = receipts.Select(x => x.State.Buttons).ToArray();
     Assert(states[0] == XboxControllerButtons.None && states.Contains(XboxControllerButtons.A),
         "The button never reached the provider.");
     Assert(states[^1] == XboxControllerButtons.None, "Button remained held after its interval.");
     Assert(states.Count(x => x == XboxControllerButtons.A) >= 4,
         "Held state did not receive watchdog refreshes.");
-    Assert(fake.Applied.Select(x => x.Sequence).SequenceEqual(Enumerable.Range(1, states.Length).Select(x => (ulong)x)),
+    Assert(receipts.Select(x => x.Sequence).SequenceEqual(Enumerable.Range(1, states.Length).Select(x => (ulong)x)),
         "Receipts were not sequenced.");
     Assert(session.Transitions.Count == 3 &&
         session.Transitions[1].Receipt.State.Buttons == XboxControllerButtons.A &&
