@@ -134,6 +134,16 @@ await Check("native binding rejects keyboard and ambiguous port configuration", 
         await File.WriteAllTextAsync(path, valid);
         if (OperatingSystem.IsLinux())
             ControllerBindingPreflight.Verify(["-config_path", path], Path.GetDirectoryName(path)!, "input42", sysfs);
+        if (OperatingSystem.IsLinux())
+        {
+            var linked = Path.Combine(sysfs, "input42");
+            var backing = Path.Combine(sysfs, "owned-device");
+            Directory.Move(linked, backing);
+            Directory.CreateSymbolicLink(linked, backing);
+            ControllerBindingPreflight.Verify(["-config_path", path], Path.GetDirectoryName(path)!, "input42", sysfs);
+            Directory.Delete(linked);
+            Directory.Move(backing, linked);
+        }
         Device("input43");
         try
         {
