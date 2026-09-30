@@ -8,7 +8,9 @@ PR #72. It does not start authoring capture, an encoder, or browser media.
 The runner creates one neutral OS-visible controller before launching xemu,
 refreshes its full state every 40 ms through holds and neutral waits, and
 removes it during run cleanup. The native helper independently removes the
-device after 250 ms without a valid report. The selected SDL environment is
+device after 250 ms without a fresh non-neutral report. A fully neutral state
+can remain connected through a host scheduling stall; it cannot leave a held
+gameplay input behind. The selected SDL environment is
 passed through the actual target launcher. Failed input is never retried through
 the keyboard provider.
 

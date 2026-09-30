@@ -33,6 +33,7 @@ authorized Windows capability/elevation context or provisioned Linux permissions
 The helper never automatically elevates privileges or installs a driver.
 
 A native receipt proves successful OS submission, not guest consumption. Once
-input begins, absence of a fresh valid state for 250ms removes the device, even
-if the protocol thread is blocked writing output. The caller must explicitly
+non-neutral input begins, absence of a fresh valid state for 250ms removes the
+device, even if the protocol thread is blocked writing output. A fully neutral
+state may stay connected through a scheduling stall without holding input. The caller must explicitly
 refresh a replay hold; stale browser samples must not receive invented refreshes.

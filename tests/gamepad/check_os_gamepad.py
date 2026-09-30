@@ -13,7 +13,7 @@ import time
 import threading
 from producer import Producer
 
-TEARDOWNS = ('stop', 'watchdog', 'malformed', 'kill', 'eof', 'partial', 'stale', 'backpressure')
+TEARDOWNS = ('stop', 'watchdog', 'neutral_stall', 'malformed', 'kill', 'eof', 'partial', 'stale', 'backpressure')
 
 
 def configure_mapping():
@@ -158,6 +158,16 @@ async def roundtrip(executable, teardown):
             await producer.stop_heartbeat()
             await asyncio.to_thread(producer.proc.wait, 3)
             assert producer.proc.returncode == 3
+        elif teardown == 'neutral_stall':
+            await apply_and_observe([0] * 7)
+            await producer.stop_heartbeat()
+            await asyncio.sleep(0.5)
+            observer.pump()
+            assert producer.proc.poll() is None and observer.attached(observer.pad), (
+                'A stale neutral state disconnected a safe controller session')
+            producer.proc.stdin.close()
+            await asyncio.to_thread(producer.proc.wait, 3)
+            assert producer.proc.returncode == 0
         elif teardown == 'kill':
             await producer.stop_heartbeat()
             producer.proc.kill(); await asyncio.to_thread(producer.proc.wait, 3)

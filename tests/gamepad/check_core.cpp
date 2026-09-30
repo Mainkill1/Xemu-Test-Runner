@@ -1,10 +1,16 @@
 #include "pad-state.h"
+#include "freshness-policy.h"
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
 using namespace xtr;
 static void require(bool v) { if (!v) throw std::runtime_error("Assertion failed"); }
 int main() {
+    using Clock = std::chrono::steady_clock;
+    const auto now = Clock::now();
+    require(freshness_deadline(PadState{}, now) == Clock::time_point::max());
+    require(freshness_deadline(PadState{.buttons = 0x1000}, now) == now + std::chrono::milliseconds(250));
+    require(freshness_deadline(PadState{.rt = 1}, now) == now + std::chrono::milliseconds(250));
     auto p = parse_packet("state 7 12289 23 254 -32768 32767 12345 -5432");
     require(p.sequence == 7 && p.state.buttons == 12289 && p.state.lt == 23 && p.state.rt == 254);
     require(p.state.lx == -32768 && p.state.ly == 32767 && p.state.rx == 12345 && p.state.ry == -5432);

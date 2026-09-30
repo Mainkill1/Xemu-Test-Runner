@@ -15,7 +15,8 @@ host OS, even if xemu is an emulated x64 process.
 means the helper file exists. `ApplyStateAsync` and `NeutralizeAsync` return
 sequence-matched receipts. A receipt confirms OS submission, not xemu or guest
 consumption. The native helper removes its device after 250 ms without a fresh
-valid state; a replay owner must refresh both held and neutral states until it
+valid non-neutral state; a neutral state can remain connected through a host
+scheduling stall. A replay owner still refreshes both held and neutral states until it
 disposes the session. That ownership and the runner's test-plan dispatch are
 separate integration work, so current saved `button` steps remain keyboard
 backed until explicitly migrated.
