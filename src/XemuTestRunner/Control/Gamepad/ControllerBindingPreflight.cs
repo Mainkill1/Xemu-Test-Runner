@@ -97,18 +97,30 @@ public static class ControllerBindingPreflight
             !File.Exists(Path.Combine(id, "bustype")) ||
             !File.Exists(Path.Combine(id, "vendor")) ||
             !File.Exists(Path.Combine(directory, "capabilities", "ev")) ||
-            !File.Exists(Path.Combine(directory, "capabilities", "abs"))) return false;
+            !File.Exists(Path.Combine(directory, "capabilities", "abs")) ||
+            !File.Exists(Path.Combine(directory, "capabilities", "key"))) return false;
         if (File.ReadAllText(Path.Combine(id, "bustype")).Trim() != "0006" ||
             File.ReadAllText(Path.Combine(id, "vendor")).Trim() != "0000") return false;
-        // A keyboard with the same name is not an SDL joystick. Require key
-        // and absolute events plus the two stick axes in the kernel bitmap.
+        // A same-named touchscreen or keyboard is not an SDL joystick. Check
+        // the kernel's joystick signals, including secondary axes, rather
+        // than treating any absolute X/Y device as a possible gamepad.
         var capabilities = Path.Combine(directory, "capabilities");
-        if (!HasBits(Path.Combine(capabilities, "ev"), 1, 3) ||
-            !HasBits(Path.Combine(capabilities, "abs"), 0, 1)) return false;
-        var name = File.ReadAllText(Path.Combine(directory, "name")).TrimEnd('\r', '\n', ' ');
-        var bytes = Encoding.UTF8.GetBytes(name);
+        var events = ReadBitmap(Path.Combine(capabilities, "ev"));
+        var axes = ReadBitmap(Path.Combine(capabilities, "abs"));
+        var keys = ReadBitmap(Path.Combine(capabilities, "key"));
+        if (!HasBits(events, 3) || !HasBits(axes, 0, 1)) return false;
+        if (!HasBits(events, 1) &&
+            (HasBits(axes, 0, 1, 2) || HasBits(axes, 3, 4, 5))) return false;
+        if (!HasAnyBits(keys, 0x101, 0x120, 0x130) &&
+            !HasAnyBits(axes, 3, 4, 5, 6, 7, 8, 9, 10)) return false;
+        // sysfs adds exactly one LF. Any preceding space or control byte
+        // belongs to the kernel device name and affects SDL's full-name CRC.
+        var sysfsName = File.ReadAllBytes(Path.Combine(directory, "name"));
+        if (sysfsName.Length == 0 || sysfsName[^1] != (byte)'\n')
+            throw new InvalidDataException("Native controller kernel name is incomplete.");
+        var bytes = sysfsName.AsSpan(0, sysfsName.Length - 1);
         if (bytes.Length < GuidNamePrefix.Length ||
-            !bytes.AsSpan(0, GuidNamePrefix.Length).SequenceEqual(GuidNamePrefix)) return false;
+            !bytes[..GuidNamePrefix.Length].SequenceEqual(GuidNamePrefix)) return false;
         ushort crc = 0;
         foreach (var value in bytes)
         {
@@ -119,12 +131,23 @@ public static class ControllerBindingPreflight
         return crc == 0x41cc;
     }
 
-    private static bool HasBits(string path, params int[] bits)
+    private static ulong[] ReadBitmap(string path)
     {
-        var words = File.ReadAllText(path).Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (words.Length == 0 || !ulong.TryParse(words[^1], System.Globalization.NumberStyles.HexNumber,
-            System.Globalization.CultureInfo.InvariantCulture, out var lowWord)) return false;
-        return bits.All(bit => (lowWord & (1UL << bit)) != 0);
+        var fields = File.ReadAllText(path).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        var words = new ulong[fields.Length];
+        for (var i = 0; i < fields.Length; i++)
+            if (!ulong.TryParse(fields[i], System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture, out words[fields.Length - i - 1]))
+                throw new InvalidDataException("Native controller input capabilities are malformed.");
+        return words;
+    }
+
+    private static bool HasBits(ulong[] words, params int[] bits) => bits.All(bit => BitSet(words, bit));
+    private static bool HasAnyBits(ulong[] words, params int[] bits) => bits.Any(bit => BitSet(words, bit));
+    private static bool BitSet(ulong[] words, int bit)
+    {
+        var width = IntPtr.Size * 8;
+        return bit / width < words.Length && (words[bit / width] & (1UL << (bit % width))) != 0;
     }
 
     private static TomlTable Table(TomlTable parent, string key) =>

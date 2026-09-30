@@ -33,8 +33,9 @@ keyboard tests are unchanged. The effective config disables automatic binding
 and ports 2–4. Preflight rejects a keyboard port, missing binding, or this
 controller GUID on another port. It checks the helper-reported kernel input
 device against the configured SDL identity before launch. A second joystick
-with a colliding SDL GUID is rejected even when its full name differs; a
-same-named keyboard or unrelated vendor ID is not mistaken for a duplicate.
+with a colliding SDL GUID is rejected even when its raw name bytes differ,
+contain trailing whitespace, or are not UTF-8; a same-named keyboard, touchscreen, or unrelated
+vendor ID is not mistaken for a duplicate.
 This check follows SDL2's documented GUID inputs (bus, full-name CRC16, and
 shortened name for zero-vendor devices), with independent runner code; the
 [SDL2 GUID source](https://github.com/libsdl-org/SDL/blob/SDL2/src/joystick/SDL_joystick.c)
