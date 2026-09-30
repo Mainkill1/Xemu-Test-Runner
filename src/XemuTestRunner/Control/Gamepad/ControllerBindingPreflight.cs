@@ -115,7 +115,11 @@ public static class ControllerBindingPreflight
             !HasAnyBits(axes, 3, 4, 5, 6, 7, 8, 9, 10)) return false;
         // sysfs adds exactly one LF. Any preceding space or control byte
         // belongs to the kernel device name and affects SDL's full-name CRC.
-        var sysfsName = File.ReadAllBytes(Path.Combine(directory, "name"));
+        // sysfs name files commonly report a 4096-byte size even when their
+        // contents are short. File.ReadAllBytes expects that reported length
+        // and throws EndOfStreamException before the target can launch.
+        using var nameFile = File.OpenRead(Path.Combine(directory, "name"));
+        var sysfsName = ReadSysfsName(nameFile);
         if (sysfsName.Length == 0 || sysfsName[^1] != (byte)'\n')
             throw new InvalidDataException("Native controller kernel name is incomplete.");
         var bytes = sysfsName.AsSpan(0, sysfsName.Length - 1);
@@ -129,6 +133,22 @@ public static class ControllerBindingPreflight
                 crc = (ushort)((crc & 1) == 0 ? crc >> 1 : (crc >> 1) ^ 0xa001);
         }
         return crc == 0x41cc;
+    }
+
+    internal static byte[] ReadSysfsName(Stream input)
+    {
+        const int maximumLength = 1024;
+        var buffer = new byte[maximumLength + 1];
+        var length = 0;
+        while (length < buffer.Length)
+        {
+            var read = input.Read(buffer, length, buffer.Length - length);
+            if (read == 0) break;
+            length += read;
+        }
+        if (length > maximumLength)
+            throw new InvalidDataException("Native controller kernel name exceeds 1024 bytes.");
+        return buffer.AsSpan(0, length).ToArray();
     }
 
     private static ulong[] ReadBitmap(string path)

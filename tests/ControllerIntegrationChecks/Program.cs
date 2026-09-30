@@ -107,6 +107,22 @@ await Check("refresh failure interrupts a long held action", async () =>
         "Interrupted controller state was not neutralized.");
 });
 
+await Check("sysfs joystick names use bounded reads despite misleading file length", () =>
+{
+    var expected = System.Text.Encoding.ASCII.GetBytes("Xemu Runner Gamepad\n");
+    using var shortName = new MisleadingLengthStream(expected);
+    Assert(ControllerBindingPreflight.ReadSysfsName(shortName).SequenceEqual(expected),
+        "A short sysfs name was rejected because its reported length was 4096 bytes.");
+    using var oversizedName = new MisleadingLengthStream(new byte[1025]);
+    try
+    {
+        ControllerBindingPreflight.ReadSysfsName(oversizedName);
+        throw new InvalidOperationException("An unbounded sysfs name was accepted.");
+    }
+    catch (InvalidDataException) { }
+    return Task.CompletedTask;
+});
+
 await Check("native binding rejects keyboard and ambiguous port configuration", async () =>
 {
     var path = Path.Combine(Path.GetTempPath(), "controller-binding-" + Guid.NewGuid().ToString("N") + ".toml");
@@ -268,6 +284,27 @@ await Check("failed helper removal quarantines native ownership", async () =>
 });
 
 Console.WriteLine($"Controller integration checks: {checks}/{checks} passed.");
+
+sealed class MisleadingLengthStream(byte[] bytes) : Stream
+{
+    private int _position;
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => 4096;
+    public override long Position { get => _position; set => throw new NotSupportedException(); }
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        var length = Math.Min(count, bytes.Length - _position);
+        Array.Copy(bytes, _position, buffer, offset, length);
+        _position += length;
+        return length;
+    }
+    public override void Flush() => throw new NotSupportedException();
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+}
 
 sealed class FakeProvider : IXemuGamepadProvider
 {
