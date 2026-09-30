@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import time
 from release_package import collect, digest
 
 
@@ -29,6 +30,17 @@ def read_release(repository, tag):
         None)
 
 
+def wait_release(repository, tag, predicate=None, attempts=20, delay=0.5):
+    predicate = predicate or (lambda release: True)
+    for attempt in range(attempts):
+        release = read_release(repository, tag)
+        if release is not None and predicate(release):
+            return release
+        if attempt + 1 < attempts:
+            time.sleep(delay)
+    raise RuntimeError(f'Release state did not converge for {tag}')
+
+
 def main():
     if os.environ.get('GITHUB_REF') != 'refs/heads/main' or os.environ.get('GITHUB_EVENT_NAME') not in ('push', 'workflow_dispatch'):
         raise RuntimeError('Publishing is restricted to an explicit main-branch release run')
@@ -51,7 +63,7 @@ def main():
         gh('release', 'create', tag, '--repo', repository, '--target', sha,
            '--title', f'Xemu Test Runner {version}+{sha[:8]}', '--draft',
            '--notes-file', str(root / 'docs/releases' / f'{version}.md'))
-        release = read_release(repository, tag)
+        release = wait_release(repository, tag)
     if release['target_commitish'] != sha:
         raise RuntimeError('Existing release targets a different source commit')
     existing = {asset['name']: asset for asset in release['assets']}
@@ -66,13 +78,23 @@ def main():
             if not release['draft']:
                 raise RuntimeError('Published release is incomplete; refusing to mutate it')
             gh('release', 'upload', tag, str(path), '--repo', repository)
-    release = read_release(repository, tag)
+    def assets_match(candidate):
+        actual = {
+            asset['name']: {'size': asset['size'], 'digest': asset.get('digest')}
+            for asset in candidate['assets']
+        }
+        return actual == expected
+
+    release = wait_release(repository, tag, predicate=assets_match)
     actual = {asset['name']: {'size': asset['size'], 'digest': asset.get('digest')} for asset in release['assets']}
     if actual != expected:
         raise RuntimeError('GitHub release assets did not match uploaded checksums')
     if release['draft']:
         gh('release', 'edit', tag, '--repo', repository, '--draft=false', '--latest')
-    release = read_release(repository, tag)
+    release = wait_release(
+        repository,
+        tag,
+        predicate=lambda candidate: not candidate['draft'] and len(candidate['assets']) == len(files))
     if release['draft'] or len(release['assets']) != len(files):
         raise RuntimeError('Release publication did not complete')
     print(release['html_url'])
