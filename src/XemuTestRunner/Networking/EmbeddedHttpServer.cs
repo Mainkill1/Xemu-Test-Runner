@@ -161,6 +161,10 @@ public sealed partial class EmbeddedHttpServer
                     if (!await EnsureOperationAllowedAsync(stream, "input", keepAlive, ct))
                         return false;
                     return await HandleButtonPressAsync(stream, request, keepAlive, ct);
+                case "/api/v1/input/controller-state":
+                    if (!await EnsureOperationAllowedAsync(stream, "input", keepAlive, ct))
+                        return false;
+                    return await HandleControllerStateAsync(stream, request, keepAlive, ct);
                 case "/api/v1/xemu/pause":
                     if (!await EnsureOperationAllowedAsync(stream, "pause", keepAlive, ct))
                         return false;

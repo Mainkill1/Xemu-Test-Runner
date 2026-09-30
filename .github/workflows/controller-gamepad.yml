@@ -5,6 +5,7 @@ on:
       - 'native/gamepad/**'
       - 'tests/gamepad/**'
       - 'tests/GamepadProviderChecks/**'
+      - 'tests/ControllerIntegrationChecks/**'
       - 'src/XemuTestRunner/Control/Gamepad/**'
       - '.github/workflows/controller-gamepad.yml'
   workflow_dispatch:
@@ -159,3 +160,5 @@ jobs:
           global-json-file: global.json
       - name: Verify actual managed provider using isolated pipe fixtures
         run: dotnet run --project tests/GamepadProviderChecks -c Release
+      - name: Verify controller session and binding contracts
+        run: dotnet run --project tests/ControllerIntegrationChecks -c Release

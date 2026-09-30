@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using XemuTestRunner.Config;
 using XemuTestRunner.Control;
+using XemuTestRunner.Control.Gamepad;
 using XemuTestRunner.Diagnostics;
 using XemuTestRunner.Monitoring;
 using XemuTestRunner.Networking;
@@ -318,6 +319,10 @@ public sealed class RunnerEngine
         WorkstationStateSnapshot? workstationStart = null;
         RuntimeMaterialization? runtimeState = null;
         InputManifest? inputManifest = null;
+        ControllerInputSession? controllerSession = null;
+        string? controllerHelperSha256 = null;
+        string? controllerMappingSha256 = null;
+        string? controllerEnvironmentSha256 = null;
         WorkloadEvaluation workloadEvaluation = new(
             CorrectnessOutcome.NotEvaluated,
             EvidenceOutcome.NotEvaluated,
@@ -551,6 +556,30 @@ public sealed class RunnerEngine
                 var executable = JobDefinition.ResolveInsidePackage(package, job.Executable);
                 var workingDirectory = JobDefinition.ResolveInsidePackage(package, job.WorkingDirectory ?? ".");
 
+                if (job.ControllerInput is not null)
+                {
+                    var helper = Path.Combine(AppContext.BaseDirectory, "tools",
+                        OperatingSystem.IsWindows() ? "xemu-gamepad.exe" : "xemu-gamepad");
+                    controllerSession = await ControllerInputSession.StartAsync(
+                        new NativeGamepadProvider(helper), ct).ConfigureAwait(false);
+                    controllerSession.ConfigureTarget(launchEnvironment);
+                    var effectiveControllerEnvironment = OperatingSystem.IsWindows()
+                        ? launchEnvironment["SDL_JOYSTICK_RAWINPUT"]
+                        : launchEnvironment["SDL_GAMECONTROLLERCONFIG"];
+                    controllerEnvironmentSha256 = Convert.ToHexString(
+                        SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+                            effectiveControllerEnvironment))).ToLowerInvariant();
+                    controllerHelperSha256 = Convert.ToHexString(
+                        SHA256.HashData(File.ReadAllBytes(helper))).ToLowerInvariant();
+                    if (OperatingSystem.IsLinux())
+                    {
+                        var mapping = Path.Combine(AppContext.BaseDirectory,
+                            "tools", "linux-sdl-mapping.txt");
+                        controllerMappingSha256 = Convert.ToHexString(
+                            SHA256.HashData(File.ReadAllBytes(mapping))).ToLowerInvariant();
+                    }
+                }
+
                 AtomicJson.Write(Path.Combine(resultDirectory, "launch.json"), new
                 {
                     runId,
@@ -673,7 +702,7 @@ public sealed class RunnerEngine
                 {
                     try
                     {
-                        _control.Begin(process, resultDirectory, qmpPort);
+                        _control.Begin(process, resultDirectory, qmpPort, controllerSession);
                         await _control.WaitUntilReadyAsync(ct).ConfigureAwait(false);
                         await _control.RefreshPauseStateAsync(ct).ConfigureAwait(false);
                         if (job.StartPaused && !_control.Snapshot().Paused)
@@ -765,6 +794,8 @@ public sealed class RunnerEngine
                     waiting.Add(watch);
                 if (recordingWriter is not null)
                     waiting.Add(recordingWriter);
+                if (controllerSession is not null)
+                    waiting.Add(controllerSession.FailureTask);
 
                 while (true)
                 {
@@ -773,6 +804,13 @@ public sealed class RunnerEngine
                     if (ct.IsCancellationRequested)
                     {
                         status = "cancelled";
+                        break;
+                    }
+
+                    if (controllerSession?.Failure is { } inputFailure)
+                    {
+                        status = "input_failure";
+                        detail = "Native controller OS submission failed: " + inputFailure;
                         break;
                     }
 
@@ -995,6 +1033,47 @@ public sealed class RunnerEngine
 
             if (!preserveTarget)
                 _control.End();
+
+            if (controllerSession is not null)
+            {
+                string cleanup = "complete";
+                try { await controllerSession.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception ex)
+                {
+                    cleanup = "failed: " + ex.Message;
+                    status = "cleanup_failed";
+                    detail = (detail ?? "") + " Native controller cleanup failed: " + ex;
+                }
+                if (controllerSession.Failure is { } failure && status == "completed")
+                {
+                    status = "input_failure";
+                    detail = "Native controller OS submission failed: " + failure;
+                }
+                try
+                {
+                    AtomicJson.Write(Path.Combine(resultDirectory, "controller-input.json"), new
+                    {
+                        schemaVersion = 1,
+                        runId,
+                        backend = controllerSession.Provider.Name,
+                        nativeBackend = (controllerSession.Provider as NativeGamepadProvider)?.Backend,
+                        helperSha256 = controllerHelperSha256,
+                        mappingSha256 = controllerMappingSha256,
+                        effectiveControllerEnvironmentSha256 = controllerEnvironmentSha256,
+                        mappingProfile = job?.ControllerInput?.MappingProfile,
+                        receiptMeaning = "OS submission; guest consumption not confirmed",
+                        refreshCount = controllerSession.RefreshCount,
+                        transitions = controllerSession.Transitions,
+                        failure = controllerSession.Failure?.ToString(),
+                        cleanup
+                    });
+                }
+                catch (Exception ex)
+                {
+                    status = "evidence_failure";
+                    detail = (detail ?? "") + " Controller input evidence failed: " + ex;
+                }
+            }
 
             if (metricRecordingStarted && telemetry is not null)
             {

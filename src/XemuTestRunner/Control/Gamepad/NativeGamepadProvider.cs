@@ -118,12 +118,24 @@ public sealed class NativeGamepadProvider : IXemuGamepadProvider
     public void ConfigureTarget(ProcessStartInfo target)
     {
         ArgumentNullException.ThrowIfNull(target);
+        var environment = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (target.Environment.TryGetValue("SDL_GAMECONTROLLERCONFIG", out var existing) && existing is not null)
+            environment["SDL_GAMECONTROLLERCONFIG"] = existing;
+        ConfigureTarget(environment);
+        foreach (var variable in environment)
+            target.Environment[variable.Key] = variable.Value;
+    }
+
+    /// <summary>Apply directly to the dictionary passed into the actual target launcher.</summary>
+    public void ConfigureTarget(IDictionary<string, string> launchEnvironment)
+    {
+        ArgumentNullException.ThrowIfNull(launchEnvironment);
         ThrowIfDisposed();
         if (OperatingSystem.IsWindows())
         {
             // RawInput can hot-remove this device in remote sessions. XInput is
             // the independently qualified consumer of built-in InputInjector.
-            target.Environment["SDL_JOYSTICK_RAWINPUT"] = "0";
+            launchEnvironment["SDL_JOYSTICK_RAWINPUT"] = "0";
         }
         else if (OperatingSystem.IsLinux())
         {
@@ -133,8 +145,8 @@ public sealed class NativeGamepadProvider : IXemuGamepadProvider
             if (!mapping.StartsWith("0600cc4158656d752052756e6e657200,Xemu Runner Gamepad,", StringComparison.Ordinal) ||
                 mapping.Contains('\n') || mapping.Contains('\r'))
                 throw new InvalidDataException("Unrecognized native gamepad mapping.");
-            target.Environment.TryGetValue("SDL_GAMECONTROLLERCONFIG", out string? existing);
-            target.Environment["SDL_GAMECONTROLLERCONFIG"] = string.IsNullOrWhiteSpace(existing)
+            launchEnvironment.TryGetValue("SDL_GAMECONTROLLERCONFIG", out string? existing);
+            launchEnvironment["SDL_GAMECONTROLLERCONFIG"] = string.IsNullOrWhiteSpace(existing)
                 ? mapping : existing.TrimEnd() + "\n" + mapping;
         }
         else throw new PlatformNotSupportedException("No qualified built-in gamepad provider for this OS.");

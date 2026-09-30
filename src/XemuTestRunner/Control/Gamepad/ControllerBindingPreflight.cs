@@ -1,0 +1,66 @@
+using Tomlyn;
+using Tomlyn.Model;
+
+namespace XemuTestRunner.Control.Gamepad;
+
+/// <summary>Reject an xemu launch that would keep port one on the keyboard.</summary>
+public static class ControllerBindingPreflight
+{
+    private const string LinuxGuid = "0600cc4158656d752052756e6e657200";
+
+    public static void Verify(IReadOnlyList<string> arguments, string workingDirectory)
+    {
+        if (!OperatingSystem.IsLinux())
+            throw new NotSupportedException(
+                "Native controller binding on this host needs qualified xemu/SDL device identity before launch.");
+
+        string? configured = null;
+        for (var i = 0; i < arguments.Count; i++)
+        {
+            if (arguments[i] == "-config_path")
+            {
+                if (configured is not null || ++i >= arguments.Count)
+                    throw new InvalidDataException("Native input requires one explicit xemu -config_path.");
+                configured = arguments[i];
+            }
+            else if (arguments[i].StartsWith("-config_path=", StringComparison.Ordinal))
+            {
+                if (configured is not null)
+                    throw new InvalidDataException("Native input requires one explicit xemu -config_path.");
+                configured = arguments[i][13..];
+            }
+        }
+        if (string.IsNullOrWhiteSpace(configured))
+            throw new InvalidDataException("Native input requires a private xemu -config_path.");
+        var path = Path.GetFullPath(configured, workingDirectory);
+        if (new FileInfo(path).Length > 1024 * 1024)
+            throw new InvalidDataException("Native xemu input config exceeds 1 MiB.");
+        TomlTable model;
+        try { model = Toml.ToModel(File.ReadAllText(path)); }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        { throw new InvalidDataException("Native xemu input config could not be read.", error); }
+
+        var input = Table(model, "input");
+        var ports = Table(input, "virtual_ports");
+        var bindings = Table(input, "bindings");
+        if (!input.TryGetValue("auto_bind", out var autoBind) || autoBind is not false ||
+            !ports.TryGetValue("port1_connected", out var connected) ||
+            connected is not 1L ||
+            !bindings.TryGetValue("port1", out var selected) ||
+            selected is not string guid ||
+            !guid.Equals(LinuxGuid, StringComparison.OrdinalIgnoreCase) ||
+            !bindings.TryGetValue("port1_driver", out var driver) ||
+            driver is not string { Length: > 0 } driverName ||
+            driverName != "usb-xbox-gamepad")
+            throw new InvalidDataException(
+                "Native input requires isolated port 1 bound to the Xemu Runner Gamepad GUID and usb-xbox-gamepad.");
+        for (var port = 2; port <= 4; port++)
+            if (bindings.TryGetValue($"port{port}", out var other) &&
+                other is string value && value.Equals(LinuxGuid, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Native controller GUID is bound to multiple xemu ports.");
+    }
+
+    private static TomlTable Table(TomlTable parent, string key) =>
+        parent.TryGetValue(key, out var value) && value is TomlTable table
+            ? table : throw new InvalidDataException("Native xemu input config is missing [input." + key + "].");
+}

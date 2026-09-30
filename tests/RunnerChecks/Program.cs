@@ -510,6 +510,22 @@ try
         return Task.CompletedTask;
     });
 
+    await Check("native input failure cannot qualify a comparison", () =>
+    {
+        var job = new JobDefinition { Experiment = new ExperimentDefinition
+        {
+            Id = "controller-comparison", Variant = "candidate"
+        } };
+        var workload = new WorkloadEvaluation(CorrectnessOutcome.Passed,
+            EvidenceOutcome.Complete, [], []);
+        var activity = new ActivitySummary(false, 0, 0, 0, 0, 0, 0, 0);
+        var assessment = RunAssessmentEvaluator.Evaluate("input_failure", workload, activity, job);
+        Assert(assessment.Execution == ExecutionOutcome.Failed &&
+            assessment.Comparison == ComparisonEligibility.Ineligible,
+            "Failed native input was assessed as an eligible or unstarted comparison.");
+        return Task.CompletedTask;
+    });
+
     await Check("workstation rendering risk flags lock display sleep and battery saver", () =>
     {
         Assert(new WorkstationStateSnapshot { SessionLocked = true }.RenderingRisk,

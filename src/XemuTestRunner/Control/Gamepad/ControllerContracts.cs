@@ -46,6 +46,7 @@ public interface IXemuGamepadProvider : IAsyncDisposable
     bool IsAvailable { get; }
     bool IsReady { get; }
     void ConfigureTarget(ProcessStartInfo target);
+    void ConfigureTarget(IDictionary<string, string> launchEnvironment);
     Task CreateAsync(int controllerCount, CancellationToken cancellationToken);
     Task<NativeGamepadReceipt> ApplyStateAsync(
         int controllerIndex,

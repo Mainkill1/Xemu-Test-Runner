@@ -81,10 +81,14 @@ await Check("full-state receipt and per-process target configuration", async () 
     await provider.CreateAsync(1, CancellationToken.None);
     Assert(provider.IsReady, "Provider did not validate ready.");
     var target = new ProcessStartInfo("xemu");
+    var launchEnvironment = new Dictionary<string, string>(StringComparer.Ordinal);
     string? global = Environment.GetEnvironmentVariable("SDL_JOYSTICK_RAWINPUT");
     provider.ConfigureTarget(target);
+    provider.ConfigureTarget(launchEnvironment);
     if (OperatingSystem.IsWindows()) Assert(target.Environment["SDL_JOYSTICK_RAWINPUT"] == "0", "Missing XInput selection.");
     else Assert(target.Environment["SDL_GAMECONTROLLERCONFIG"]!.Contains("Xemu Runner Gamepad,"), "Missing native mapping.");
+    if (OperatingSystem.IsWindows()) Assert(launchEnvironment["SDL_JOYSTICK_RAWINPUT"] == "0", "Real launch environment missed XInput selection.");
+    else Assert(launchEnvironment["SDL_GAMECONTROLLERCONFIG"].Contains("Xemu Runner Gamepad,"), "Real launch environment missed native mapping.");
     Assert(Environment.GetEnvironmentVariable("SDL_JOYSTICK_RAWINPUT") == global, "Changed global environment.");
     var state = new XboxControllerState(XboxControllerButtons.A | XboxControllerButtons.B,
         23, 254, short.MinValue, short.MaxValue, 12345, -5432);
