@@ -1,7 +1,10 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Tomlyn;
+using Tomlyn.Model;
 using XemuTestRunner.Config;
+using XemuTestRunner.Control.Gamepad;
 using XemuTestRunner.Queue;
 using XemuTestRunner.Runtime;
 
@@ -29,6 +32,44 @@ var checks = new List<(string, Func<Task>)>
         Fixture.Require(await File.ReadAllTextAsync(f.Config) == original, "The source configuration changed.");
         Fixture.Require(session.Arguments.Count(x => x == "-config_path") == 1, "Config override is missing or duplicated.");
         Fixture.Require(session.Report.ConfigSha256 == Fixture.Hash(original), "Original config identity was lost.");
+        await session.CompleteAsync(true);
+    }),
+    ("controller save-as binds only the private effective config", async () =>
+    {
+        if (!OperatingSystem.IsLinux()) return;
+        using var f = new Fixture();
+        await File.AppendAllTextAsync(f.Config,
+            "\n[input]\nauto_bind = true\n[input.virtual_ports]\nport1_connected = 1\nport2_connected = 1\n[input.bindings]\nport1 = 'keyboard'\n");
+        var original = await File.ReadAllTextAsync(f.Config);
+        var job = new JobDefinition {
+            Id = "controller-save-as", Executable = "xemu.bin", RequireInput = true,
+            ControllerInput = new ControllerInputDefinition {
+                Backend = "native-os-gamepad", ControllerIndex = 0,
+                MappingProfile = "runner-xbox-port1-v1"
+            },
+            RuntimeState = new() { Isolation = new() {
+                CacheMode = "cold", CacheShaders = false,
+                RequirePrivateGuestState = false
+            }}
+        };
+        var session = await RunStorageSession.PrepareAsync(job,
+            Path.Combine(f.Package, "xemu.bin"), f.Package,
+            ["-config_path", f.Config], new Dictionary<string, string>(),
+            f.Result, CancellationToken.None);
+        var effective = await File.ReadAllTextAsync(session.Report.EffectiveConfigPath!);
+        var input = (TomlTable)Toml.ToModel(effective)["input"];
+        var ports = (TomlTable)input["virtual_ports"];
+        var bindings = (TomlTable)input["bindings"];
+        Fixture.Require(input["auto_bind"] is false &&
+            bindings["port1"] is "0600cc4158656d752052756e6e657200" &&
+            bindings["port1_driver"] is "usb-xbox-gamepad" &&
+            ports["port2_connected"] is 0L,
+            "The controller-mode revision did not bind the private virtual pad.");
+        Fixture.Require(await File.ReadAllTextAsync(f.Config) == original,
+            "Controller conversion rewrote the old keyboard-backed source.");
+        Fixture.Require(session.Report.ConfigSha256 == Fixture.Hash(original) &&
+            session.Report.EffectiveConfigSha256 != session.Report.ConfigSha256,
+            "Controller conversion lost its source/effective identity split.");
         await session.CompleteAsync(true);
     }),
     ("seeded cache copies exact pinned content into private writable state", async () =>

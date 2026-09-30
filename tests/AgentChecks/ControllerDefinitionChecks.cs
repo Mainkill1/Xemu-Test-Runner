@@ -40,6 +40,12 @@ internal static class ControllerDefinitionChecks
                 plan = new[] { new { type = "button", button = "A", durationMs = 250 } }
             });
             Require(valid.ControllerInput is { ControllerIndex: 0 }, "Native controller definition was lost.");
+            var missingIndexRejected = false;
+            try { _ = Load(new { id = "missing-index", executable = "xemu", requireInput = true,
+                runtimeState = new { isolation = new { cacheMode = "cold" } },
+                controllerInput = new { backend = "native-os-gamepad", mappingProfile = "runner-xbox-port1-v1" } }); }
+            catch (InvalidDataException) { missingIndexRejected = true; }
+            Require(missingIndexRejected, "An omitted controller index was treated as an explicit port selection.");
             foreach (var invalid in new[] {
                 new { backend = "keyboard", controllerIndex = 0, mappingProfile = "runner-xbox-port1-v1" },
                 new { backend = "native-os-gamepad", controllerIndex = 1, mappingProfile = "runner-xbox-port1-v1" },

@@ -111,15 +111,19 @@ await Check("native binding rejects keyboard and ambiguous port configuration", 
 {
     var path = Path.Combine(Path.GetTempPath(), "controller-binding-" + Guid.NewGuid().ToString("N") + ".toml");
     var sysfs = Path.Combine(Path.GetTempPath(), "controller-sysfs-" + Guid.NewGuid().ToString("N"));
-    void Device(string sysname)
+    void Device(string sysname, string name = "Xemu Runner Gamepad", string vendor = "0000",
+        string product = "0000", bool joystick = true)
     {
         var device = Path.Combine(sysfs, sysname);
         Directory.CreateDirectory(Path.Combine(device, "id"));
-        File.WriteAllText(Path.Combine(device, "name"), "Xemu Runner Gamepad\n");
+        Directory.CreateDirectory(Path.Combine(device, "capabilities"));
+        File.WriteAllText(Path.Combine(device, "name"), name + "\n");
         File.WriteAllText(Path.Combine(device, "id", "bustype"), "0006\n");
-        File.WriteAllText(Path.Combine(device, "id", "vendor"), "0000\n");
-        File.WriteAllText(Path.Combine(device, "id", "product"), "0000\n");
+        File.WriteAllText(Path.Combine(device, "id", "vendor"), vendor + "\n");
+        File.WriteAllText(Path.Combine(device, "id", "product"), product + "\n");
         File.WriteAllText(Path.Combine(device, "id", "version"), "0001\n");
+        File.WriteAllText(Path.Combine(device, "capabilities", "ev"), joystick ? "b\n" : "3\n");
+        File.WriteAllText(Path.Combine(device, "capabilities", "abs"), joystick ? "3\n" : "0\n");
     }
     try
     {
@@ -136,6 +140,23 @@ await Check("native binding rejects keyboard and ambiguous port configuration", 
         }
         catch (InvalidDataException) when (OperatingSystem.IsLinux()) { }
         catch (NotSupportedException) when (!OperatingSystem.IsLinux()) { }
+        Directory.Delete(Path.Combine(sysfs, "input43"), recursive: true);
+        Device("input43", name: "Xemu Runner 31363");
+        try
+        {
+            ControllerBindingPreflight.Verify(["-config_path", path], Path.GetDirectoryName(path)!, "input42", sysfs);
+            throw new InvalidOperationException("An SDL GUID collision was accepted.");
+        }
+        catch (InvalidDataException) when (OperatingSystem.IsLinux()) { }
+        catch (NotSupportedException) when (!OperatingSystem.IsLinux()) { }
+        Directory.Delete(Path.Combine(sysfs, "input43"), recursive: true);
+        Device("input43", vendor: "1234", product: "5678");
+        if (OperatingSystem.IsLinux())
+            ControllerBindingPreflight.Verify(["-config_path", path], Path.GetDirectoryName(path)!, "input42", sysfs);
+        Directory.Delete(Path.Combine(sysfs, "input43"), recursive: true);
+        Device("input43", joystick: false);
+        if (OperatingSystem.IsLinux())
+            ControllerBindingPreflight.Verify(["-config_path", path], Path.GetDirectoryName(path)!, "input42", sysfs);
         Directory.Delete(Path.Combine(sysfs, "input43"), recursive: true);
         await File.WriteAllTextAsync(path, valid.Replace("0600cc4158656d752052756e6e657200", "keyboard"));
         try

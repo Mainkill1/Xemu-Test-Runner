@@ -12,8 +12,8 @@ device after 250 ms without a valid report. The selected SDL environment is
 passed through the actual target launcher. Failed input is never retried through
 the keyboard provider.
 
-Native Linux runs currently require a private xemu configuration with these
-explicit values:
+For native Linux runs, the runner writes these values into the run-owned
+effective xemu configuration:
 
 ```toml
 [input]
@@ -28,11 +28,18 @@ port1_driver = 'usb-xbox-gamepad'
 ```
 
 `RuntimeState.Isolation` must be enabled so the runner produces a run-owned
-effective `-config_path`; the authored package configuration supplies these
-values. The preflight rejects a
-keyboard port, missing explicit binding, or this controller GUID on another
-port. It also checks that exactly one kernel input device has the helper's
-reported identity before launching xemu; a duplicate virtual pad is rejected.
+effective `-config_path`. The authored package config and existing saved
+keyboard tests are unchanged. The effective config disables automatic binding
+and ports 2–4. Preflight rejects a keyboard port, missing binding, or this
+controller GUID on another port. It checks the helper-reported kernel input
+device against the configured SDL identity before launch. A second joystick
+with a colliding SDL GUID is rejected even when its full name differs; a
+same-named keyboard or unrelated vendor ID is not mistaken for a duplicate.
+This check follows SDL2's documented GUID inputs (bus, full-name CRC16, and
+shortened name for zero-vendor devices), with independent runner code; the
+[SDL2 GUID source](https://github.com/libsdl-org/SDL/blob/SDL2/src/joystick/SDL_joystick.c)
+and [CRC16 source](https://github.com/libsdl-org/SDL/blob/SDL2/src/stdlib/SDL_crc16.c)
+are the compatibility reference.
 Windows native runs are rejected until the helper's device identity and
 the target xemu binding are qualified together. A ready OS device or an applied
 receipt alone does not prove guest consumption.
@@ -56,6 +63,10 @@ Example job fragment (this branch's proposed schema):
   ]
 }
 ```
+
+`ControllerIndex` must appear explicitly and currently accepts only `0`.
+Create a new saved test revision with `ControllerInput` to migrate a procedure;
+the old revision and any pinned baseline retain their previous identity.
 
 Adjacent `controller_state` steps replace the whole state without inserting a
 release pulse. The runner neutralizes before any other step or at the end.

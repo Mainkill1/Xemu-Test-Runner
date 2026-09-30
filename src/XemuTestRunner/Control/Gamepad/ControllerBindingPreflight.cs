@@ -1,12 +1,14 @@
 using Tomlyn;
 using Tomlyn.Model;
+using System.Text;
 
 namespace XemuTestRunner.Control.Gamepad;
 
 /// <summary>Reject keyboard or ambiguous OS devices before launching xemu.</summary>
 public static class ControllerBindingPreflight
 {
-    private const string LinuxGuid = "0600cc4158656d752052756e6e657200";
+    internal const string LinuxGuid = "0600cc4158656d752052756e6e657200";
+    private static readonly byte[] GuidNamePrefix = Encoding.UTF8.GetBytes("Xemu Runner");
 
     public static void Verify(IReadOnlyList<string> arguments, string workingDirectory,
         string? deviceSysname, string sysfsRoot = "/sys/class/input")
@@ -71,9 +73,7 @@ public static class ControllerBindingPreflight
             var name = Path.GetFileName(directory);
             if (!name.StartsWith("input", StringComparison.Ordinal) ||
                 name.Length <= 5 || !name[5..].All(char.IsAsciiDigit)) continue;
-            var namePath = Path.Combine(directory, "name");
-            if (!File.Exists(namePath) ||
-                File.ReadAllText(namePath).Trim() != "Xemu Runner Gamepad") continue;
+            if (!MatchesConfiguredGuid(directory)) continue;
             matching.Add(name);
         }
         if (matching.Count != 1 || matching[0] != deviceSysname)
@@ -85,6 +85,46 @@ public static class ControllerBindingPreflight
             ("product", "0000"), ("version", "0001") })
             if (File.ReadAllText(Path.Combine(devicePath, field)).Trim() != expected)
                 throw new InvalidDataException("Native controller kernel identity does not match the provisioned mapping.");
+    }
+
+    // SDL2's zero-vendor Linux identity includes the bus, CRC16 of the full
+    // product name, and the first eleven UTF-8 name bytes. A different full
+    // name can therefore still select the same xemu binding.
+    private static bool MatchesConfiguredGuid(string directory)
+    {
+        var id = Path.Combine(directory, "id");
+        if (!File.Exists(Path.Combine(directory, "name")) ||
+            !File.Exists(Path.Combine(id, "bustype")) ||
+            !File.Exists(Path.Combine(id, "vendor")) ||
+            !File.Exists(Path.Combine(directory, "capabilities", "ev")) ||
+            !File.Exists(Path.Combine(directory, "capabilities", "abs"))) return false;
+        if (File.ReadAllText(Path.Combine(id, "bustype")).Trim() != "0006" ||
+            File.ReadAllText(Path.Combine(id, "vendor")).Trim() != "0000") return false;
+        // A keyboard with the same name is not an SDL joystick. Require key
+        // and absolute events plus the two stick axes in the kernel bitmap.
+        var capabilities = Path.Combine(directory, "capabilities");
+        if (!HasBits(Path.Combine(capabilities, "ev"), 1, 3) ||
+            !HasBits(Path.Combine(capabilities, "abs"), 0, 1)) return false;
+        var name = File.ReadAllText(Path.Combine(directory, "name")).TrimEnd('\r', '\n', ' ');
+        var bytes = Encoding.UTF8.GetBytes(name);
+        if (bytes.Length < GuidNamePrefix.Length ||
+            !bytes.AsSpan(0, GuidNamePrefix.Length).SequenceEqual(GuidNamePrefix)) return false;
+        ushort crc = 0;
+        foreach (var value in bytes)
+        {
+            crc ^= value;
+            for (var bit = 0; bit < 8; bit++)
+                crc = (ushort)((crc & 1) == 0 ? crc >> 1 : (crc >> 1) ^ 0xa001);
+        }
+        return crc == 0x41cc;
+    }
+
+    private static bool HasBits(string path, params int[] bits)
+    {
+        var words = File.ReadAllText(path).Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (words.Length == 0 || !ulong.TryParse(words[^1], System.Globalization.NumberStyles.HexNumber,
+            System.Globalization.CultureInfo.InvariantCulture, out var lowWord)) return false;
+        return bits.All(bit => (lowWord & (1UL << bit)) != 0);
     }
 
     private static TomlTable Table(TomlTable parent, string key) =>

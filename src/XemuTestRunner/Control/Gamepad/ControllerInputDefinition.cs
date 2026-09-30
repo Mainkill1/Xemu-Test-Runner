@@ -3,7 +3,7 @@ namespace XemuTestRunner.Control.Gamepad;
 public sealed class ControllerInputDefinition
 {
     public string Backend { get; set; } = "";
-    public int ControllerIndex { get; set; }
+    public int? ControllerIndex { get; set; }
     public string MappingProfile { get; set; } = "";
 
     public void Validate()
@@ -11,7 +11,7 @@ public sealed class ControllerInputDefinition
         if (Backend != "native-os-gamepad")
             throw new InvalidDataException("ControllerInput.Backend must be native-os-gamepad.");
         if (ControllerIndex != 0)
-            throw new InvalidDataException("ControllerInput currently supports controller index 0 only.");
+            throw new InvalidDataException("ControllerInput requires an explicit controller index 0.");
         if (MappingProfile != "runner-xbox-port1-v1")
             throw new InvalidDataException("ControllerInput.MappingProfile is not a provisioned binding profile.");
     }
