@@ -31,7 +31,9 @@ port1_driver = 'usb-xbox-gamepad'
 effective `-config_path`; the authored package configuration supplies these
 values. The preflight rejects a
 keyboard port, missing explicit binding, or this controller GUID on another
-port. Windows native runs are rejected until the helper's device identity and
+port. It also checks that exactly one kernel input device has the helper's
+reported identity before launching xemu; a duplicate virtual pad is rejected.
+Windows native runs are rejected until the helper's device identity and
 the target xemu binding are qualified together. A ready OS device or an applied
 receipt alone does not prove guest consumption.
 

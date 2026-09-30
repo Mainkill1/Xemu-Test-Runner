@@ -29,7 +29,8 @@ public sealed class TargetLaunch : IAsyncDisposable
     public static async Task<TargetLaunch> StartAsync(
         DiagnosticsOptions diagnostics, JobDefinition job, string executable, string workingDirectory,
         IReadOnlyList<string> arguments, IReadOnlyDictionary<string, string> environment,
-        string resultDirectory, CancellationToken cancellationToken)
+        string resultDirectory, CancellationToken cancellationToken,
+        string? controllerDeviceSysname = null)
     {
         var storage = await RunStorageSession.PrepareAsync(job, executable, workingDirectory,
             arguments, environment, resultDirectory, cancellationToken).ConfigureAwait(false);
@@ -39,7 +40,8 @@ public sealed class TargetLaunch : IAsyncDisposable
             {
                 if (storage.Report.EffectiveConfigPath is null)
                     throw new InvalidDataException("Native controller input requires a run-owned xemu configuration.");
-                ControllerBindingPreflight.Verify(storage.Arguments, workingDirectory);
+                ControllerBindingPreflight.Verify(storage.Arguments, workingDirectory,
+                    controllerDeviceSysname);
             }
             if (job.LaunchMode.Equals("renderdoc", StringComparison.OrdinalIgnoreCase))
             {

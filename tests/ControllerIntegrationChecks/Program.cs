@@ -110,16 +110,37 @@ await Check("refresh failure interrupts a long held action", async () =>
 await Check("native binding rejects keyboard and ambiguous port configuration", async () =>
 {
     var path = Path.Combine(Path.GetTempPath(), "controller-binding-" + Guid.NewGuid().ToString("N") + ".toml");
+    var sysfs = Path.Combine(Path.GetTempPath(), "controller-sysfs-" + Guid.NewGuid().ToString("N"));
+    void Device(string sysname)
+    {
+        var device = Path.Combine(sysfs, sysname);
+        Directory.CreateDirectory(Path.Combine(device, "id"));
+        File.WriteAllText(Path.Combine(device, "name"), "Xemu Runner Gamepad\n");
+        File.WriteAllText(Path.Combine(device, "id", "bustype"), "0006\n");
+        File.WriteAllText(Path.Combine(device, "id", "vendor"), "0000\n");
+        File.WriteAllText(Path.Combine(device, "id", "product"), "0000\n");
+        File.WriteAllText(Path.Combine(device, "id", "version"), "0001\n");
+    }
     try
     {
+        Device("input42");
         var valid = "[input]\nauto_bind = false\n[input.virtual_ports]\nport1_connected = 1\n[input.bindings]\nport1 = '0600cc4158656d752052756e6e657200'\nport1_driver = 'usb-xbox-gamepad'\n";
         await File.WriteAllTextAsync(path, valid);
         if (OperatingSystem.IsLinux())
-            ControllerBindingPreflight.Verify(["-config_path", path], Path.GetDirectoryName(path)!);
+            ControllerBindingPreflight.Verify(["-config_path", path], Path.GetDirectoryName(path)!, "input42", sysfs);
+        Device("input43");
+        try
+        {
+            ControllerBindingPreflight.Verify(["-config_path", path], Path.GetDirectoryName(path)!, "input42", sysfs);
+            throw new InvalidOperationException("A duplicate virtual controller was accepted.");
+        }
+        catch (InvalidDataException) when (OperatingSystem.IsLinux()) { }
+        catch (NotSupportedException) when (!OperatingSystem.IsLinux()) { }
+        Directory.Delete(Path.Combine(sysfs, "input43"), recursive: true);
         await File.WriteAllTextAsync(path, valid.Replace("0600cc4158656d752052756e6e657200", "keyboard"));
         try
         {
-            ControllerBindingPreflight.Verify(["-config_path", path], Path.GetDirectoryName(path)!);
+            ControllerBindingPreflight.Verify(["-config_path", path], Path.GetDirectoryName(path)!, "input42", sysfs);
             throw new InvalidOperationException("Keyboard binding was accepted for native input.");
         }
         catch (InvalidDataException) when (OperatingSystem.IsLinux()) { }
@@ -127,13 +148,13 @@ await Check("native binding rejects keyboard and ambiguous port configuration", 
         await File.WriteAllTextAsync(path, valid + "port2 = '0600cc4158656d752052756e6e657200'\n");
         try
         {
-            ControllerBindingPreflight.Verify(["-config_path", path], Path.GetDirectoryName(path)!);
+            ControllerBindingPreflight.Verify(["-config_path", path], Path.GetDirectoryName(path)!, "input42", sysfs);
             throw new InvalidOperationException("Ambiguous port mapping was accepted.");
         }
         catch (InvalidDataException) when (OperatingSystem.IsLinux()) { }
         catch (NotSupportedException) when (!OperatingSystem.IsLinux()) { }
     }
-    finally { File.Delete(path); }
+    finally { File.Delete(path); Directory.Delete(sysfs, recursive: true); }
 });
 
 await Check("manual full-state input rejects stale sessions and uses the same pad", async () =>

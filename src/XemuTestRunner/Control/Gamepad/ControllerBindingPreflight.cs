@@ -3,12 +3,13 @@ using Tomlyn.Model;
 
 namespace XemuTestRunner.Control.Gamepad;
 
-/// <summary>Reject an xemu launch that would keep port one on the keyboard.</summary>
+/// <summary>Reject keyboard or ambiguous OS devices before launching xemu.</summary>
 public static class ControllerBindingPreflight
 {
     private const string LinuxGuid = "0600cc4158656d752052756e6e657200";
 
-    public static void Verify(IReadOnlyList<string> arguments, string workingDirectory)
+    public static void Verify(IReadOnlyList<string> arguments, string workingDirectory,
+        string? deviceSysname, string sysfsRoot = "/sys/class/input")
     {
         if (!OperatingSystem.IsLinux())
             throw new NotSupportedException(
@@ -58,6 +59,32 @@ public static class ControllerBindingPreflight
             if (bindings.TryGetValue($"port{port}", out var other) &&
                 other is string value && value.Equals(LinuxGuid, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException("Native controller GUID is bound to multiple xemu ports.");
+
+        // The helper reports the kernel input incarnation it created. SDL's
+        // GUID alone cannot distinguish two devices with that same identity.
+        if (deviceSysname is null || !deviceSysname.StartsWith("input", StringComparison.Ordinal) ||
+            deviceSysname.Length <= 5 || !deviceSysname[5..].All(char.IsAsciiDigit))
+            throw new InvalidDataException("Native helper did not report a valid Linux input device identity.");
+        var matching = new List<string>();
+        foreach (var directory in Directory.EnumerateDirectories(sysfsRoot, "input*"))
+        {
+            var name = Path.GetFileName(directory);
+            if (!name.StartsWith("input", StringComparison.Ordinal) ||
+                name.Length <= 5 || !name[5..].All(char.IsAsciiDigit)) continue;
+            var namePath = Path.Combine(directory, "name");
+            if (!File.Exists(namePath) ||
+                File.ReadAllText(namePath).Trim() != "Xemu Runner Gamepad") continue;
+            matching.Add(name);
+        }
+        if (matching.Count != 1 || matching[0] != deviceSysname)
+            throw new InvalidDataException(
+                "Native controller binding is ambiguous: expected exactly the helper-owned Xemu Runner Gamepad device.");
+        var devicePath = Path.Combine(sysfsRoot, deviceSysname, "id");
+        foreach (var (field, expected) in new[] {
+            ("bustype", "0006"), ("vendor", "0000"),
+            ("product", "0000"), ("version", "0001") })
+            if (File.ReadAllText(Path.Combine(devicePath, field)).Trim() != expected)
+                throw new InvalidDataException("Native controller kernel identity does not match the provisioned mapping.");
     }
 
     private static TomlTable Table(TomlTable parent, string key) =>

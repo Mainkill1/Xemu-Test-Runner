@@ -323,6 +323,7 @@ public sealed class RunnerEngine
         string? controllerHelperSha256 = null;
         string? controllerMappingSha256 = null;
         string? controllerEnvironmentSha256 = null;
+        string? controllerDeviceSysname = null;
         WorkloadEvaluation workloadEvaluation = new(
             CorrectnessOutcome.NotEvaluated,
             EvidenceOutcome.NotEvaluated,
@@ -560,8 +561,10 @@ public sealed class RunnerEngine
                 {
                     var helper = Path.Combine(AppContext.BaseDirectory, "tools",
                         OperatingSystem.IsWindows() ? "xemu-gamepad.exe" : "xemu-gamepad");
+                    var nativeProvider = new NativeGamepadProvider(helper);
                     controllerSession = await ControllerInputSession.StartAsync(
-                        new NativeGamepadProvider(helper), ct).ConfigureAwait(false);
+                        nativeProvider, ct).ConfigureAwait(false);
+                    controllerDeviceSysname = nativeProvider.DeviceSysname;
                     controllerSession.ConfigureTarget(launchEnvironment);
                     var effectiveControllerEnvironment = OperatingSystem.IsWindows()
                         ? launchEnvironment["SDL_JOYSTICK_RAWINPUT"]
@@ -626,7 +629,8 @@ public sealed class RunnerEngine
                     effectiveArguments,
                     launchEnvironment,
                     resultDirectory,
-                    ct).ConfigureAwait(false);
+                    ct,
+                    controllerDeviceSysname).ConfigureAwait(false);
                 process = launch.Process;
                 started = true;
 
@@ -1055,8 +1059,12 @@ public sealed class RunnerEngine
                     {
                         schemaVersion = 1,
                         runId,
+                        sessionId = controllerSession.SessionId,
+                        controllerIndex = job?.ControllerInput?.ControllerIndex,
+                        protocolVersion = 1,
                         backend = controllerSession.Provider.Name,
                         nativeBackend = (controllerSession.Provider as NativeGamepadProvider)?.Backend,
+                        helperDeviceSysname = controllerDeviceSysname,
                         helperSha256 = controllerHelperSha256,
                         mappingSha256 = controllerMappingSha256,
                         effectiveControllerEnvironmentSha256 = controllerEnvironmentSha256,
@@ -1227,6 +1235,7 @@ public sealed class RunnerEngine
             inputManifest = inputManifest is null
                 ? null
                 : "input-manifest.json",
+            controllerInput = controllerSession is null ? null : "controller-input.json",
             runtimeDirectory = runtimeState?.Directory,
             hostInventory =
                 hostInventory is null

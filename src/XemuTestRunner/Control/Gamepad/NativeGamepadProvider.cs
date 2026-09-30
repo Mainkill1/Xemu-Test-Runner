@@ -58,6 +58,7 @@ public sealed class NativeGamepadProvider : IXemuGamepadProvider
     }
     public int? WorkerProcessId { get; private set; }
     public string? Backend { get; private set; }
+    public string? DeviceSysname { get; private set; }
     public NativeGamepadReceipt? LastApplied { get; private set; }
 
     public async Task CreateAsync(int controllerCount, CancellationToken cancellationToken)
@@ -103,6 +104,7 @@ public sealed class NativeGamepadProvider : IXemuGamepadProvider
                 if ((_buttons & 0xf3ff) != 0xf3ff || (_buttons & 0x800) != 0)
                     throw new InvalidDataException("Provider cannot supply the required standard controller buttons.");
                 Backend = expectedBackend;
+                DeviceSysname = root.GetProperty("deviceSysname").GetString();
                 _ready = true;
             }
             catch (Exception error)
