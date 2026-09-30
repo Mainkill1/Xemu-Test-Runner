@@ -6,9 +6,10 @@ namespace XemuTestRunner.Control.Gamepad;
 
 /// <summary>
 /// Owns a user-mode OS gamepad helper, not a custom driver or xemu hook.
-/// Send fresh full states regularly (including while holding a state); the native
-/// 250ms watchdog removes the device if the supervisor stops sending. This class
-/// never manufactures heartbeats that could keep stale browser input alive.
+/// Send fresh full states regularly (including while holding a state). After
+/// 250ms without a fresh non-neutral report the native helper releases held
+/// controls but retains controller ownership; EOF/stop/process exit removes it.
+/// This class never manufactures heartbeats that could keep stale browser input alive.
 /// </summary>
 public sealed class NativeGamepadProvider : IXemuGamepadProvider
 {

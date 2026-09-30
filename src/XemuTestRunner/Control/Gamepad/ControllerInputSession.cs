@@ -8,8 +8,9 @@ public sealed record ControllerTransition(
     NativeGamepadReceipt Receipt);
 
 /// <summary>
-/// Owns one OS-visible pad throughout a run. Refreshes even neutral state so
-/// the native 250 ms watchdog cannot remove a healthy waiting session.
+/// Owns one OS-visible pad throughout a run. The 40 ms refresh cadence keeps
+/// held input current; a missed 250 ms freshness window releases stale controls
+/// without disconnecting the controller while this session still owns its pipe.
 /// </summary>
 public sealed class ControllerInputSession : IAsyncDisposable
 {

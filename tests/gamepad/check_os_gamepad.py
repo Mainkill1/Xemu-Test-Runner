@@ -180,7 +180,7 @@ async def roundtrip(executable, teardown):
         elif teardown == 'backpressure':
             await producer.stop_heartbeat()
             # Fill stdout without reading receipts. The native device thread
-            # must expire even while the protocol thread is blocked in output.
+            # must release stale held input even while protocol output blocks.
             payload = ''.join('state ' + str(producer.sequence + i) +
                               ' 4096 255 255 10000 10000 -10000 -10000\n'
                               for i in range(1, 20_001)).encode()

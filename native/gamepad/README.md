@@ -33,7 +33,9 @@ authorized Windows capability/elevation context or provisioned Linux permissions
 The helper never automatically elevates privileges or installs a driver.
 
 A native receipt proves successful OS submission, not guest consumption. Once
-non-neutral input begins, absence of a fresh valid state for 250ms removes the
-device, even if the protocol thread is blocked writing output. A fully neutral
-state may stay connected through a scheduling stall without holding input. The caller must explicitly
+non-neutral input begins, absence of a fresh valid state for 250ms forces a
+neutral report, even if the protocol thread is blocked writing output. The
+OS-visible controller remains connected while its supervisor pipe remains owned;
+EOF, stop, or process exit removes it. A fully neutral state may stay connected
+through a scheduling stall without holding input. The caller must explicitly
 refresh a replay hold; stale browser samples must not receive invented refreshes.
