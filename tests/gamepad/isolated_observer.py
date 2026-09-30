@@ -58,9 +58,15 @@ class IsolatedObserver:
         if module == '__main__':
             module = Path(sys.modules[module].__file__).stem
         executable = os.environ.get('GAMEPAD_OBSERVER_PYTHON', sys.executable)
+        # Readback is not a benchmark. Do not let an emulated consumer outrank
+        # the normal-priority producer and native worker on constrained CI VMs.
+        # This only lowers our own test child; it changes no host policy, timer,
+        # production target, worker deadline, state assertion or receipt check.
+        flags = subprocess.BELOW_NORMAL_PRIORITY_CLASS if os.name == 'nt' else 0
         self._process = subprocess.Popen(
             [executable, str(Path(__file__).resolve()), '--serve', module, factory.__name__],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding='utf-8')
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding='utf-8',
+            creationflags=flags)
         self._reader = threading.Thread(target=self._read, name='observer-replies')
         self._reader.start()
         try:
