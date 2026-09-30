@@ -30,7 +30,7 @@ public sealed partial class EmbeddedHttpServer
         {
             var command = JsonSerializer.Deserialize<ControllerStateRequest>(bytes, ConfigLoader.JsonOptions)
                 ?? throw new InvalidDataException("Empty controller state request.");
-            if (command.State is null || command.SessionId.Length != 32 ||
+            if (command.State is null || command.SessionId is not { Length: 32 } ||
                 command.DurationMs is < 1 or > 60000)
                 throw new InvalidDataException("Controller state requires SessionId, State, and DurationMs 1..60000.");
             _ = command.State.ToState();

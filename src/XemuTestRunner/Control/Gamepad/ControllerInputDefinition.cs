@@ -21,7 +21,8 @@ public static class ControllerButtonMap
 {
     public static XboxControllerState Resolve(string name)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (string.IsNullOrWhiteSpace(name))
+            throw new InvalidDataException("Controller button name must not be empty.");
         var button = name.Trim().ToLowerInvariant() switch
         {
             "a" => XboxControllerButtons.A,
@@ -34,8 +35,8 @@ public static class ControllerButtonMap
             "dpaddown" => XboxControllerButtons.DPadDown,
             "dpadleft" => XboxControllerButtons.DPadLeft,
             "dpadright" => XboxControllerButtons.DPadRight,
-            "leftstick" => XboxControllerButtons.LeftStick,
-            "rightstick" => XboxControllerButtons.RightStick,
+            "leftstick" or "lstick" => XboxControllerButtons.LeftStick,
+            "rightstick" or "rstick" => XboxControllerButtons.RightStick,
             "leftshoulder" or "white" => XboxControllerButtons.LeftShoulder,
             "rightshoulder" or "black" => XboxControllerButtons.RightShoulder,
             _ => XboxControllerButtons.None

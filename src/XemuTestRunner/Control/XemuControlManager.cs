@@ -305,7 +305,8 @@ public sealed class XemuControlManager : IDisposable
         string button,
         int? holdMs,
         CancellationToken cancellationToken,
-        bool record = true)
+        bool record = true,
+        string? sessionId = null)
     {
         var session = GetSession();
         var controller = session.Controller;
@@ -340,6 +341,12 @@ public sealed class XemuControlManager : IDisposable
         {
             if (!ReferenceEquals(GetSession(), session))
                 throw new InvalidOperationException("The controller session changed before input was submitted.");
+            // A manual native request must identify the session observed by its caller.
+            // Check under the input gate so queued/stale requests cannot enter a new test.
+            if (record && ((controller is not null &&
+                    !string.Equals(controller.SessionId, sessionId, StringComparison.Ordinal)) ||
+                (controller is null && !string.IsNullOrEmpty(sessionId))))
+                throw new InvalidOperationException("The controller session changed; refresh before sending input.");
             if (controller is not null && record && Volatile.Read(ref _scriptedPlanActive) != 0)
                 throw new InvalidOperationException(
                     "Manual controller input cannot change an active scripted test.");
