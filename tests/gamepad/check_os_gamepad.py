@@ -199,7 +199,8 @@ async def roundtrip(executable, teardown):
             print('FAIL controller diagnostics', json.dumps({
                 'workerExit': producer.proc.poll(), 'heartbeatFailure': repr(producer.failure),
                 'lastReceipt': producer.last_receipt, 'receiptTimes': producer.receipt_times,
-                'failureTime': time.monotonic(), 'requestedState': producer.state}), flush=True)
+                'failureTime': time.monotonic(), 'requestedState': producer.state,
+                'pipeBoundary': producer.snapshot()}), flush=True)
             if os.name == 'nt':
                 from check_xinput import snapshot
                 print('INDEPENDENT XINPUT DIAGNOSTICS', json.dumps(snapshot()), flush=True)

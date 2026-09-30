@@ -22,6 +22,29 @@ class Producer:
         self._changed = threading.Condition()
         self._pending = deque()
         self._sender_done = False
+        self._sending_sequence = None
+        self._last_send_sequence = 0
+        self._last_send_started_at = None
+        self._last_send_completed_at = None
+
+    def snapshot(self):
+        """Capture the sender/receipt boundary without treating writes as receipts."""
+        with self._changed:
+            return {
+                'sequence': self.sequence,
+                'sendingSequence': self._sending_sequence,
+                'lastSendSequence': self._last_send_sequence,
+                'lastSendStartedAt': self._last_send_started_at,
+                'lastSendCompletedAt': self._last_send_completed_at,
+                'lastReceiptSequence': (self.last_receipt or {}).get('sequence', 0),
+                'pendingCount': len(self._pending),
+                'oldestPendingSequence': self._pending[0] if self._pending else None,
+                'senderAlive': self.pulse.is_alive() if self.pulse else False,
+                'receiptReaderAlive': self.receipts.is_alive() if self.receipts else False,
+                'senderDone': self._sender_done,
+                'failure': repr(self.failure),
+                'sampledAt': time.monotonic(),
+            }
 
     @classmethod
     async def start(cls, executable):
@@ -65,11 +88,17 @@ class Producer:
                     self.sequence += 1
                     sequence = self.sequence
                     self._pending.append(sequence)
+                    self._sending_sequence = sequence
+                    self._last_send_started_at = started
                     self._changed.notify_all()
                 state = tuple(self.state)
                 line = 'state ' + ' '.join(map(str, (sequence,) + state)) + '\n'
                 self.proc.stdin.write(line.encode())
                 self.proc.stdin.flush()
+                with self._changed:
+                    self._last_send_sequence = sequence
+                    self._last_send_completed_at = time.monotonic()
+                    self._sending_sequence = None
                 self._stopped.wait(max(0, 0.025 - (time.monotonic() - started)))
         except BaseException as error:
             self._fail(error)

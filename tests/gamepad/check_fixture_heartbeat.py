@@ -53,6 +53,11 @@ async def check():
         time.sleep(0.4)
         assert sender.sequence - before >= 8, 'Consumer blocking starved controller heartbeats'
         assert sender.failure is None, sender.failure
+        diagnostic = sender.snapshot()
+        assert diagnostic['lastSendCompletedAt'] is not None
+        assert diagnostic['lastSendSequence'] >= before + 8
+        assert diagnostic['lastReceiptSequence'] > 0
+        assert diagnostic['pendingCount'] >= 0
         print('PASS heartbeat sender progresses while consumer thread blocks')
     finally:
         await sender.dispose()
