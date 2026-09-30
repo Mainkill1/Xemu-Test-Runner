@@ -56,6 +56,9 @@ class Observer:
         assert self.init(0x2000) == 0, self.error()
         self.pad = None
         self.pump()
+        self.record_baseline()
+
+    def record_baseline(self):
         self.baseline_count = self.count()
         if sys.platform == 'linux':
             self.expected_guid = os.environ['SDL_GAMECONTROLLERCONFIG'].split(',')[0]
