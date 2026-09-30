@@ -21,7 +21,8 @@ using Clock=std::chrono::steady_clock;
 using namespace std::chrono_literals;
 namespace {
 // The OS device belongs to this thread (including WinRT apartment lifetime).
-// Its independent deadline still neutralizes/destroys input if stdout is blocked.
+// Its independent deadline releases stale held input even if protocol I/O is
+// blocked. Only explicit ownership loss (EOF/stop/process exit) removes it.
 class Session {
     std::mutex mutex_;
     std::condition_variable changed_;
@@ -45,13 +46,23 @@ class Session {
             std::unique_lock<std::mutex> lock(mutex_);
             path_=device.path(); initialized_=true; changed_.notify_all();
             auto deadline=Clock::time_point::max();
+            auto neutralize_stale_input=[&] {
+                lock.unlock(); device.apply({}); lock.lock();
+                std::cerr<<"Controller freshness expired; held input neutralized; ownership retained;"
+                    <<timeout_context()<<'\n';
+                deadline=Clock::time_point::max();
+            };
             while (!stop_) {
-                if (!changed_.wait_until(lock,deadline,[&] {return stop_ || pending_.has_value();}))
-                    throw std::runtime_error("Controller heartbeat expired; device neutralized and removed;"+timeout_context());
+                if (!changed_.wait_until(lock,deadline,[&] {return stop_ || pending_.has_value();})) {
+                    neutralize_stale_input();
+                    continue;
+                }
                 if (stop_) break;
-                // A queued request must not resurrect a session after its deadline.
+                // A report that arrives after the held-state freshness deadline
+                // is still valid ownership. Release the stale controls first,
+                // then apply the fresh report instead of disconnecting the pad.
                 if (Clock::now()>=deadline)
-                    throw std::runtime_error("Controller deadline expired;"+timeout_context());
+                    neutralize_stale_input();
                 const auto packet=*pending_;
                 lock.unlock(); device.apply(packet.state); lock.lock();
                 applied_=packet.sequence;
