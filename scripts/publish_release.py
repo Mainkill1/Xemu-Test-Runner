@@ -12,11 +12,21 @@ def gh(*arguments, check=True):
 
 def read_release(repository, tag):
     result = gh('api', f'repos/{repository}/releases/tags/{tag}', check=False)
-    if result.returncode:
-        if 'HTTP 404' in result.stderr:
-            return None
+    if not result.returncode:
+        return json.loads(result.stdout)
+    if 'HTTP 404' not in result.stderr:
         raise RuntimeError(result.stderr)
-    return json.loads(result.stdout)
+
+    # GitHub's release-by-tag endpoint does not expose a newly created draft.
+    # Drafts are visible in the authenticated releases collection, so recover
+    # the exact tag there before deciding that no release exists.
+    result = gh('api', f'repos/{repository}/releases?per_page=100', check=False)
+    if result.returncode:
+        raise RuntimeError(result.stderr)
+    return next(
+        (release for release in json.loads(result.stdout)
+         if release.get('tag_name') == tag),
+        None)
 
 
 def main():
