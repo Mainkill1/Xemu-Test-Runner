@@ -1,13 +1,10 @@
 name: controller-gamepad
 on:
   pull_request:
-    paths:
-      - 'native/gamepad/**'
-      - 'tests/gamepad/**'
-      - 'tests/GamepadProviderChecks/**'
-      - 'src/XemuTestRunner/Control/Gamepad/**'
-      - '.github/workflows/controller-gamepad.yml'
+  push:
+    branches: [main]
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -34,10 +31,21 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
           architecture: ${{ matrix.python }}
+      - name: Verify checkout and observer scheduling regression
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python tests/gamepad/check_observer_isolation.py
       - name: Provision built-in Linux input on isolated CI host
         if: runner.os == 'Linux'
         run: |
@@ -73,8 +81,10 @@ jobs:
       - run: ctest --test-dir gamepad-build -C Release --output-on-failure
       - name: Independent XInput readback
         if: runner.os == 'Windows'
-        shell: pwsh
-        run: python tests/gamepad/check_xinput.py gamepad-build/Release/xemu-gamepad.exe 2>&1 | Tee-Object gamepad-xinput-qualification.log
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tests/gamepad/check_xinput.py gamepad-build/Release/xemu-gamepad.exe 2>&1 | tee gamepad-xinput-qualification.log
       - name: SDL2 input and cleanup qualification
         if: always() && steps.native-build.outcome == 'success' && matrix.arch == 'x64'
         shell: bash
@@ -82,7 +92,7 @@ jobs:
           set -euo pipefail
           exe=gamepad-build/xemu-gamepad
           if [ "$RUNNER_OS" = Windows ]; then exe=gamepad-build/Release/xemu-gamepad.exe; fi
-          python tests/gamepad/check_os_gamepad.py "$exe" 2>&1 | tee gamepad-qualification.log
+          python tests/gamepad/qualify_isolated.py sdl2 "$exe" 2>&1 | tee gamepad-qualification.log
       - uses: actions/checkout@v7
         if: always() && steps.native-build.outcome == 'success'
         with:
@@ -108,7 +118,7 @@ jobs:
           set -euo pipefail
           exe=gamepad-build/xemu-gamepad
           if [ "$RUNNER_OS" = Windows ]; then exe=gamepad-build/Release/xemu-gamepad.exe; fi
-          python tests/gamepad/check_sdl3.py "$exe" 2>&1 | tee gamepad-sdl3-qualification.log
+          python tests/gamepad/qualify_isolated.py sdl3 "$exe" 2>&1 | tee gamepad-sdl3-qualification.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -124,6 +134,15 @@ jobs:
             gamepad-build/xemu-gamepad
             gamepad-build/linux-sdl-mapping.txt
           if-no-files-found: warn
+      - name: Archive exact tested source
+        if: always() && runner.os == 'Linux'
+        run: git archive --format=tar.gz -o runner-source.tar.gz HEAD
+      - uses: actions/upload-artifact@v7
+        if: always() && runner.os == 'Linux'
+        with:
+          name: runner-source-${{ github.event.pull_request.head.sha || github.sha }}
+          path: runner-source.tar.gz
+          if-no-files-found: error
 
   windows-server-capability:
     name: Server capability refusal (not controller qualification)
@@ -131,6 +150,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
@@ -154,8 +176,14 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
       - name: Verify actual managed provider using isolated pipe fixtures
         run: dotnet run --project tests/GamepadProviderChecks -c Release
+      - name: Verify controller execution integration when present
+        if: hashFiles('tests/ControllerIntegrationChecks/*.csproj') != ''
+        run: dotnet run --project tests/ControllerIntegrationChecks -c Release

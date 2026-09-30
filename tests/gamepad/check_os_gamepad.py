@@ -13,7 +13,7 @@ import time
 import threading
 from producer import Producer
 
-TEARDOWNS = ('stop', 'watchdog', 'malformed', 'kill', 'eof', 'partial', 'stale', 'backpressure')
+TEARDOWNS = ('stop', 'watchdog', 'neutral_stall', 'malformed', 'kill', 'eof', 'partial', 'stale', 'backpressure')
 
 
 def configure_mapping():
@@ -56,24 +56,43 @@ class Observer:
         assert self.init(0x2000) == 0, self.error()
         self.pad = None
         self.pump()
-        assert self.count() == 0, 'Use an isolated qualification host with no physical/other virtual controllers.'
+        self.record_baseline()
+
+    def record_baseline(self):
+        self.baseline_count = self.count()
+        if sys.platform == 'linux':
+            self.expected_guid = os.environ['SDL_GAMECONTROLLERCONFIG'].split(',')[0]
+            assert all(bytes(self.guid(i)).hex() != self.expected_guid
+                       for i in range(self.baseline_count)), \
+                'A preexisting controller has the test helper GUID.'
+        else:
+            assert self.baseline_count == 0, \
+                'Use an isolated Windows qualification host with no other controllers.'
 
     async def connect(self):
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
             self.pump()
-            if self.count() == 1:
-                guid = bytes(self.guid(0)).hex()
+            if self.count() == self.baseline_count + 1:
+                if sys.platform == 'linux':
+                    matches = [i for i in range(self.count())
+                               if bytes(self.guid(i)).hex() == self.expected_guid]
+                    assert len(matches) == 1, ('Ambiguous helper GUID', matches)
+                    index = matches[0]
+                else:
+                    index = 0
+                guid = bytes(self.guid(index)).hex()
                 mapping = None
                 if sys.platform == 'linux':
-                    assert self.joystick_name(0) == b'Xemu Runner Gamepad'
+                    assert self.joystick_name(index) == b'Xemu Runner Gamepad'
                     mapping = os.environ['SDL_GAMECONTROLLERCONFIG']
                     assert mapping.split(',')[0] == guid, ('Installed mapping GUID mismatch', guid)
                     # No SDL_AddMapping call: unmodified xemu gets the same launch environment.
-                self.pad = self.open(0)
+                self.pad = self.open(index)
                 if self.pad:
-                    assert not self.virtual(0), 'Process-local SDL virtual joystick cannot qualify OS injection.'
-                    return {'controllerName': self.name(self.pad).decode(), 'guid': guid, 'sdlMapping': mapping}
+                    assert not self.virtual(index), 'Process-local SDL virtual joystick cannot qualify OS injection.'
+                    return {'controllerName': self.name(self.pad).decode(), 'guid': guid,
+                            'sdlMapping': mapping, 'preexistingControllers': self.baseline_count}
             await asyncio.sleep(0.01)
         raise AssertionError(('OS gamepad not visible through SDL', self.count(), self.error()))
 
@@ -139,6 +158,16 @@ async def roundtrip(executable, teardown):
             await producer.stop_heartbeat()
             await asyncio.to_thread(producer.proc.wait, 3)
             assert producer.proc.returncode == 3
+        elif teardown == 'neutral_stall':
+            await apply_and_observe([0] * 7)
+            await producer.stop_heartbeat()
+            await asyncio.sleep(0.5)
+            observer.pump()
+            assert producer.proc.poll() is None and observer.attached(observer.pad), (
+                'A stale neutral state disconnected a safe controller session')
+            producer.proc.stdin.close()
+            await asyncio.to_thread(producer.proc.wait, 3)
+            assert producer.proc.returncode == 0
         elif teardown == 'kill':
             await producer.stop_heartbeat()
             producer.proc.kill(); await asyncio.to_thread(producer.proc.wait, 3)

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "pad-device.h"
+#include "freshness-policy.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -55,7 +56,7 @@ class Session {
                 lock.unlock(); device.apply(packet.state); lock.lock();
                 applied_=packet.sequence;
                 applied_us_=std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count();
-                pending_.reset(); deadline=Clock::now()+250ms; changed_.notify_all();
+                pending_.reset(); deadline=xtr::freshness_deadline(packet.state, Clock::now()); changed_.notify_all();
             }
         } catch (...) {
             std::lock_guard<std::mutex> lock(mutex_); failure_=std::current_exception(); initialized_=true; changed_.notify_all();

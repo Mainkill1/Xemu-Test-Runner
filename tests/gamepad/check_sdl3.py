@@ -65,7 +65,7 @@ class Observer3(checks.Observer):
         assert initialize(0x2000), self.error()
         self.pad = None
         self.pump()
-        assert self.count() == 0, 'Use an isolated qualification host with no existing controllers.'
+        self.record_baseline()
 
 
 async def main():
