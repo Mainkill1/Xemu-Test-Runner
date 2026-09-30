@@ -156,8 +156,14 @@ async def roundtrip(executable, teardown):
         assert producer.failure is None, producer.failure
         if teardown == 'watchdog':
             await producer.stop_heartbeat()
+            # Freshness loss releases any held controls but must not destroy
+            # controller ownership while the supervisor pipe is still alive.
+            await asyncio.sleep(0.55)
+            assert producer.proc.poll() is None, 'Freshness timeout destroyed the controller session'
+            await observer.expect([0] * 7)
+            producer.proc.stdin.close()
             await asyncio.to_thread(producer.proc.wait, 3)
-            assert producer.proc.returncode == 3
+            assert producer.proc.returncode == 0
         elif teardown == 'neutral_stall':
             await apply_and_observe([0] * 7)
             await producer.stop_heartbeat()
@@ -187,9 +193,9 @@ async def roundtrip(executable, teardown):
             writer = threading.Thread(target=flood, name='backpressure-fixture', daemon=True)
             writer.start()
             try:
-                await observer.disconnected()
+                await observer.expect([0] * 7)
                 assert producer.proc.poll() is None and writer.is_alive(), (
-                    'Did not establish blocked output while device disappeared')
+                    'Did not establish blocked output while stale held input was neutralized')
             finally:
                 if producer.proc.poll() is None:
                     producer.proc.kill()
@@ -202,6 +208,7 @@ async def roundtrip(executable, teardown):
                 producer.proc.stdin.close()
             elif teardown == 'partial':
                 producer.proc.stdin.write(b'state 9999 '); producer.proc.stdin.flush()
+                producer.proc.stdin.close()
             else:
                 producer.proc.stdin.write(('state ' + str(producer.sequence) + ' 0 0 0 0 0 0 0\n').encode())
                 producer.proc.stdin.flush()
