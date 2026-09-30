@@ -39,6 +39,18 @@ def snapshot():
     return result
 
 
+def enable_probe():
+    """Failure-only probe: distinguish disabled XInput reporting from lost input."""
+    if os.name != 'nt':
+        return None
+    dll = C.WinDLL('XInput1_4.dll')
+    enable = dll.XInputEnable
+    enable.argtypes, enable.restype = [C.c_int], None
+    enable(1)
+    time.sleep(0.05)
+    return snapshot()
+
+
 async def main():
     assert os.name == 'nt', 'XInput qualification requires Windows'
     dll = C.WinDLL('XInput1_4.dll')

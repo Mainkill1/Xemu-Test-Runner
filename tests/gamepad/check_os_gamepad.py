@@ -203,8 +203,10 @@ async def roundtrip(executable, teardown):
                 'failureTime': time.monotonic(), 'requestedState': producer.state,
                 'pipeBoundary': producer.snapshot()}), flush=True)
             if os.name == 'nt':
-                from check_xinput import snapshot
+                from check_xinput import snapshot, enable_probe
                 print('INDEPENDENT XINPUT DIAGNOSTICS', json.dumps(snapshot()), flush=True)
+                if producer.proc.poll() is None and producer.last_receipt is not None:
+                    print('XINPUT ENABLE FAILURE PROBE', json.dumps(enable_probe()), flush=True)
         raise
     finally:
         if producer:
