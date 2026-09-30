@@ -15,8 +15,13 @@ if(WIN32)
   if(NOT MSVC)
     message(FATAL_ERROR "Windows gamepad adapter requires MSVC and Windows SDK C++/WinRT, not a custom driver")
   endif()
-  target_compile_definitions(xemu-gamepad PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-  target_link_libraries(xemu-gamepad PRIVATE windowsapp)
+  # Both targets compile worker.cpp, including its Windows pipe and WinRT paths.
+  # Keep their SDK macro policy identical: max() must remain a chrono member,
+  # not the two-argument Windows SDK macro.
+  foreach(target xemu-gamepad gamepad-worker-fixture)
+    target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(${target} PRIVATE windowsapp)
+  endforeach()
 endif()
 foreach(target xemu-gamepad gamepad-core-checks gamepad-worker-fixture)
   if(MSVC)
