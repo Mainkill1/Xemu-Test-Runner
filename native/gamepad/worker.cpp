@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "pad-device.h"
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <exception>
@@ -30,6 +31,13 @@ class Session {
     bool initialized_=false, stop_=false;
     std::uint64_t applied_=0;
     std::int64_t applied_us_=0;
+    std::atomic<std::uint64_t> input_bytes_{0};
+    std::atomic<std::uint64_t> parsed_sequence_{0};
+    std::string timeout_context() const {
+        return " lastApplied="+std::to_string(applied_)+
+            " lastParsed="+std::to_string(parsed_sequence_.load())+
+            " inputBytes="+std::to_string(input_bytes_.load());
+    }
     void run() {
         try {
             xtr::PadDevice device;
@@ -38,10 +46,11 @@ class Session {
             auto deadline=Clock::time_point::max();
             while (!stop_) {
                 if (!changed_.wait_until(lock,deadline,[&] {return stop_ || pending_.has_value();}))
-                    throw std::runtime_error("Controller heartbeat expired; device neutralized and removed");
+                    throw std::runtime_error("Controller heartbeat expired; device neutralized and removed;"+timeout_context());
                 if (stop_) break;
                 // A queued request must not resurrect a session after its deadline.
-                if (Clock::now()>=deadline) throw std::runtime_error("Controller deadline expired");
+                if (Clock::now()>=deadline)
+                    throw std::runtime_error("Controller deadline expired;"+timeout_context());
                 const auto packet=*pending_;
                 lock.unlock(); device.apply(packet.state); lock.lock();
                 applied_=packet.sequence;
@@ -57,6 +66,8 @@ public:
     ~Session() { {std::lock_guard<std::mutex> lock(mutex_); stop_=true; changed_.notify_all();} thread_.join(); }
     void ready() { std::unique_lock<std::mutex> lock(mutex_); changed_.wait(lock,[&] {return initialized_;}); if(failure_)std::rethrow_exception(failure_); }
     std::string path() {std::lock_guard<std::mutex> lock(mutex_);return path_;}
+    void input_byte() {input_bytes_.fetch_add(1,std::memory_order_relaxed);}
+    void parsed(std::uint64_t sequence) {parsed_sequence_.store(sequence,std::memory_order_relaxed);}
     void healthy() {std::lock_guard<std::mutex> lock(mutex_); if(failure_)std::rethrow_exception(failure_);}
     std::int64_t apply(xtr::PadPacket packet) {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -107,10 +118,12 @@ int main(int argc,char** argv) {
             session.healthy(); if(!std::cout) throw std::runtime_error("Supervisor output pipe failed");
             int result=input(c); if(result==0)continue;
             if(result<0) {if(!line.empty())throw std::runtime_error("Partial input command at EOF");break;}
+            session.input_byte();
             if(c=='\n') {
                 if(!line.empty()&&line.back()=='\r')line.pop_back();
                 if(line=="stop")break;
                 auto packet=xtr::parse_packet(line);
+                session.parsed(packet.sequence);
                 auto timestamp=session.apply(packet);
                 std::cout<<"{\"type\":\"applied\",\"sequence\":"<<packet.sequence<<",\"appliedAtUs\":"<<timestamp<<"}"<<std::endl;
                 line.clear();
