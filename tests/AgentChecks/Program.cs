@@ -7,6 +7,7 @@ if (args.Contains("--client", StringComparer.Ordinal))
 else
 {
     SharedInputChecks.Register(checks);
+    ControllerDefinitionChecks.Register(checks);
     PerformanceIdentityChecks.Register(checks);
     EmulatorIdentityChecks.Register(checks);
     PerformanceAnalysisChecks.Register(checks);

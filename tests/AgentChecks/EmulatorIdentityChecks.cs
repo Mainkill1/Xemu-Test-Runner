@@ -33,6 +33,33 @@ internal static class EmulatorIdentityChecks
 
     public static void Register(List<(string Name, Func<Task> Run)> checks)
     {
+        checks.Add(("direct xemu test selects the emulator payload from a launcher application", async () =>
+        {
+            await using var host = new AgentFixture();
+            await Setup(host);
+            await host.Json("/api/v1/jobs", HttpMethod.Post, new
+            {
+                id = "direct-seed", job = new { id = "direct-seed", executable = "xemu", timeoutSeconds = 10 },
+                files = new[] { new { path = "xemu", length = 8, sha256 = Digest("baseline"), executable = true } }
+            });
+            using (var content = new ByteArrayContent(Encoding.UTF8.GetBytes("baseline")))
+            {
+                using var response = await host.Client.PutAsync("/api/v1/jobs/direct-seed/files/xemu", content);
+                Require(response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync());
+            }
+            var baked = await host.Json("/api/v1/tests/direct-smoke/bake", HttpMethod.Post,
+                new { sourceJobId = "direct-seed" });
+            var revision = baked.GetProperty("revision").GetString();
+            await host.Json("/api/v1/test-runs", HttpMethod.Post,
+                new { id = "direct-candidate", applicationJobId = "wrapper-app", testId = "direct-smoke", revision });
+            await host.Json("/api/v1/test-runs/direct-candidate/start", HttpMethod.Post, new { }, HttpStatusCode.Accepted);
+            await RequestedTestChecks.Until(host, "direct-candidate", "queuedForExecution");
+            var candidate = await host.Json("/api/v1/jobs/direct-candidate");
+            Require(candidate.GetProperty("job").GetProperty("expectedExecutableSha256").GetString() == Digest("candidate"),
+                "The selected executable hash belongs to the launcher, not the emulator payload.");
+            Require(await host.Client.GetStringAsync("/api/v1/jobs/direct-candidate/files/xemu") == "candidate",
+                "The selected executable contains the launcher instead of the emulator payload.");
+        }));
         checks.Add(("baking a wrapper cannot omit its declared emulator build slot", async () =>
         {
             await using var host = new AgentFixture();

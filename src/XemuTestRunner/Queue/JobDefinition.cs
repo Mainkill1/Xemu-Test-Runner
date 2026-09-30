@@ -1,5 +1,6 @@
 using System.Text.Json;
 using XemuTestRunner.Config;
+using XemuTestRunner.Control.Gamepad;
 using XemuTestRunner.Diagnostics;
 using XemuTestRunner.Runtime;
 
@@ -25,6 +26,8 @@ public sealed class JobDefinition
     public List<DiagnosticRecipe> Diagnostics { get; set; } = [];
     public RuntimeStateDefinition RuntimeState { get; set; } = new();
     public List<InputIdentityDefinition> Inputs { get; set; } = [];
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ControllerInputDefinition? ControllerInput { get; set; }
     public WorkloadContract Workload { get; set; } = new();
     public ExperimentDefinition Experiment { get; set; } = new();
     public OperationPolicyDefinition Operations { get; set; } = new();
@@ -70,6 +73,16 @@ public sealed class JobDefinition
             throw new InvalidDataException("ExpectedExecutableSha256 must be 64 hexadecimal characters.");
         if (job.LaunchMode.Trim().ToLowerInvariant() is not ("direct" or "renderdoc"))
             throw new InvalidDataException("LaunchMode must be direct or renderdoc.");
+        if (job.ControllerInput is not null)
+        {
+            job.ControllerInput.Validate();
+            if (!job.RequireInput)
+                throw new InvalidDataException("Native ControllerInput requires RequireInput.");
+            if (!job.LaunchMode.Equals("direct", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Native ControllerInput currently requires direct launch mode.");
+            if (job.RuntimeState.Isolation is null)
+                throw new InvalidDataException("Native ControllerInput requires managed private xemu configuration through RuntimeState.Isolation.");
+        }
         if (job.SnapshotName is not null && (job.SnapshotName.Length is < 1 or > 200 ||
             job.SnapshotName.Any(ch => char.IsControl(ch) || ch is '\r' or '\n')))
             throw new InvalidDataException("SnapshotName contains invalid characters.");
@@ -274,6 +287,12 @@ public sealed class JobDefinition
         {
             var step = job.Plan[stepIndex];
             (step ?? throw new InvalidDataException("Null plan step.")).Validate(job.Id);
+            if (step.Type.Equals("controller_state", StringComparison.OrdinalIgnoreCase) &&
+                job.ControllerInput is null)
+                throw new InvalidDataException("controller_state requires native ControllerInput.");
+            if (job.ControllerInput is not null &&
+                step.Type.Equals("button", StringComparison.OrdinalIgnoreCase))
+                _ = ControllerButtonMap.Resolve(step.Button!);
 
             if (step.Type.Equals("quit", StringComparison.OrdinalIgnoreCase) &&
                 stepIndex != job.Plan.Count - 1)
@@ -327,6 +346,8 @@ public sealed class JobStep
     public string Type { get; set; } = "";
     public int DelayMs { get; set; }
     public string? Button { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ControllerStateDefinition? State { get; set; }
     public int DurationMs { get; set; } = 100;
     public string? Name { get; set; }
     public string? DiagnosticId { get; set; }
@@ -343,6 +364,11 @@ public sealed class JobStep
             case "button":
                 if (string.IsNullOrWhiteSpace(Button) || DurationMs is < 1 or > 60000)
                     throw new InvalidDataException("button requires Button and DurationMs between 1 and 60000.");
+                break;
+            case "controller_state":
+                if (State is null || DelayMs != 0 || DurationMs is < 1 or > 60000)
+                    throw new InvalidDataException("controller_state requires State and DurationMs between 1 and 60000.");
+                _ = State.ToState();
                 break;
             case "screenshot": break;
             case "pause": break;

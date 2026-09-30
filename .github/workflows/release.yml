@@ -1,0 +1,120 @@
+name: release
+on:
+  push:
+    branches: [main]
+    paths: ['release-version.txt']
+  pull_request:
+    paths:
+      - 'release-version.txt'
+      - '.github/workflows/release.yml'
+      - 'scripts/release_package.py'
+      - 'scripts/publish_release.py'
+      - 'tests/test_release_package.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: runner-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  controller:
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/controller-gamepad.yml
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            rid: linux-x64
+          - os: windows-latest
+            rid: win-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Verify source identity and package regressions
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          python -m unittest discover -s tests -p test_release_package.py -v
+          python -m py_compile scripts/publish_release.py
+      - name: Run all managed qualification suites
+        run: |
+          set -euo pipefail
+          for project in OperationChecks RunnerChecks DiskAssetChecks AgentChecks StateChecks CrashChecks FinalizationChecks XisoChecks GamepadProviderChecks ControllerIntegrationChecks ControllerRepairChecks; do
+            dotnet run --project "tests/$project" -c Release
+          done
+          python -m unittest discover -s tests -p 'test_runner_api*.py' -v
+          dotnet run --project tests/AgentChecks -c Release --no-build -- --client
+      - name: Verify browser contracts
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check playwright==1.55.0
+          python -m playwright install --with-deps chromium
+          python scripts/check-browser.py
+          python scripts/check-viewers.py
+          python scripts/check-xiso.py
+      - name: Publish self-contained runner with exact release version
+        env:
+          RID: ${{ matrix.rid }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '\r\n' < release-version.txt)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          dotnet publish src/XemuTestRunner/XemuTestRunner.csproj -c Release -r "$RID" --self-contained true -p:PublishSingleFile=true -p:Version="$version" -p:InformationalVersion="$version+$SOURCE_SHA" -p:IncludeSourceRevisionInInformationalVersion=false -o "publish/$RID"
+      - name: Build and test native Linux helper
+        if: runner.os == 'Linux'
+        run: cmake -S native/gamepad -B release-gamepad -DCMAKE_BUILD_TYPE=Release
+      - name: Build and test native Windows helper
+        if: runner.os == 'Windows'
+        run: cmake -S native/gamepad -B release-gamepad -A x64
+      - run: cmake --build release-gamepad --config Release --parallel 4
+      - run: ctest --test-dir release-gamepad -C Release --output-on-failure
+      - run: cmake --install release-gamepad --config Release --prefix "${{ github.workspace }}/publish/${{ matrix.rid }}"
+      - name: Smoke-test version and assemble complete platform package
+        run: python scripts/release_package.py --rid "${{ matrix.rid }}" --sha "$SOURCE_SHA"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-package-${{ matrix.rid }}
+          path: dist/*
+          if-no-files-found: error
+  publish:
+    needs: [build, controller]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-package-*
+          merge-multiple: true
+          path: dist
+      - name: Verify and publish both platforms through a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/publish_release.py

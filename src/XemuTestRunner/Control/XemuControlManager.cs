@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
 using XemuTestRunner.Config;
+using XemuTestRunner.Control.Gamepad;
 using XemuTestRunner.Queue;
 using XemuTestRunner.Runtime;
 
@@ -22,6 +23,7 @@ public sealed class XemuControlManager : IDisposable
     private DateTimeOffset? _recordingLastActionEndUtc;
     private string? _recordingSavedFile;
     private bool _quitRequested;
+    private int _scriptedPlanActive;
     private readonly List<JobStep> _recordedSteps = [];
 
     public XemuControlManager(XemuControlOptions options) => _options = options;
@@ -41,11 +43,12 @@ public sealed class XemuControlManager : IDisposable
                 _session?.ProcessId,
                 _session?.QmpHost,
                 _session?.QmpPort,
-                _session?.Input.Name,
-                _session?.Input.IsAvailable ?? false,
+                _session?.Controller?.Provider.Name ?? _session?.Input.Name,
+                _session?.Controller?.IsReady ?? _session?.Input.IsAvailable ?? false,
                 _recording,
                 _recordingStartedUtc,
-                _recordedSteps.Count);
+                _recordedSteps.Count,
+                _session?.Controller?.SessionId);
         }
     }
 
@@ -70,7 +73,8 @@ public sealed class XemuControlManager : IDisposable
         }
     }
 
-    public void Begin(Process process, string resultDirectory, int qmpPort)
+    public void Begin(Process process, string resultDirectory, int qmpPort,
+        ControllerInputSession? controller = null)
     {
         IXemuInputProvider input = CreateInputProvider(process.Id);
 
@@ -82,7 +86,8 @@ public sealed class XemuControlManager : IDisposable
                 _options.QmpHost,
                 qmpPort,
                 resultDirectory,
-                input);
+                input,
+                controller);
             _paused = false;
             _resumeSignal.TrySetResult(true);
             _resumeSignal = CompletedSignal();
@@ -300,15 +305,29 @@ public sealed class XemuControlManager : IDisposable
         string button,
         int? holdMs,
         CancellationToken cancellationToken,
-        bool record = true)
+        bool record = true,
+        string? sessionId = null)
     {
         var session = GetSession();
-
-        if (!_options.ButtonKeys.TryGetValue(button, out var hostKey))
-            throw new InvalidDataException($"Unknown Xbox button '{button}'.");
-
-        if (!session.Input.IsAvailable)
-            throw new InvalidOperationException($"Configured input provider '{session.Input.Name}' is unavailable.");
+        var controller = session.Controller;
+        string? hostKey = null;
+        XboxControllerState controllerState = default;
+        if (controller is null)
+        {
+            if (!_options.ButtonKeys.TryGetValue(button, out hostKey))
+                throw new InvalidDataException($"Unknown Xbox button '{button}'.");
+            if (!session.Input.IsAvailable)
+                throw new InvalidOperationException($"Configured input provider '{session.Input.Name}' is unavailable.");
+        }
+        else
+        {
+            controllerState = ControllerButtonMap.Resolve(button);
+            if (!controller.IsReady)
+                throw new InvalidOperationException("Native controller input is unavailable.");
+            if (record && Volatile.Read(ref _scriptedPlanActive) != 0)
+                throw new InvalidOperationException(
+                    "Manual controller input cannot change an active scripted test.");
+        }
 
         var duration = holdMs.GetValueOrDefault(_options.DefaultButtonHoldMs);
         if (duration <= 0)
@@ -320,7 +339,22 @@ public sealed class XemuControlManager : IDisposable
         await _inputGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await session.Input.PressAsync(hostKey, duration, cancellationToken).ConfigureAwait(false);
+            if (!ReferenceEquals(GetSession(), session))
+                throw new InvalidOperationException("The controller session changed before input was submitted.");
+            // A manual native request must identify the session observed by its caller.
+            // Check under the input gate so queued/stale requests cannot enter a new test.
+            if (record && ((controller is not null &&
+                    !string.Equals(controller.SessionId, sessionId, StringComparison.Ordinal)) ||
+                (controller is null && !string.IsNullOrEmpty(sessionId))))
+                throw new InvalidOperationException("The controller session changed; refresh before sending input.");
+            if (controller is not null && record && Volatile.Read(ref _scriptedPlanActive) != 0)
+                throw new InvalidOperationException(
+                    "Manual controller input cannot change an active scripted test.");
+            if (controller is null)
+                await session.Input.PressAsync(hostKey!, duration, cancellationToken).ConfigureAwait(false);
+            else
+                await controller.PressStateAsync(controllerState, duration, cancellationToken)
+                    .ConfigureAwait(false);
         }
         finally
         {
@@ -361,6 +395,38 @@ public sealed class XemuControlManager : IDisposable
         {
             _inputGate.Release();
         }
+    }
+
+    public async Task PressControllerStateAsync(
+        ControllerStateDefinition state,
+        int durationMs,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        if (durationMs is < 1 or > 60000)
+            throw new InvalidDataException("Controller state DurationMs must be between 1 and 60000.");
+        var value = state.ToState();
+        var session = GetSession();
+        var controller = session.Controller ??
+            throw new InvalidOperationException("The active test does not use native controller input.");
+        await WaitIfPausedAsync(cancellationToken).ConfigureAwait(false);
+        var started = DateTimeOffset.UtcNow;
+        await _inputGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!ReferenceEquals(GetSession(), session) ||
+                !string.Equals(controller.SessionId, sessionId, StringComparison.Ordinal))
+                throw new InvalidOperationException("The controller session changed; refresh before sending input.");
+            if (Volatile.Read(ref _scriptedPlanActive) != 0)
+                throw new InvalidOperationException("Manual controller input cannot change an active scripted test.");
+            await controller.PressStateAsync(value, durationMs, cancellationToken).ConfigureAwait(false);
+        }
+        finally { _inputGate.Release(); }
+        RecordManualStep(new JobStep
+        {
+            Type = "controller_state", State = state, DurationMs = durationMs
+        }, started, DateTimeOffset.UtcNow);
     }
 
     public RecordedPlanSnapshot StartRecording()
@@ -436,9 +502,20 @@ public sealed class XemuControlManager : IDisposable
             return;
 
         await WaitUntilReadyAsync(cancellationToken).ConfigureAwait(false);
-
-        foreach (var step in plan)
+        var planController = GetSession().Controller;
+        await _inputGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
+            if (Interlocked.CompareExchange(ref _scriptedPlanActive, 1, 0) != 0)
+                throw new InvalidOperationException("A scripted input plan is already active.");
+        }
+        finally { _inputGate.Release(); }
+        try
+        {
+
+        for (var stepIndex = 0; stepIndex < plan.Count; stepIndex++)
+        {
+            var step = plan[stepIndex];
             cancellationToken.ThrowIfCancellationRequested();
 
             switch (step.Type.Trim().ToLowerInvariant())
@@ -456,6 +533,32 @@ public sealed class XemuControlManager : IDisposable
                         step.DurationMs,
                         cancellationToken,
                         record: false).ConfigureAwait(false);
+                    break;
+
+                case "controller_state":
+                    var controller = GetSession().Controller ??
+                        throw new InvalidOperationException("controller_state requires an active native controller.");
+                    await WaitIfPausedAsync(cancellationToken).ConfigureAwait(false);
+                    await _inputGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    var completedState = false;
+                    try
+                    {
+                        await controller.HoldStateAsync(step.State!.ToState(), step.DurationMs,
+                            cancellationToken).ConfigureAwait(false);
+                        if (stepIndex + 1 == plan.Count ||
+                            !plan[stepIndex + 1].Type.Equals("controller_state", StringComparison.OrdinalIgnoreCase))
+                            await controller.NeutralizeAsync(cancellationToken).ConfigureAwait(false);
+                        completedState = true;
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            if (!completedState)
+                                await controller.ReleaseAfterInterruptionAsync().ConfigureAwait(false);
+                        }
+                        finally { _inputGate.Release(); }
+                    }
                     break;
 
                 case "screenshot":
@@ -514,6 +617,21 @@ public sealed class XemuControlManager : IDisposable
                         cancellationToken).ConfigureAwait(false);
                     break;
             }
+        }
+        }
+        finally
+        {
+            try
+            {
+                if (planController is not null)
+                {
+                    using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    await _inputGate.WaitAsync(cleanup.Token).ConfigureAwait(false);
+                    try { await planController.ReleaseAfterInterruptionAsync().ConfigureAwait(false); }
+                    finally { _inputGate.Release(); }
+                }
+            }
+            finally { Interlocked.Exchange(ref _scriptedPlanActive, 0); }
         }
     }
 
@@ -823,6 +941,7 @@ public sealed class XemuControlManager : IDisposable
         Type = step.Type,
         DelayMs = step.DelayMs,
         Button = step.Button,
+        State = step.State,
         DurationMs = step.DurationMs,
         Name = step.Name,
         DiagnosticId = step.DiagnosticId,
@@ -861,7 +980,8 @@ public sealed class XemuControlManager : IDisposable
         string QmpHost,
         int QmpPort,
         string ResultDirectory,
-        IXemuInputProvider Input) : IDisposable
+        IXemuInputProvider Input,
+        ControllerInputSession? Controller) : IDisposable
     {
         public int ProcessId => Process.Id;
         public void Dispose() => Input.Dispose();
@@ -890,7 +1010,8 @@ public sealed record ControlSnapshot(
     bool InputAvailable,
     bool Recording,
     DateTimeOffset? RecordingStartedUtc,
-    int RecordedSteps);
+    int RecordedSteps,
+    string? ControllerSessionId = null);
 
 public sealed record RecordedPlanSnapshot(
     bool Recording,

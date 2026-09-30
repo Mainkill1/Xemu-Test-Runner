@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using XemuTestRunner.Control.Gamepad;
 using XemuTestRunner.Queue;
 using XemuTestRunner.Runtime;
 
@@ -28,12 +29,20 @@ public sealed class TargetLaunch : IAsyncDisposable
     public static async Task<TargetLaunch> StartAsync(
         DiagnosticsOptions diagnostics, JobDefinition job, string executable, string workingDirectory,
         IReadOnlyList<string> arguments, IReadOnlyDictionary<string, string> environment,
-        string resultDirectory, CancellationToken cancellationToken)
+        string resultDirectory, CancellationToken cancellationToken,
+        string? controllerDeviceSysname = null)
     {
         var storage = await RunStorageSession.PrepareAsync(job, executable, workingDirectory,
             arguments, environment, resultDirectory, cancellationToken).ConfigureAwait(false);
         try
         {
+            if (job.ControllerInput is not null)
+            {
+                if (storage.Report.EffectiveConfigPath is null)
+                    throw new InvalidDataException("Native controller input requires a run-owned xemu configuration.");
+                await ControllerBindingPreflight.VerifySettledAsync(storage.Arguments, workingDirectory,
+                    controllerDeviceSysname, cancellationToken).ConfigureAwait(false);
+            }
             if (job.LaunchMode.Equals("renderdoc", StringComparison.OrdinalIgnoreCase))
             {
                 if (!diagnostics.Enabled) throw new InvalidOperationException("RenderDoc launch requires Diagnostics.Enabled.");

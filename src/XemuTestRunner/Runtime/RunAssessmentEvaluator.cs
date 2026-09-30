@@ -40,7 +40,7 @@ public static class RunAssessmentEvaluator
     {
         "crashed" => ExecutionOutcome.Crashed,
         "completed" => ExecutionOutcome.Completed,
-        "failed" or "plan_failed" or "incomplete_plan" => ExecutionOutcome.Failed,
+        "failed" or "plan_failed" or "incomplete_plan" or "input_failure" => ExecutionOutcome.Failed,
         "timeout" => ExecutionOutcome.TimedOut,
         "cancelled" => ExecutionOutcome.Cancelled,
         "unresponsive" => ExecutionOutcome.Unresponsive,

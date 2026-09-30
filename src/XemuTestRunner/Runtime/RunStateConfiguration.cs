@@ -3,6 +3,7 @@ using System.Text.Json;
 using Tomlyn;
 using Tomlyn.Model;
 using XemuTestRunner.Config;
+using XemuTestRunner.Control.Gamepad;
 using XemuTestRunner.Queue;
 
 namespace XemuTestRunner.Runtime;
@@ -43,6 +44,22 @@ internal static class RunStateConfiguration
         try { model = Toml.ToModel(Encoding.UTF8.GetString(bytes)); }
         catch (Exception error) when (error is not OperationCanceledException && error is not OutOfMemoryException)
         { throw new InvalidDataException("The supplied xemu TOML could not be parsed.", error); }
+        if (job.ControllerInput is not null && OperatingSystem.IsLinux())
+        {
+            // A controller-mode revision gets its own effective binding. The
+            // saved package config and keyboard-backed revisions stay intact.
+            var input = Table(model, "input");
+            input["auto_bind"] = false;
+            var ports = Table(input, "virtual_ports");
+            ports["port1_connected"] = 1L;
+            for (var port = 2; port <= 4; port++)
+                ports[$"port{port}_connected"] = 0L;
+            var bindings = Table(input, "bindings");
+            bindings["port1"] = ControllerBindingPreflight.LinuxGuid;
+            bindings["port1_driver"] = "usb-xbox-gamepad";
+            for (var port = 2; port <= 4; port++)
+                bindings.Remove($"port{port}");
+        }
         Table(model, "perf")["cache_shaders"] = policy.CacheShaders;
         var runtime = ReadRuntime(resultDirectory);
         report.RuntimeSeeds = runtime?.Files ?? [];

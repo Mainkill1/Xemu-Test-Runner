@@ -5,6 +5,9 @@
 *.user
 *.suo
 publish/
+.build/
+__pycache__/
+*.pyc
 workspace/
 .DS_Store
 runner.json

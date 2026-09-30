@@ -161,6 +161,10 @@ public sealed partial class EmbeddedHttpServer
                     if (!await EnsureOperationAllowedAsync(stream, "input", keepAlive, ct))
                         return false;
                     return await HandleButtonPressAsync(stream, request, keepAlive, ct);
+                case "/api/v1/input/controller-state":
+                    if (!await EnsureOperationAllowedAsync(stream, "input", keepAlive, ct))
+                        return false;
+                    return await HandleControllerStateAsync(stream, request, keepAlive, ct);
                 case "/api/v1/xemu/pause":
                     if (!await EnsureOperationAllowedAsync(stream, "pause", keepAlive, ct))
                         return false;
@@ -377,7 +381,7 @@ public sealed partial class EmbeddedHttpServer
                 throw new InvalidDataException(
                     "Button is required and DurationMs must be between 1 and 60000.");
             Activity.Mark("manual_input", new { input.Button, input.DurationMs });
-            await _control.PressButtonAsync(input.Button, input.DurationMs, ct);
+            await _control.PressButtonAsync(input.Button, input.DurationMs, ct, sessionId: input.SessionId);
             await WriteJsonAsync(stream, 200, "OK", new { accepted = true, button = input.Button, durationMs = input.DurationMs }, keepAlive, ct);
         }
         catch (Exception e) when (e is JsonException or InvalidDataException)
@@ -406,5 +410,5 @@ public sealed partial class EmbeddedHttpServer
         }
         return true;
     }
-    private sealed class ButtonPressRequest { public string Button { get; set; } = ""; public int? DurationMs { get; set; } }
+    private sealed class ButtonPressRequest { public string Button { get; set; } = ""; public int? DurationMs { get; set; } public string? SessionId { get; set; } }
 }
