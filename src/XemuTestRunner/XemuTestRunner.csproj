@@ -18,6 +18,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="RunnerChecks" />
     <InternalsVisibleTo Include="CrashChecks" />
+    <InternalsVisibleTo Include="ControllerIntegrationChecks" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="../../tools/*.py">
