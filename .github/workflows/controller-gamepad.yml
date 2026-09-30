@@ -35,9 +35,23 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@v7
+        id: observer-python
         with:
           python-version: '3.13'
           architecture: ${{ matrix.python }}
+      - uses: actions/setup-python@v7
+        if: runner.os == 'Windows'
+        with:
+          python-version: '3.13'
+          architecture: arm64
+      - name: Preserve independent consumer architecture
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          OBSERVER_PYTHON: ${{ steps.observer-python.outputs.python-path }}
+        run: |
+          "GAMEPAD_OBSERVER_PYTHON=$env:OBSERVER_PYTHON" >> $env:GITHUB_ENV
+          python -c "import platform; assert platform.machine().upper() == 'ARM64'"
       - name: Verify checkout and observer scheduling regression
         shell: bash
         env:
