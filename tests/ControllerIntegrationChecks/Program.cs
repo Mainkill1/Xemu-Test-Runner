@@ -247,6 +247,48 @@ await Check("native binding rejects keyboard and ambiguous port configuration", 
     finally { File.Delete(path); Directory.Delete(sysfs, recursive: true); }
 });
 
+await Check("native binding waits for its sysfs device but rejects a persistent duplicate", async () =>
+{
+    if (!OperatingSystem.IsLinux()) return;
+    var root = Path.Combine(Path.GetTempPath(), "controller-settle-" + Guid.NewGuid().ToString("N"));
+    var config = Path.Combine(root, "xemu.toml");
+    var sysfs = Path.Combine(root, "sysfs");
+    Directory.CreateDirectory(sysfs);
+    await File.WriteAllTextAsync(config,
+        "[input]\nauto_bind = false\n[input.virtual_ports]\nport1_connected = 1\n[input.bindings]\n" +
+        "port1 = '0600cc4158656d752052756e6e657200'\nport1_driver = 'usb-xbox-gamepad'\n");
+    void Device(string sysname)
+    {
+        var device = Path.Combine(sysfs, sysname);
+        Directory.CreateDirectory(Path.Combine(device, "id"));
+        Directory.CreateDirectory(Path.Combine(device, "capabilities"));
+        File.WriteAllText(Path.Combine(device, "name"), "Xemu Runner Gamepad\n");
+        foreach (var (field, value) in new[] { ("bustype", "0006"), ("vendor", "0000"),
+                     ("product", "0000"), ("version", "0001") })
+            File.WriteAllText(Path.Combine(device, "id", field), value + "\n");
+        foreach (var (field, value) in new[] { ("ev", "b"), ("abs", "3"),
+                     ("key", "1000000000000 0 0 0 0") })
+            File.WriteAllText(Path.Combine(device, "capabilities", field), value + "\n");
+    }
+    try
+    {
+        var create = Task.Run(async () => { await Task.Delay(80); Device("input42"); });
+        await ControllerBindingPreflight.VerifySettledAsync(["-config_path", config], root,
+            "input42", CancellationToken.None, sysfs, TimeSpan.FromMilliseconds(500));
+        await create;
+        Device("input43");
+        var rejected = false;
+        try
+        {
+            await ControllerBindingPreflight.VerifySettledAsync(["-config_path", config], root,
+                "input42", CancellationToken.None, sysfs, TimeSpan.FromMilliseconds(150));
+        }
+        catch (InvalidDataException error) when (error.Message.Contains("ambiguous")) { rejected = true; }
+        Assert(rejected, "A persistent duplicate controller was accepted after settling.");
+    }
+    finally { Directory.Delete(root, recursive: true); }
+});
+
 await Check("manual full-state input rejects stale sessions and uses the same pad", async () =>
 {
     var fake = new FakeProvider();

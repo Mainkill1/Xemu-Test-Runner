@@ -40,8 +40,8 @@ public sealed class TargetLaunch : IAsyncDisposable
             {
                 if (storage.Report.EffectiveConfigPath is null)
                     throw new InvalidDataException("Native controller input requires a run-owned xemu configuration.");
-                ControllerBindingPreflight.Verify(storage.Arguments, workingDirectory,
-                    controllerDeviceSysname);
+                await ControllerBindingPreflight.VerifySettledAsync(storage.Arguments, workingDirectory,
+                    controllerDeviceSysname, cancellationToken).ConfigureAwait(false);
             }
             if (job.LaunchMode.Equals("renderdoc", StringComparison.OrdinalIgnoreCase))
             {

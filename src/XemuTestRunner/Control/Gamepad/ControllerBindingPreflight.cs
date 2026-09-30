@@ -1,5 +1,6 @@
 using Tomlyn;
 using Tomlyn.Model;
+using System.Diagnostics;
 using System.Text;
 
 namespace XemuTestRunner.Control.Gamepad;
@@ -9,6 +10,31 @@ public static class ControllerBindingPreflight
 {
     internal const string LinuxGuid = "0600cc4158656d752052756e6e657200";
     private static readonly byte[] GuidNamePrefix = Encoding.UTF8.GetBytes("Xemu Runner");
+
+    public static async Task VerifySettledAsync(IReadOnlyList<string> arguments, string workingDirectory,
+        string? deviceSysname, CancellationToken cancellationToken, string sysfsRoot = "/sys/class/input",
+        TimeSpan? maximumWait = null)
+    {
+        var wait = maximumWait ?? TimeSpan.FromSeconds(2);
+        if (wait < TimeSpan.Zero || wait > TimeSpan.FromSeconds(5))
+            throw new ArgumentOutOfRangeException(nameof(maximumWait));
+        var timer = Stopwatch.StartNew();
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                Verify(arguments, workingDirectory, deviceSysname, sysfsRoot);
+                return;
+            }
+            catch (InvalidDataException error) when (
+                error.Message.StartsWith("Native controller binding is ambiguous:", StringComparison.Ordinal) &&
+                timer.Elapsed < wait)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(25), cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
 
     public static void Verify(IReadOnlyList<string> arguments, string workingDirectory,
         string? deviceSysname, string sysfsRoot = "/sys/class/input")
