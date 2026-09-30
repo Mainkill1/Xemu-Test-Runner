@@ -1,0 +1,46 @@
+name: stage-reviewed-repair
+on:
+  push:
+    branches: [feat/controller-execution-pr71]
+    paths: ['.ci/reviewed-repair.patch', '.github/workflows/stage-reviewed-repair.yml']
+permissions:
+  contents: write
+jobs:
+  stage:
+    if: github.repository == 'Mainkill1/Xemu-Test-Runner'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Apply the reviewed source patch
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          sed -i 's/^ diff --git /diff --git /' .ci/reviewed-repair.patch
+          git apply --check --index --exclude='.github/workflows/*' .ci/reviewed-repair.patch
+          git apply --index --exclude='.github/workflows/*' .ci/reviewed-repair.patch
+          git rm -f .ci/reviewed-repair.patch
+          git diff --cached --check
+      - name: Compile and exercise actual repaired controller code
+        run: |
+          set -euo pipefail
+          dotnet run --project tests/ControllerRepairChecks -c Release
+          dotnet run --project tests/ControllerIntegrationChecks -c Release
+          dotnet run --project tests/AgentChecks -c Release
+          python -m unittest discover -s tests -p test_release_package.py -v
+      - name: Retain source in a staging branch, never write main or the PR ref
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: bind manual controller inputs to their target session and validate release packaging'
+          git push origin "HEAD:refs/heads/repair/reviewed-$GITHUB_SHA"
+          echo "Staged source: $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
