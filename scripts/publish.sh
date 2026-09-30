@@ -12,3 +12,10 @@ PROJECT="$SCRIPT_DIR/../src/XemuTestRunner/XemuTestRunner.csproj"
 OUTPUT="$SCRIPT_DIR/../publish/$RID"
 
 dotnet publish "$PROJECT" -c Release -r "$RID" --self-contained true -p:PublishSingleFile=true -o "$OUTPUT"
+
+if [[ "$RID" == linux-x64 ]]; then
+  GAMEPAD_BUILD="$SCRIPT_DIR/../.build/gamepad-$RID"
+  cmake -S "$SCRIPT_DIR/../native/gamepad" -B "$GAMEPAD_BUILD" -DCMAKE_BUILD_TYPE=Release
+  cmake --build "$GAMEPAD_BUILD" --config Release --parallel 4
+  cmake --install "$GAMEPAD_BUILD" --config Release --prefix "$OUTPUT"
+fi

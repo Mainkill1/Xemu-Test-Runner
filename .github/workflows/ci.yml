@@ -49,10 +49,17 @@ jobs:
       - name: Publish Linux
         if: runner.os == 'Linux'
         run: bash scripts/publish.sh linux-x64
+      - name: Verify packaged Linux gamepad helper and mapping
+        if: runner.os == 'Linux'
+        run: test -x publish/linux-x64/tools/xemu-gamepad && test -s publish/linux-x64/tools/linux-sdl-mapping.txt
       - name: Publish Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/publish.ps1 -Rid win-x64
+      - name: Verify packaged Windows gamepad helper
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: if (!(Test-Path publish/win-x64/tools/xemu-gamepad.exe)) { throw 'Native gamepad helper is absent from runner package' }
       - uses: actions/upload-artifact@v7
         with:
           name: xemu-test-runner-${{ matrix.label }}-x64
