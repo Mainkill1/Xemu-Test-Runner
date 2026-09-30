@@ -24,7 +24,15 @@ class BusyObserver:
 
 
 async def check(isolate=True):
-    observer = IsolatedObserver(BusyObserver) if isolate else BusyObserver()
+    factory = BusyObserver
+    try:
+        # The real launcher replaces checks.Observer with its proxy factory.
+        # Spawning must resolve the original class in the fresh child module.
+        if isolate:
+            globals()['BusyObserver'] = None
+        observer = IsolatedObserver(factory) if isolate else factory()
+    finally:
+        globals()['BusyObserver'] = factory
     stopped = threading.Event()
     ticks = []
     def heartbeat():

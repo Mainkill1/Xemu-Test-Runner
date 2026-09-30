@@ -1,13 +1,15 @@
 """Test-only SDL isolation: readback cannot hold the heartbeat producer's GIL."""
 import asyncio
+import importlib
 import multiprocessing
 import threading
 import traceback
 
 
-def _serve(connection, factory):
+def _serve(connection, factory_module, factory_name):
     observer = None
     try:
+        factory = getattr(importlib.import_module(factory_module), factory_name)
         observer = factory()
         connection.send((True, None))
         while True:
@@ -52,7 +54,7 @@ class IsolatedObserver:
         self._connected = False
         self._disposed = False
         self.pad = True  # Opaque compatibility token; never a native pointer.
-        self._process = context.Process(target=_serve, args=(child, factory),
+        self._process = context.Process(target=_serve, args=(child, factory.__module__, factory.__name__),
                                         name='independent-sdl-observer')
         self._process.start()
         child.close()
