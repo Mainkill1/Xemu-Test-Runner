@@ -75,6 +75,7 @@ public sealed class RunStorageReport
     public bool? CacheShaders { get; set; }
     public string DriverCache { get; set; } = "uncontrolled";
     public bool DriverNamespaceVerified { get; set; }
+    public string DriverQualification { get; set; } = "not_verified";
     public bool ComparisonReady { get; set; }
     public bool AllowUncontrolledDriverCache { get; set; }
     public string? ContractSha256 { get; set; }
@@ -89,6 +90,7 @@ public sealed class RunStorageReport
     public string? SeedSha256 { get; set; }
     public RunStateSnapshot? Before { get; set; }
     public RunStateSnapshot? After { get; set; }
+    public RunStateSnapshot? DriverBefore { get; set; }
     public RunStateSnapshot? DriverAfter { get; set; }
     public bool TargetStopped { get; set; }
     public List<string> Uncontrolled { get; set; } = ["os-page-cache", "driver-cache"];

@@ -51,6 +51,15 @@ public sealed class RunStorageSession
                 resultDirectory, session._evidenceDirectory, session.Report, deadline.Token).ConfigureAwait(false);
             session.Arguments = config.Arguments;
             ConfigureDriver(policy, session.Report, effectiveEnvironment, resultDirectory);
+            if (policy.DriverCache == "mesa")
+            {
+                session.Report.Schema = 2;
+                session.Report.DriverBefore = await RunStateInventory.CaptureAsync(session.Report.DriverCacheDirectory!,
+                    policy.MaximumFiles, policy.MaximumBytes, deadline.Token).ConfigureAwait(false);
+                if (!session.Report.DriverBefore.Complete || session.Report.DriverBefore.Files.Count != 0)
+                    throw new InvalidDataException("Initial Mesa namespace must have a complete empty inventory.");
+                session.Report.Uncontrolled.Add("driver-memory-cache");
+            }
             var basePath = Path.GetDirectoryName(executable)!; session._cacheBase = basePath;
             var cache = Path.Combine(basePath, "cache"); session.Report.CacheDirectory = cache;
             session.Report.StoragePaths["applicationBase"] = basePath;
@@ -98,6 +107,8 @@ public sealed class RunStorageSession
                 policy.RequirePrivateGuestState, config.SemanticHash, initialCache = session.Report.Before.TreeSha256,
                 seeds = session.Report.RuntimeSeeds.Select(file => new { file.Source, file.Destination, file.Sha256 }).OrderBy(file => file.Destination).ToArray()
             }));
+            if (policy.DriverCache == "mesa") session.Report.ContractSha256 = RunStateInventory.Hash(JsonSerializer.SerializeToUtf8Bytes(new
+            { previousContract = session.Report.ContractSha256, driverQualification = MesaCacheQualification.Contract }));
             session.Report.Status = "prepared"; session.Save(); return session;
         }
         catch (Exception error)
@@ -133,8 +144,14 @@ public sealed class RunStorageSession
             if (_cacheBase is not null) Report.After = await RunStateInventory.CaptureAsync(_cacheBase, _policy.MaximumFiles, _policy.MaximumBytes, deadline.Token, CacheEntries).ConfigureAwait(false);
             if (Report.DriverCacheDirectory is not null) Report.DriverAfter = await RunStateInventory.CaptureAsync(Report.DriverCacheDirectory, _policy.MaximumFiles, _policy.MaximumBytes, deadline.Token).ConfigureAwait(false);
             Report.Status = Report.After?.Complete == true && (Report.DriverAfter is null || Report.DriverAfter.Complete) ? "complete" : "incomplete";
+            if (Report.DriverCache == "mesa")
+            {
+                Report.DriverQualification = MesaCacheQualification.Evaluate(Report, Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(_evidenceDirectory)!)!, "state", "driver-cache"));
+                Report.DriverNamespaceVerified = Report.DriverQualification == MesaCacheQualification.Verified;
+                if (Report.DriverNamespaceVerified) Report.Uncontrolled.Remove("driver-cache");
+            }
             Report.ComparisonReady = Report.Status == "complete" && Report.Before?.Complete == true && Report.CacheMode != "inherited" &&
-                Report.AllowUncontrolledDriverCache && !Report.Uncontrolled.Any(value => value.StartsWith("guest-", StringComparison.Ordinal));
+                (Report.DriverNamespaceVerified || Report.AllowUncontrolledDriverCache) && !Report.Uncontrolled.Any(value => value.StartsWith("guest-", StringComparison.Ordinal));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or OperationCanceledException or JsonException)
         {

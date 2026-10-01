@@ -51,7 +51,7 @@ public sealed partial class EmbeddedHttpServer
                         {
                             runId = id, available = true, report.Status, mode = report.CacheMode, report.CacheShaders,
                             report.ComparisonReady, report.ContractSha256,
-                            driver = new { policy = report.DriverCache, verified = report.DriverNamespaceVerified, explicitlyAccepted = report.AllowUncontrolledDriverCache },
+                            driver = new { policy = report.DriverCache, verified = report.DriverNamespaceVerified, qualification = report.DriverQualification, before = Brief(report.DriverBefore), after = Brief(report.DriverAfter), explicitlyAccepted = report.AllowUncontrolledDriverCache },
                             paths = new { applicationCache = Clip(report.CacheDirectory), priorCache = Clip(report.PriorCacheDirectory),
                                 driverCache = Clip(report.DriverCacheDirectory), effectiveConfig = Clip(report.EffectiveConfigPath),
                                 openGlShaders = Clip(report.StoragePaths.GetValueOrDefault("openglShaders")), openGlReloadList = Clip(report.StoragePaths.GetValueOrDefault("openglReloadList")) },
