@@ -19,6 +19,11 @@ using XemuTestRunner.Workstation;
 
 if (args.Contains("--fake-xemu", StringComparer.Ordinal))
     return await FakeXemuHost.RunAsync(args);
+if (args.Contains("--fake-diagnostic-delay", StringComparer.Ordinal))
+{
+    await Task.Delay(2000);
+    return 0;
+}
 if (args.Length == 2 && args[0] == "--fake-screenshot")
 {
     FakeXemuHost.WritePng(args[1]);
@@ -886,6 +891,96 @@ try
             _ => throw new IOException("console handle lost"),
             _ => throw new IOException("stderr handle lost"));
         return Task.CompletedTask;
+    });
+
+    await Check("diagnostic timeout archives failure and continues the queue", async () =>
+    {
+        var fixture = Path.Combine(root, "diagnostic-timeout");
+        Directory.CreateDirectory(fixture);
+        var configPath = Path.Combine(fixture, "runner.json");
+        var config = new RunnerConfig
+        {
+            Workspace = "workspace",
+            Queue = new QueueOptions { PackageStabilityMs = 100, ScanIntervalMs = 25 },
+            Http = new HttpOptions { Enabled = false },
+            Monitoring = new MonitoringOptions { Enabled = false },
+            XemuControl = new XemuControlOptions
+            {
+                Enabled = true, ConnectTimeoutMs = 3000, InputProvider = "unavailable"
+            },
+            Diagnostics = new DiagnosticsOptions
+            {
+                ToolTimeoutMs = 100,
+                AutoHangBundle = false,
+                AutoFailureBundle = false,
+                CrashReports = new CrashCaptureOptions { Enabled = false }
+            },
+            Reliability = new ReliabilityOptions
+            {
+                Preflight = new PreflightOptions { MinimumFreeSpaceBytes = 0 },
+                ProcessExitTimeoutMs = 3000,
+                Watchdog = new WatchdogOptions { Enabled = false }
+            }
+        };
+        await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(config, ConfigLoader.JsonOptions));
+        var (_, paths) = ConfigLoader.Load(configPath);
+        var executable = Path.GetFileName(Environment.ProcessPath!);
+        foreach (var name in new[] { "timeout-a", "success-b" })
+        {
+            var package = Path.Combine(paths.Pending, name);
+            Directory.CreateDirectory(package);
+            CopyRunnerFixture(package);
+            var job = new JobDefinition
+            {
+                Id = name,
+                TargetOs = OperatingSystem.IsWindows() ? "windows" : "linux",
+                Executable = executable,
+                Arguments = ["--fake-xemu", "--fake-runtime-ms", "10000"],
+                TimeoutSeconds = 5,
+                Plan = [new JobStep { Type = "quit" }]
+            };
+            if (name == "timeout-a")
+            {
+                job.Diagnostics = [new DiagnosticRecipe
+                {
+                    Id = "bounded-tool", Type = "external", DurationMs = 100,
+                    PauseBefore = false, ResumeDuring = false, PauseAfter = false,
+                    ToolExecutable = Environment.ProcessPath!,
+                    ToolArguments = ["--fake-diagnostic-delay"]
+                }];
+                job.Plan = [new JobStep { Type = "diagnostic", DiagnosticId = "bounded-tool" }];
+            }
+            await File.WriteAllTextAsync(Path.Combine(package, "job.json"),
+                JsonSerializer.Serialize(job, ConfigLoader.JsonOptions));
+        }
+        var engine = new RunnerEngine(config, paths);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await engine.RunAsync(once: false, maxJobs: 2, cancellationToken: deadline.Token);
+        var snapshot = engine.State.Snapshot();
+        Assert(snapshot.JobsFinished == 2 && snapshot.FailedJobs == 1,
+            "Diagnostic failure stopped queue processing or became a pass.");
+        Assert(Directory.GetDirectories(paths.Testing).Length == 0 &&
+            Directory.GetDirectories(paths.Tested).Length == 2,
+            "Finished diagnostic failure was not archived alongside the next package.");
+        var results = Directory.GetDirectories(paths.Results)
+            .Select(directory => Path.Combine(directory, "result.json"))
+            .Select(path => JsonDocument.Parse(File.ReadAllText(path))).ToArray();
+        try
+        {
+            var failed = results.Single(result => result.RootElement.GetProperty("job").GetString() == "timeout-a");
+            Assert(failed.RootElement.GetProperty("status").GetString() == "plan_failed",
+                "A settled diagnostic timeout was classified as failed cleanup.");
+            var diagnostic = Directory.GetFiles(paths.Results, "result.json", SearchOption.AllDirectories)
+                .Single(path => path.Contains("bounded-tool"));
+            using var recorded = JsonDocument.Parse(File.ReadAllText(diagnostic));
+            Assert(recorded.RootElement.GetProperty("Status").GetString() == "failed",
+                "The diagnostic timeout was not retained as failed evidence.");
+            var detail = recorded.RootElement.GetProperty("Detail").GetString() ?? "";
+            Assert(detail.Contains("TimeoutException", StringComparison.Ordinal) &&
+                detail.Contains("Diagnostic tool or output drain exceeded", StringComparison.Ordinal),
+                "An unrelated diagnostic failure satisfied the timeout regression.");
+        }
+        finally { foreach (var result in results) result.Dispose(); }
     });
 
     await Check("one-shot runner processes at most one queued package", async () =>
