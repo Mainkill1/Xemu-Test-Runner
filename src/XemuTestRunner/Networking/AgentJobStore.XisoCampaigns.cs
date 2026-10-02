@@ -45,6 +45,9 @@ internal sealed partial class AgentJobStore
             Categories = (request.Categories ?? []).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray(),
             Tests = (request.Tests ?? []).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray()
         };
+        if (request.ReferenceApplication is not null && request.Mode is null &&
+            request.Categories.Length == 0 && request.Tests.Length == 0)
+            request = request with { Mode = "full" };
         var identity = HashJson(request);
         lock (_xisoGate)
         {
@@ -57,6 +60,15 @@ internal sealed partial class AgentJobStore
             }
             var suite = ReadXisoSuite(request.Suite);
             var selection = suite.Data.Catalog.Select(request.Categories, request.Tests, request.Mode);
+            if (request.ReferenceApplication is not null)
+            {
+                var oracles = OracleIds(suite).ToHashSet(StringComparer.Ordinal);
+                var missing = selection.Leaves.Where(leaf => !oracles.Contains(leaf.Id)).Select(leaf => leaf.Id).ToArray();
+                if (missing.Length > 0)
+                    throw Conflict("xiso_oracle_coverage", $"The pinned reference lacks {missing.Length} of {selection.Leaves.Length} selected leaf oracles.",
+                        "Run an unpaired full diagnostic campaign to collect evidence, qualify a new reference, then register a new suite. Missing: " +
+                        string.Join(", ", missing.Take(6)) + (missing.Length > 6 ? ", ..." : ""));
+            }
             var settings = (request.Settings ?? new XisoSettings()).Resolve(suite.Data.Settings);
             var application = ReadDocument(request.Application);
             RequireStableSource(Locate(request.Application).State);
@@ -69,7 +81,7 @@ internal sealed partial class AgentJobStore
                 ValidateApplicationPayload(suite.Data.Template, reference.Request);
                 referenceIdentity = reference.CreationHash;
             }
-            if (selection.Chunks.Length * (referenceIdentity is null ? 1 : 4) > 256)
+            if (selection.Chunks.Length * (referenceIdentity is null ? 1 : 8) > 256)
                 throw new InvalidDataException("Campaign exceeds 256 attempts; narrow its selected categories.");
             var chunks = selection.Chunks.Select((leaves, index) => BakeXisoChunk(suite, leaves, settings, index + 1)).ToArray();
             var attempts = new List<XisoAttempt>();
@@ -82,6 +94,10 @@ internal sealed partial class AgentJobStore
                     Add(request.Application, application.CreationHash, chunk.Index, "B1", "candidate");
                     Add(request.Application, application.CreationHash, chunk.Index, "B2", "candidate");
                     Add(request.ReferenceApplication, referenceIdentity!, chunk.Index, "A2", "reference");
+                    Add(request.Application, application.CreationHash, chunk.Index, "B3", "candidate");
+                    Add(request.ReferenceApplication, referenceIdentity!, chunk.Index, "A3", "reference");
+                    Add(request.ReferenceApplication, referenceIdentity!, chunk.Index, "A4", "reference");
+                    Add(request.Application, application.CreationHash, chunk.Index, "B4", "candidate");
                 }
             }
             var plan = new XisoCampaignPlan(request.Id, suite.Data.Id, suite.Revision, suite.Data.IsoSha256,
@@ -187,6 +203,25 @@ internal sealed partial class AgentJobStore
 
     public XisoCampaignStatus XisoCampaignStatus(string id) { lock (_xisoGate) return ObserveXisoCampaign(ReadXisoCampaign(id)); }
     public object XisoCampaignPlan(string id) { lock (_xisoGate) return ReadXisoCampaign(id).Plan; }
+    public XisoCampaignReport XisoCampaignReport(string id)
+    {
+        XisoCampaignPlan plan;
+        XisoAttemptStatus[] statuses;
+        lock (_xisoGate)
+        {
+            plan = ReadXisoCampaign(id).Plan;
+            statuses = plan.Attempts.Select(ObserveXisoAttempt).ToArray();
+        }
+        var indexed = new Dictionary<string, BuildRunRecord>(StringComparer.Ordinal);
+        for (var index = 0; index < plan.Attempts.Length; index++)
+        {
+            var status = statuses[index];
+            if (!status.Terminal || status.RunId is null || status.Comparison != "eligible") continue;
+            var record = BuildResults.TryRun(status.RunId);
+            if (record is not null && record.RunId == status.RunId) indexed.Add(plan.Attempts[index].Id, record);
+        }
+        return XisoCampaignReportBuilder.Build(plan, indexed);
+    }
     public object XisoCampaignAttempts(string id, int offset, int limit)
     {
         lock (_xisoGate)

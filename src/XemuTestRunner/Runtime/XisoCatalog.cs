@@ -151,7 +151,7 @@ public sealed record XisoCatalog(string Id, string Sha256, XisoLeaf[] Leaves, Xi
         if (suite is "shader_lifecycle" or "pipeline_texture_switch" or "uniform_thrash") return "shaders";
         if (suite.StartsWith("texture", StringComparison.Ordinal) || id.StartsWith("game_load.s3tc_sync_factor.", StringComparison.Ordinal)) return "textures";
         if (suite is "high_vertex_count" or "primitive_type" or "tiny_draw" or "vertex_buffer_allocation") return "geometry";
-        if (suite.StartsWith("surface", StringComparison.Ordinal)) return "surfaces";
+        if (suite.StartsWith("surface", StringComparison.Ordinal) || suite == "fill_rate") return "surfaces";
         if (suite == "game_load") return "scenarios";
         return "other";
     }

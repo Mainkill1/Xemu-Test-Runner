@@ -36,7 +36,7 @@ def responder():
 class XisoClientChecks(unittest.TestCase):
     def invoke(self, origin, *args):
         return subprocess.run([sys.executable, str(SCRIPT), *args],
-            env={**os.environ, 'XEMU_RUNNER_URL': origin}, capture_output=True, text=True, timeout=20)
+            env={**os.environ, 'XEMU_RUNNER_URL': origin, 'SSH_CONNECTION': ''}, capture_output=True, text=True, timeout=20)
 
     def test_category_request_omits_unused_settings_and_never_starts(self):
         with fixture(responder()) as (origin, calls):
@@ -79,6 +79,44 @@ class XisoClientChecks(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         body = next(body for method, path, body, _ in calls if method == 'POST')
         self.assertEqual(body['settings'], {'measurement_iterations_multiplier': 4})
+
+    def test_paired_default_leaves_full_selection_to_the_runner(self):
+        with fixture(responder()) as (origin, calls):
+            result = self.invoke(origin, 'select', 'build-b', '--id', 'example', '--suite', 'pilot', '--reference', 'build-a')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        body = next(body for method, path, body, _ in calls if method == 'POST')
+        self.assertEqual(body, {'id': 'example', 'application': 'build-b', 'suite': 'pilot', 'referenceApplication': 'build-a'})
+        self.assertFalse(any('/start' in path for _, path, _, _ in calls))
+
+    def test_report_returns_pr_ready_markdown_without_starting_work(self):
+        def respond(method, path, body, headers):
+            if urlsplit(path).path == '/api/v1/help':
+                return 200, {'capability': 'xisoCampaigns'}, {}
+            if urlsplit(path).path == '/api/v1/xiso-campaigns/example/report':
+                return 200, b'## XISO campaign example\n| cpu.direct | +2.00% |\n', {'Content-Type': 'text/markdown'}
+            return 404, {'code': 'unexpected', 'error': path}, {}
+        with fixture(respond) as (origin, calls):
+            result = self.invoke(origin, 'report', 'example', '--format', 'markdown')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('cpu.direct', result.stdout)
+        self.assertTrue(all(method == 'GET' for method, _, _, _ in calls))
+
+    def test_cross_host_plan_check_rejects_different_iso(self):
+        def plan(iso):
+            def respond(method, path, body, headers):
+                if urlsplit(path).path == '/api/v1/help':
+                    return 200, {'capability': 'xisoCampaigns'}, {}
+                if urlsplit(path).path == '/api/v1/xiso-campaigns/example':
+                    return 200, {'isoSha256': iso, 'catalogId': 'catalog', 'mode': 'full',
+                                 'settings': {'warmup_iterations': 0}, 'tests': ['cpu.direct'],
+                                 'addedDependencies': [], 'chunks': [{'tests': ['cpu.direct'], 'categories': ['cpu']}],
+                                 'attempts': [{'label': 'A1', 'variant': 'reference', 'chunk': 1}]}, {}
+                return 404, {'code': 'unexpected', 'error': path}, {}
+            return respond
+        with fixture(plan('a' * 64)) as (first, _), fixture(plan('b' * 64)) as (second, _):
+            result = self.invoke(first, 'check-pair', 'example', '--other-url', second)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn('isoSha256', json.loads(result.stdout)['mismatches'])
 
     def test_updates_are_opt_in_short_json_lines(self):
         with fixture(responder()) as (origin, calls):

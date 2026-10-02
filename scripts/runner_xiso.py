@@ -11,6 +11,7 @@ import argparse
 import http.client
 import json
 import os
+from pathlib import Path
 import sys
 import time
 import urllib.error
@@ -60,7 +61,7 @@ def build_parser():
     select.add_argument("--category", action="append", default=[], help="Repeat to union subsystem categories.")
     select.add_argument("--test", action="append", default=[], help="Repeat to union exact stable leaf IDs.")
     select.add_argument("--mode", choices=("smoke", "sections", "full", "monolithic"))
-    select.add_argument("--reference", help="Optional reference application for a frozen per-chunk ABBA schedule.")
+    select.add_argument("--reference", help="Reference application; defaults to the full suite with per-chunk ABBA and BAAB orders.")
     select.add_argument("--start", action="store_true", help="Explicitly authorize the campaign after creation succeeds.")
     settings_options(select)
     for name, help_text in (("start", "Explicitly start an existing campaign."),
@@ -75,6 +76,14 @@ def build_parser():
     wait = commands.add_parser("wait", help="Follow until terminal or attention; no overall time limit.")
     wait.add_argument("id")
     wait.add_argument("--updates", action="store_true", help="Print optional compact server heartbeat replies.")
+    report = commands.add_parser("report", help="Read exact-campaign per-leaf results for a PR; never start tests.")
+    report.add_argument("id")
+    report.add_argument("--format", choices=("json", "markdown", "csv"), default="markdown")
+    report.add_argument("--out", type=Path, help="Write the exact report to a local file.")
+    pair = commands.add_parser("check-pair", help="Verify two hosts froze the same XISO, work and attempt order before start.")
+    pair.add_argument("id")
+    pair.add_argument("--other-url", required=True, help="LAN origin of the other tester.")
+    pair.add_argument("--other-id", help="Campaign ID on the other tester; defaults to the same ID.")
     return parser
 
 
@@ -141,6 +150,29 @@ def follow(api: RunnerApi, identity: str, updates: bool):
         backoff = 0.5
 
 
+def common_contract(plan: dict) -> dict:
+    """Only compare portable frozen work; host paths and executable identities differ."""
+    return {
+        'isoSha256': plan['isoSha256'], 'catalogId': plan['catalogId'],
+        'mode': plan['mode'], 'settings': plan['settings'],
+        'tests': plan['tests'], 'addedDependencies': plan['addedDependencies'],
+        'chunks': [{'tests': chunk['tests'], 'categories': chunk['categories']} for chunk in plan['chunks']],
+        'attempts': [{'chunk': attempt['chunk'], 'label': attempt['label'], 'variant': attempt['variant']}
+                     for attempt in plan['attempts']],
+    }
+
+
+def read_report(api: RunnerApi, identity: str, format_name: str):
+    route = campaign_path(identity) + '/report?format=' + format_name
+    if format_name == 'json':
+        return api.json(route)
+    with api.open(route, headers={'Accept': 'text/markdown' if format_name == 'markdown' else 'text/csv'}) as response:
+        raw = response.read(8 * 1024 * 1024 + 1)
+    if len(raw) > 8 * 1024 * 1024:
+        raise ClientError('response_too_large', 'Campaign report exceeds the 8 MiB transport limit.')
+    return raw.decode('utf-8')
+
+
 def execute(args):
     # Registration may verify/copy a large retained asset; its internal socket
     # budget is not exposed as an agent-estimated execution/wait deadline.
@@ -172,6 +204,29 @@ def execute(args):
         return api.json(path + "?" + urllib.parse.urlencode(query))
     if command == "categories":
         return api.json("/api/v1/xiso-suites/" + quoted(args.suite) + "/categories")
+    if command == "check-pair":
+        other = RunnerApi(args.other_url)
+        capability = other.json('/api/v1/help?topic=xiso')
+        if not isinstance(capability, dict) or capability.get('capability') != 'xisoCampaigns':
+            raise ClientError('capability_missing', 'The other tester lacks XISO campaign support.')
+        left = common_contract(api.json(campaign_path(args.id) + '?view=plan'))
+        right = common_contract(other.json(campaign_path(args.other_id or args.id) + '?view=plan'))
+        mismatches = [key for key in left if left[key] != right[key]]
+        return {'match': not mismatches, 'mismatches': mismatches,
+                'firstCampaign': args.id, 'secondCampaign': args.other_id or args.id,
+                'isoSha256': left['isoSha256'], 'catalogId': left['catalogId'],
+                'selectedLeaves': len(left['tests']), 'attempts': len(left['attempts'])}
+    if command == "report":
+        value = read_report(api, args.id, args.format)
+        if args.out is not None:
+            encoded = value.encode('utf-8') if isinstance(value, str) else json.dumps(value, indent=2).encode('utf-8')
+            if args.out.is_symlink() or (args.out.exists() and args.out.read_bytes() != encoded):
+                raise ClientError('report_path_conflict', 'Report output already exists with different bytes or is a link.',
+                                  'Use a new path for a changed report; keep prior evidence intact.')
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_bytes(encoded)
+            return {'path': str(args.out), 'bytes': len(encoded), 'campaign': args.id, 'format': args.format}
+        return value
     if command == "select":
         body = {"id": args.id, "application": args.application}
         for field, value in (("suite", args.suite), ("categories", args.category), ("tests", args.test),
@@ -193,8 +248,11 @@ def main():
     try:
         args = build_parser().parse_args()
         value = execute(args)
-        emit(value, args.pretty)
-        return 0  # A successful API operation is not a passing guest result.
+        if isinstance(value, str):
+            print(value, end='' if value.endswith('\n') else '\n', flush=True)
+        else:
+            emit(value, args.pretty)
+        return 2 if args.command == 'check-pair' and not value['match'] else 0
     except ClientError as error:
         emit(error.document())
         return 1
