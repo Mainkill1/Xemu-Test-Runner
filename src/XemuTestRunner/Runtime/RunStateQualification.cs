@@ -45,6 +45,9 @@ public static class RunStateQualification
 
     public static AssessmentCheck? Check(JobDefinition job, string resultDirectory)
     {
+        // Explicit non-QMP component targets have no xemu shader/guest state.
+        // Their declared inputs and output contracts remain independently checked.
+        if (job.IsStandaloneProcess) return null;
         if (job.RuntimeState.Isolation is null && !job.Operations.IsBenchmark) return null;
         try
         {

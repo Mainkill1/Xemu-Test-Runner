@@ -46,6 +46,8 @@ public sealed class DiagnosticHub
         JobDefinition job,
         CancellationToken runCancellationToken)
     {
+        if (job.IsStandaloneProcess)
+            throw new InvalidOperationException("Process targets do not support xemu diagnostic recipes.");
         lock (_gate)
         {
             _completed.Clear();

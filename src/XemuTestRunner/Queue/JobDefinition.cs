@@ -6,6 +6,33 @@ using XemuTestRunner.Runtime;
 
 namespace XemuTestRunner.Queue;
 
+[System.Text.Json.Serialization.JsonConverter(typeof(JobTargetKindConverter))]
+public enum JobTargetKind { Xemu, Process }
+
+// A strict contract prevents enum aliases from bypassing client capability checks.
+public sealed class JobTargetKindConverter : System.Text.Json.Serialization.JsonConverter<JobTargetKind>
+{
+    public override JobTargetKind Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.String)
+        {
+            var value = reader.GetString();
+            if (string.Equals(value, "xemu", StringComparison.OrdinalIgnoreCase)) return JobTargetKind.Xemu;
+            if (string.Equals(value, "process", StringComparison.OrdinalIgnoreCase)) return JobTargetKind.Process;
+        }
+        throw new JsonException("TargetKind must be the string xemu or process.");
+    }
+
+    public override void Write(Utf8JsonWriter writer, JobTargetKind value, JsonSerializerOptions options)
+    {
+        writer.WriteStringValue(value switch
+        {
+            JobTargetKind.Xemu => "xemu", JobTargetKind.Process => "process",
+            _ => throw new JsonException("Unknown TargetKind.")
+        });
+    }
+}
+
 public sealed class JobDefinition
 {
     public string Id { get; set; } = "";
@@ -19,6 +46,11 @@ public sealed class JobDefinition
     public string? TargetOs { get; set; }
     public string? ExpectedExecutableSha256 { get; set; }
     public List<string> RequiredFiles { get; set; } = [];
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    [System.Text.Json.Serialization.JsonConverter(typeof(JobTargetKindConverter))]
+    public JobTargetKind TargetKind { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsStandaloneProcess => TargetKind == JobTargetKind.Process;
     public string LaunchMode { get; set; } = "direct";
     public string? SnapshotName { get; set; }
     public bool StartPaused { get; set; }
@@ -71,6 +103,16 @@ public sealed class JobDefinition
             throw new InvalidDataException("TargetOs must be windows or linux when supplied.");
         if (job.ExpectedExecutableSha256 is not null && (job.ExpectedExecutableSha256.Length != 64 || !job.ExpectedExecutableSha256.All(Uri.IsHexDigit)))
             throw new InvalidDataException("ExpectedExecutableSha256 must be 64 hexadecimal characters.");
+        if (!Enum.IsDefined(job.TargetKind))
+            throw new InvalidDataException("TargetKind must be xemu or process.");
+        if (job.IsStandaloneProcess &&
+            (job.Plan.Count != 0 || job.StartPaused || job.RequireInput ||
+             job.SnapshotName is not null || job.ControllerInput is not null ||
+             !job.LaunchMode.Equals("direct", StringComparison.OrdinalIgnoreCase) ||
+             job.RuntimeState.Isolation is not null || job.RuntimeState.DiskAssets.Count != 0 ||
+             job.RuntimeState.Xiso is not null || job.Workload.GuestHddResults is not null ||
+             job.Diagnostics.Count != 0))
+            throw new InvalidDataException("Process targets require direct launch without xemu control, guest state or diagnostic recipes.");
         if (job.LaunchMode.Trim().ToLowerInvariant() is not ("direct" or "renderdoc"))
             throw new InvalidDataException("LaunchMode must be direct or renderdoc.");
         if (job.ControllerInput is not null)

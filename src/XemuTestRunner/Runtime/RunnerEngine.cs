@@ -347,6 +347,7 @@ public sealed class RunnerEngine
         Task? recordingWriter = null;
         MeasurementTimeline? timeline = null;
         bool planCompleted = false;
+        bool useXemuControl = false;
         Task? stdout = null;
         Task? stderr = null;
         FileStream? stdoutFile = null;
@@ -378,6 +379,7 @@ public sealed class RunnerEngine
 
             _state.SetPhase("preflight");
             job = JobDefinition.LoadPackage(package, resultManifest);
+            useXemuControl = _config.XemuControl.Enabled && !job.IsStandaloneProcess;
             planCompleted = job.Plan.Count == 0;
 
             preflight = await Preflight.CheckAsync(
@@ -387,10 +389,10 @@ public sealed class RunnerEngine
                 _config.Reliability.Preflight,
                 ct).ConfigureAwait(false);
 
-            if (job.Plan.Count > 0 && !_config.XemuControl.Enabled)
+            if (job.Plan.Count > 0 && !useXemuControl)
                 preflight = AddPreflightFailure(preflight, "control", "Plan actions require XemuControl.");
 
-            if (_config.XemuControl.Enabled &&
+            if (useXemuControl &&
                 job.Arguments.Any(argument =>
                     argument.Equals("-qmp", StringComparison.OrdinalIgnoreCase) ||
                     argument.StartsWith("-qmp=", StringComparison.OrdinalIgnoreCase)))
@@ -406,10 +408,10 @@ public sealed class RunnerEngine
                 job.Arguments.Any(argument => argument.Equals("-S", StringComparison.OrdinalIgnoreCase)))
                 preflight = AddPreflightFailure(preflight, "start_paused", "Use StartPaused instead of supplying -S manually.");
 
-            if (job.StartPaused && !_config.XemuControl.Enabled)
+            if (job.StartPaused && !useXemuControl)
                 preflight = AddPreflightFailure(preflight, "start_paused", "StartPaused requires XemuControl so the runner can resume the VM.");
 
-            if (job.RequireInput && !_config.XemuControl.Enabled)
+            if (job.RequireInput && !useXemuControl)
                 preflight = AddPreflightFailure(preflight, "input", "RequireInput requires XemuControl.");
 
             if (job.LaunchMode.Equals("renderdoc", StringComparison.OrdinalIgnoreCase))
@@ -515,7 +517,7 @@ public sealed class RunnerEngine
                         files = runtimeState?.Files ?? []
                     });
 
-                var qmpPort = _config.XemuControl.Enabled
+                var qmpPort = useXemuControl
                     ? _control.AllocateQmpPort()
                     : 0;
 
@@ -548,7 +550,7 @@ public sealed class RunnerEngine
                     effectiveArguments.Add("-loadvm");
                     effectiveArguments.Add(job.SnapshotName);
                 }
-                if (_config.XemuControl.Enabled)
+                if (useXemuControl)
                 {
                     effectiveArguments.Add("-qmp");
                     effectiveArguments.Add($"tcp:{_config.XemuControl.QmpHost}:{qmpPort},server=on,wait=off");
@@ -588,6 +590,7 @@ public sealed class RunnerEngine
                     runId,
                     attempt = attempt.Attempt,
                     job = job.Id,
+                    targetKind = job.TargetKind.ToString().ToLowerInvariant(),
                     launchMode = job.LaunchMode,
                     snapshotName = job.SnapshotName,
                     startPaused = job.StartPaused,
@@ -702,7 +705,7 @@ public sealed class RunnerEngine
                         telemetry.RecordingTask;
                 }
 
-                if (_config.XemuControl.Enabled)
+                if (useXemuControl)
                 {
                     try
                     {
@@ -721,6 +724,8 @@ public sealed class RunnerEngine
                     }
                 }
 
+                if (!useXemuControl) _state.SetPhase("running");
+
                 if (job.RequireInput && !_control.Snapshot().InputAvailable)
                 {
                     status = "control_error";
@@ -728,7 +733,7 @@ public sealed class RunnerEngine
                     throw new InvalidOperationException(detail);
                 }
 
-                _diagnostics.Attach(
+                if (!job.IsStandaloneProcess) _diagnostics.Attach(
                     runId,
                     process,
                     launch.RenderDoc,
@@ -775,7 +780,7 @@ public sealed class RunnerEngine
                 }
 
                 Task<WatchdogTrip>? watch = null;
-                if (_config.Reliability.Watchdog.Enabled && _config.XemuControl.Enabled)
+                if (_config.Reliability.Watchdog.Enabled && useXemuControl)
                 {
                     watch = new ResponsivenessWatchdog(_config.Reliability.Watchdog).RunAsync(
                         async token => { _ = await _control.QueryStatusAsync(token).ConfigureAwait(false); },
@@ -786,7 +791,9 @@ public sealed class RunnerEngine
                 var exitTask = launch.WaitForExitAsync();
                 var cancelTask = Task.Delay(Timeout.Infinite, ct);
                 var timeoutTask = job.TimeoutSeconds > 0
-                    ? _control.DelayTestTimeAsync(checked(job.TimeoutSeconds * 1000), tasksCts.Token)
+                    ? useXemuControl
+                        ? _control.DelayTestTimeAsync(checked(job.TimeoutSeconds * 1000), tasksCts.Token)
+                        : Task.Delay(checked(job.TimeoutSeconds * 1000), tasksCts.Token)
                     : Task.Delay(Timeout.Infinite, tasksCts.Token);
 
                 var waiting = new List<Task> { exitTask, cancelTask, timeoutTask };
@@ -851,7 +858,8 @@ public sealed class RunnerEngine
                     if (winner == timeoutTask)
                     {
                         status = "timeout";
-                        detail = $"Exceeded {job.TimeoutSeconds} unpaused seconds.";
+                        detail = $"Exceeded {job.TimeoutSeconds} " +
+                            (job.IsStandaloneProcess ? "wall-clock seconds." : "unpaused seconds.");
                         break;
                     }
 
@@ -947,7 +955,7 @@ public sealed class RunnerEngine
                     _config.Reliability.PreserveTargetOnRunnerError &&
                     status is ("runner_error" or "control_error");
 
-                if (ShouldCaptureFailure(status, preserveTarget, exited))
+                if (job?.IsStandaloneProcess != true && ShouldCaptureFailure(status, preserveTarget, exited))
                 {
                     try
                     {
@@ -965,7 +973,7 @@ public sealed class RunnerEngine
                 // before an external provider could photograph another window.
                 exited = ConfirmTargetExit(exited, HasExited(process), launch?.NativeExit is not null);
                 if (ShouldCaptureFailure(status, preserveTarget, exited) &&
-                    _config.XemuControl.Enabled &&
+                    useXemuControl &&
                     automaticBundle is null)
                 {
                     using var screenshotDeadline = new CancellationTokenSource(
@@ -1210,6 +1218,7 @@ public sealed class RunnerEngine
             exitCode,
             crash = crashReport,
             diagnosticBundle = "diagnostic-bundle.json",
+            targetKind = job?.TargetKind.ToString().ToLowerInvariant(),
             launchMode = job?.LaunchMode,
             snapshotName = job?.SnapshotName,
             startPaused = job?.StartPaused,

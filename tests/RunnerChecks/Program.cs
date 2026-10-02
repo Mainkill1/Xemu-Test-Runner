@@ -17,6 +17,15 @@ using XemuTestRunner.Reliability;
 using XemuTestRunner.Runtime;
 using XemuTestRunner.Workstation;
 
+if (args.Contains("--fixture-process", StringComparer.Ordinal))
+{
+    // This fixture deliberately has no QMP endpoint; extra arguments fail.
+    if (args.Length != 2 || args[0] != "--fixture-process") return 73;
+    if (args[1] == "timeout") await Task.Delay(Timeout.Infinite);
+    await Task.Delay(200);
+    Console.WriteLine("{\"passed\":true,\"fixtureValue\":1234}");
+    return args[1] == "failure" ? 17 : 0;
+}
 if (args.Contains("--fake-xemu", StringComparer.Ordinal))
     return await FakeXemuHost.RunAsync(args);
 if (args.Contains("--fake-diagnostic-delay", StringComparer.Ordinal))
@@ -62,6 +71,20 @@ var root = Path.Combine(Path.GetTempPath(), "xemu-runner-checks-" + Guid.NewGuid
 Directory.CreateDirectory(root);
 try
 {
+    await Check("standalone definitions reject unsupported control", () =>
+    {
+        StandaloneProcessChecks.ValidateDefinition(root);
+        return Task.CompletedTask;
+    });
+    await Check("standalone process rejects ad hoc diagnostic attachment", () =>
+    {
+        StandaloneProcessChecks.RejectDiagnosticAttachment(root);
+        return Task.CompletedTask;
+    });
+    foreach (var mode in new[] { "success", "failure", "timeout" })
+        await Check("standalone process " + mode,
+            () => StandaloneProcessChecks.RunAsync(root, mode));
+
     await Check("QMP readiness retries a timed-out handshake", async () =>
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);

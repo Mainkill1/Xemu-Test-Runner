@@ -56,7 +56,7 @@ internal sealed partial class AgentJobStore
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or JsonException) { issues.Add("state_evidence_invalid"); }
             if (storage?.ComparisonReady != true) issues.Add("state_not_qualified");
         }
-        else if (job.Operations.IsBenchmark && File.Exists(catalog.Resolve(runId, "diagnostics/run-state/report.json"))) issues.Add("benchmark_state_unmanaged");
+        else if (!job.IsStandaloneProcess && job.Operations.IsBenchmark && File.Exists(catalog.Resolve(runId, "diagnostics/run-state/report.json"))) issues.Add("benchmark_state_unmanaged");
         var metrics = new List<BuildMetric>();
         var keys = new HashSet<(string, string, string)>();
         if (result.TryGetProperty("workload", out var workload) && workload.TryGetProperty("Measurements", out var measurements) && measurements.ValueKind == JsonValueKind.Array)

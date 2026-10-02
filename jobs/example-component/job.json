@@ -1,0 +1,20 @@
+{
+  "Id": "component-example",
+  "TargetKind": "process",
+  "Executable": "component-benchmark",
+  "Arguments": ["--fixed-work"],
+  "TimeoutSeconds": 60,
+  "Operations": {"Mode": "benchmark"},
+  "Experiment": {"Id": "component-example", "Variant": "baseline"},
+  "Workload": {
+    "CorrectnessChecks": [
+      {"Name": "output-correct", "Path": "stdout.log", "ContainsText": "\"correct\":true"}
+    ],
+    "EvidenceRequirements": [
+      {"Name": "output-present", "Path": "stdout.log", "MinimumBytes": 2}
+    ],
+    "ReportedMetrics": [
+      {"Name": "component-time", "Path": "stdout.log", "JsonProperty": "elapsedUs", "Unit": "us", "Direction": "lower"}
+    ]
+  }
+}

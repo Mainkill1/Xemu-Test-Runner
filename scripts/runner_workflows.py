@@ -74,6 +74,13 @@ class Workflows:
 
     def submit(self, root: Path, job_id: str, reuse: str | None, chunk_bytes: int) -> dict:
         request = manifest(root, job_id)
+        kind = next((value for key, value in request["Job"].items()
+                     if key.lower() == "targetkind"), "xemu")
+        if not isinstance(kind, str) or kind.lower() not in ("xemu", "process"):
+            raise ClientError("plan_invalid", "TargetKind must be the string xemu or process.",
+                              "Use an exact target kind without numeric aliases or surrounding spaces.")
+        if kind.lower() == "process":
+            self.api.require("standaloneProcesses")
         self.api.json("/api/v1/jobs", "POST", request)
         current = self.status(job_id)
         if current["state"] == "busy":
