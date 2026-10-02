@@ -132,6 +132,17 @@ def flatten(values):
     return [item for group in values for item in group]
 
 
+def compact_ids(values, limit: int, label: str) -> list[int]:
+    items = flatten(values)
+    if len(items) > limit:
+        raise ClientError(
+            "arguments_invalid",
+            f"At most {limit} numeric XISO {label} selectors may be supplied.",
+            "Narrow the selector list or choose a test group instead of repeating individual IDs.",
+        )
+    return sorted(set(items))
+
+
 def quoted(value: str) -> str:
     return urllib.parse.quote(value, safe="")
 
@@ -200,13 +211,21 @@ def read_report(api: RunnerApi, identity: str, format_name: str):
 
 
 def execute(args):
+    command = args.command
+    test_ids = []
+    test_groups = []
+    if command == "select":
+        # Validate before capability discovery so malformed compact requests never
+        # make an HTTP call, then send one deterministic canonical array.
+        test_ids = compact_ids(args.test_ids, 512, "test")
+        test_groups = compact_ids(args.test_groups, 8, "test-group")
+
     # Registration may verify/copy a large retained asset; its internal socket
     # budget is not exposed as an agent-estimated execution/wait deadline.
-    api = RunnerApi(args.url, timeout=1800 if args.command == "register" else 60)
+    api = RunnerApi(args.url, timeout=1800 if command == "register" else 60)
     info = api.json("/api/v1/help?topic=xiso")
     if not isinstance(info, dict) or info.get("capability") != "xisoCampaigns":
         raise ClientError("capability_missing", "This tester lacks XISO campaign support.", "Deploy the matching runner; do not replace the API with guest networking or SSH.")
-    command = args.command
     if command == "targets":
         return api.json("/api/v1/xiso-targets")
     if command == "register":
@@ -256,7 +275,7 @@ def execute(args):
     if command == "select":
         body = {"id": args.id, "application": args.application}
         for field, value in (("suite", args.suite), ("categories", args.category), ("tests", args.test),
-                             ("test_ids", flatten(args.test_ids)), ("test_groups", flatten(args.test_groups)),
+                             ("test_ids", test_ids), ("test_groups", test_groups),
                              ("mode", args.mode), ("referenceApplication", args.reference), ("settings", settings(args))):
             if value:
                 body[field] = value
