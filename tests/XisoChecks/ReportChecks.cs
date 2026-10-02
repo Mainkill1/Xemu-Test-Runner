@@ -21,6 +21,8 @@ internal static class ReportChecks
             var markdown = XisoCampaignReportFormatting.Markdown(report);
             AgentFixture.Require(markdown.Contains("cpu.direct", StringComparison.Ordinal) &&
                 markdown.Contains("+2.00%", StringComparison.Ordinal) &&
+                markdown.Contains("### Category summary", StringComparison.Ordinal) &&
+                markdown.Contains("| cpu | 1 | 1 | 0 | +2.00% |", StringComparison.Ordinal) &&
                 markdown.Contains("suite qualification `candidate`", StringComparison.Ordinal) &&
                 markdown.Contains("Changes above 1%", StringComparison.Ordinal), "PR-ready report omitted the per-leaf gain.");
             var csv = XisoCampaignReportFormatting.Csv(report);

@@ -20,6 +20,17 @@ internal static class XisoCampaignReportFormatting
             text.AppendLine(); text.AppendLine("No numeric gains are published until every planned attempt is indexed and eligible.");
             return text.ToString();
         }
+        var primaryRows = report.Rows.Where(row => row.Metric == "median_us").ToArray();
+        text.AppendLine();
+        text.AppendLine("### Category summary");
+        text.AppendLine("| Category | Leaves | >1% faster | >1% slower | Median leaf change |");
+        text.AppendLine("|---|---:|---:|---:|---:|");
+        foreach (var category in primaryRows.GroupBy(row => row.Category).OrderBy(group => group.Key, StringComparer.Ordinal))
+        {
+            var median = BuildStatistics.From(category.Select(row => row.ImprovementPercent).ToArray())!.Median;
+            text.AppendLine($"| {Cell(category.Key)} | {category.Count()} | {category.Count(row => row.ImprovementPercent > 1)} | {category.Count(row => row.ImprovementPercent < -1)} | {Percent(median)} |");
+        }
+        text.AppendLine("Category median is the median of leaf percentage changes; it is not an additive runtime or GPU cost.");
         text.AppendLine();
         text.AppendLine("### Per-leaf results");
         text.AppendLine("| Category | Test | A median (µs) | B median (µs) | Improvement | ABBA | BAAB | Changes above 1% |");
