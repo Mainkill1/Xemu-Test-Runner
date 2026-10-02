@@ -18,7 +18,7 @@ This document is the implementation contract for the diagnostic subsystem. It is
 | `LaunchMode` | `direct` or `renderdoc`. RenderDoc launch instruments xemu before graphics initialization. |
 | `SnapshotName` | Passed as xemu/QEMU `-loadvm <name>`. The configured HDD must contain the named snapshot. |
 | `StartPaused` | Adds `-S`; when QMP is enabled, the runner verifies the resulting run state is paused. |
-| `RequireInput` | Requires a usable Windows SendInput or Linux X11/XTest adapter before the plan starts. |
+| `RequireInput` | Requires a usable Windows SendInput or Linux X11/XTest adapter before the plan starts. Legacy keyboard transport also requires a private xemu configuration with `auto_bind=false`, port 1 bound to `keyboard`, and the `usb-xbox-gamepad` driver before xemu can launch. |
 | `Diagnostics` | Named recipe array addressable from plan steps and HTTP. |
 
 The runner owns `-qmp`, `-loadvm`, and `-S` when their typed job fields are used. Duplicate manual arguments are rejected during preflight.
