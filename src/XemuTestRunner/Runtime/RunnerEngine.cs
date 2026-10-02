@@ -1418,7 +1418,7 @@ public sealed class RunnerEngine
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException) { }
-            catch (TimeoutException ex)
+            catch (TimeoutException ex) when (!task.IsCompleted)
             {
                 componentStuck = true;
                 status = "cleanup_failed";
