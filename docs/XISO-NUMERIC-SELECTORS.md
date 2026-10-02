@@ -12,13 +12,13 @@ python scripts/runner_xiso.py --pretty tests SUITE --limit 100
 python scripts/runner_xiso.py --pretty tests SUITE --offset 100 --limit 100
 ```
 
-Both responses include `catalogId`, `catalogSha256`, `selectorVersion`, and `idBase`. Test results are always assigned their global catalog `test_id` before filtering or pagination, so `--category shaders` does not renumber the shader subset.
+Both responses include `catalogId`, `catalogSha256`, `selectorVersion`, and `idBase`. Test-catalog entries receive their global `test_id` before filtering or pagination, so `--category shaders` does not renumber the shader subset.
 
-Do not reuse a numeric list with a different suite or catalog. Stable string IDs remain the portable selector when a request must survive catalog changes.
+Do not reuse a numeric test list with a different suite or catalog. Stable string IDs remain the portable selector when a request must survive catalog changes.
 
 ## Test-group IDs
 
-`test_groups` indexes the runner's stable subsystem table:
+`test_groups` indexes the runner's selector-version 1 subsystem table:
 
 | Group ID | Category | Purpose |
 | ---: | --- | --- |
@@ -31,7 +31,7 @@ Do not reuse a numeric list with a different suite or catalog. Stable string IDs
 | 6 | `scenarios` | Composite scenarios |
 | 7 | `other` | Newly added or unmapped suites |
 
-The categories endpoint returns all eight entries with `count` and `available`. Selecting a group whose count is zero is rejected instead of silently producing an empty campaign.
+These numeric meanings are an explicit wire contract; they are not inferred from the current display order of categories. The categories endpoint returns all eight entries with `count` and `available`. Selecting a group whose count is zero is rejected instead of silently producing an empty campaign.
 
 ## CLI examples
 
@@ -83,4 +83,4 @@ The compact JSON fields are arrays of zero-based integers:
 
 The runner resolves the arrays using the selected suite, stores the stable names in the frozen campaign plan, and then uses the normal XISO selection path. Existing dependency closure still applies. For example, choosing one inseparable Vulkan memory-pressure checkpoint also adds the other checkpoints and reports them in `addedDependencies`.
 
-Bounds are deliberately strict: test IDs are `0..511`, group IDs are `0..7`, and the server verifies that each ID actually exists in the pinned catalog. A changed selection needs a new campaign ID; an identical normalized selection remains idempotent.
+The transport bounds are deliberately strict: test IDs must be in `0..511`, group IDs must be in `0..7`, and the server additionally requires each test ID to be below that suite's actual `leafCount`. A changed selection needs a new campaign ID; repeating the same normalized selection is idempotent.
