@@ -19,12 +19,12 @@ public static class RunStateQualification
             if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty(name, out _))
                 throw new InvalidDataException("State report is missing required fields.");
         var report = root.Deserialize<RunStorageReport>(ConfigLoader.JsonOptions) ?? throw new InvalidDataException("Empty state report.");
-        if (report.Schema != 1 || report.Uncontrolled is null || report.Issues is null || report.CacheEnvironment is null || report.StoragePaths is null ||
+        if (report.Schema is not (1 or 2) || report.Uncontrolled is null || report.Issues is null || report.CacheEnvironment is null || report.StoragePaths is null ||
             report.CacheMode is not ("cold" or "seeded" or "inherited" or "unmanaged") ||
             report.Status is not ("preparing" or "prepared" or "complete" or "incomplete" or "unmanaged" or "preparationFailed" or "targetNotStopped") ||
             report.Uncontrolled.Concat(report.Issues).Any(value => value is null || value.Length > 256))
             throw new InvalidDataException("State report has invalid fields.");
-        foreach (var snapshot in new[] { report.Before, report.After, report.DriverAfter })
+        foreach (var snapshot in new[] { report.Before, report.After, report.DriverBefore, report.DriverAfter })
         {
             if (snapshot is null) continue;
             if (snapshot.Files is null || snapshot.Issues is null || snapshot.Files.Count > 16384 || snapshot.Bytes < 0 ||
@@ -33,9 +33,12 @@ public static class RunStateQualification
                     file.Sha256 is null || file.Sha256.Length != 64 || !file.Sha256.All(Uri.IsHexDigit)))
                 throw new InvalidDataException("Invalid state inventory.");
         }
+        var mesaVerified = report.Schema == 2 && MesaCacheQualification.Evaluate(report, Path.Combine(resultDirectory, "state", "driver-cache")) == MesaCacheQualification.Verified;
+        if (report.DriverNamespaceVerified && (!mesaVerified || report.DriverQualification != MesaCacheQualification.Verified))
+            throw new InvalidDataException("State report cannot substantiate Mesa disk namespace verification.");
         if (report.ComparisonReady && (report.ContractSha256 is null || report.ContractSha256.Length != 64 ||
             !report.ContractSha256.All(Uri.IsHexDigit) || report.Before?.Complete != true || report.After?.Complete != true ||
-            !report.TargetStopped || report.Status != "complete" || report.CacheMode is "unmanaged" or "inherited" || !report.AllowUncontrolledDriverCache))
+            !report.TargetStopped || report.Status != "complete" || report.CacheMode is "unmanaged" or "inherited" || (!report.AllowUncontrolledDriverCache && !report.DriverNamespaceVerified)))
             throw new InvalidDataException("State report cannot substantiate comparison readiness.");
         return report;
     }
@@ -50,10 +53,11 @@ public static class RunStateQualification
             var passed = policy is not null && report?.ComparisonReady == true &&
                 report.CacheMode == policy.CacheMode && report.CacheShaders == policy.CacheShaders &&
                 report.DriverCache == policy.DriverCache && report.AllowUncontrolledDriverCache == policy.AllowUncontrolledDriverCache &&
+                (!report.DriverNamespaceVerified || (report.DriverAfter!.Files.Count <= policy.MaximumFiles && report.DriverAfter.Bytes <= policy.MaximumBytes)) &&
                 (policy.CacheMode != "seeded" || string.Equals(policy.SeedSha256, report.SeedSha256, StringComparison.OrdinalIgnoreCase));
             return new("run_storage_state", passed, "state", passed
                 ? "Application cache and private guest inputs recorded; driver and OS caches remain explicitly disclosed limitations."
-                : "State is unmanaged, incomplete, inherited, inconsistent with its policy, or lacks explicit acceptance of uncontrolled driver caching. Read the run state summary.");
+                : "State is unmanaged, incomplete, inherited, inconsistent with its policy, or its driver disk namespace is unverified without an explicit waiver. Read the run state summary.");
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
         { return new("run_storage_state", false, "state", "Run-state evidence is unavailable or invalid."); }
