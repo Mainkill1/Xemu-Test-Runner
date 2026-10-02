@@ -90,6 +90,17 @@ public sealed partial class EmbeddedHttpServer
             }
             if (parts.Length == 2 && parts[1] == "attempts" && request.Method == "GET")
             { await WriteAgentJsonAsync(stream, AgentJobs.XisoCampaignAttempts(id, Offset(), Limit()), cancellationToken: ct).ConfigureAwait(false); return false; }
+            if (parts.Length == 2 && parts[1] == "report" && request.Method == "GET")
+            {
+                if (!await EnsureOperationAllowedAsync(stream, "bulk_transfer", false, ct).ConfigureAwait(false)) return false;
+                var format = GetQueryValue(request.Query, "format") ?? "json";
+                if (format is not ("json" or "markdown" or "csv")) throw new InvalidDataException("Report format must be json, markdown or csv.");
+                var report = AgentJobs.XisoCampaignReport(id);
+                if (format == "json") await WriteAgentJsonAsync(stream, report, cancellationToken: ct).ConfigureAwait(false);
+                else await WriteBuildTextAsync(stream, format == "csv" ? XisoCampaignReportFormatting.Csv(report) :
+                    XisoCampaignReportFormatting.Markdown(report), format, ct, 65_000).ConfigureAwait(false);
+                return false;
+            }
             if (parts.Length == 2 && parts[1] == "wait" && request.Method == "GET")
             {
                 if (!string.IsNullOrEmpty(request.Query)) throw new InvalidDataException("Campaign wait has no timer/query options. Reconnect to its next URL after a heartbeat.");

@@ -8,6 +8,7 @@ namespace XemuTestRunner.Networking;
 /// <summary>Durable, immutable per-run projections. No executable names or CSV scans are used as result identity.</summary>
 internal sealed class BuildResultStore(string resultsRoot)
 {
+    private sealed record IndexReceipt(string RunId, string Sha256);
     private readonly object _gate = new();
     private const int MaximumRuns = 10000;
     private static readonly JsonSerializerOptions WireJson = new(JsonSerializerDefaults.Web);
@@ -45,6 +46,28 @@ internal sealed class BuildResultStore(string resultsRoot)
             if (values.Any(value => value.Sha256 != Sha(sha256) || !SafeRunId(value.RunId) || value.Metrics is null || value.Issues is null || value.Outcome is null))
                 throw new InvalidDataException("Invalid saved result record.");
             return values;
+        }
+    }
+
+    public BuildRunRecord? TryRun(string runId)
+    {
+        if (!SafeRunId(runId)) throw new InvalidDataException("Invalid result run ID.");
+        lock (_gate)
+        {
+            CheckPath(Root);
+            var indexDirectory = Path.Combine(Root, ".indexed");
+            CheckPath(indexDirectory);
+            var indexPath = Path.Combine(indexDirectory, runId + ".json");
+            CheckPath(indexPath);
+            if (!File.Exists(indexPath)) return null;
+            var receipt = Read<IndexReceipt>(indexPath);
+            if (receipt.RunId != runId) throw new InvalidDataException("Indexed run identity differs from the requested run.");
+            var path = Path.Combine(BuildDirectory(receipt.Sha256), runId + ".json");
+            if (!File.Exists(path)) throw new InvalidDataException("Indexed result record is missing.");
+            var record = Read<BuildRunRecord>(path);
+            if (record.RunId != runId || record.Sha256 != Sha(receipt.Sha256))
+                throw new InvalidDataException("Indexed result record differs from its receipt.");
+            return record;
         }
     }
 

@@ -22,6 +22,27 @@ await Check("known shader target is pinned and explicitly candidate", async () =
     var target = targets.GetProperty("items").EnumerateArray().Single(x => x.GetProperty("id").GetString() == "shader-pilot-51bc23d");
     Require(target.GetProperty("isoSha256").GetString() == "b944d317035779afb15b7f7a0d90b0e35dd93b2257addba78c073438979cbf14", "Wrong shader target.");
     Require(target.GetProperty("qualification").GetString() == "candidate", "Unqualified shader pilot became known-good.");
+    var packaged = targets.GetProperty("items").EnumerateArray().Single(x => x.GetProperty("id").GetString() == "shader-runner-suite-dc42b74");
+    Require(packaged.GetProperty("isoSha256").GetString() == "c2acf7ee3cd19b62cb25fba97453d8d4f2c800fe27372ae320b724d49ceb2162" &&
+        packaged.GetProperty("leafCount").GetInt32() == 160 && packaged.GetProperty("qualification").GetString() == "candidate",
+        "Exact packaged XISO target is missing or incorrectly qualified.");
+    var latest = targets.GetProperty("items").EnumerateArray().Single(x => x.GetProperty("id").GetString() == "shader-runner-suite-db9462f");
+    Require(latest.GetProperty("isoSha256").GetString() == "e6da3efe6f1e507edd9af7e1e9d2b3498459568a06d7bdf21556d72bc761b667" &&
+        latest.GetProperty("catalogId").GetString() == "sha256:2490192671df057163aa6c7bb2f144491dfa35f42ef2f9318a87f50ec92e7747" &&
+        latest.GetProperty("leafCount").GetInt32() == 159 && latest.GetProperty("qualification").GetString() == "candidate",
+        "Latest merged-readiness XISO target is missing or incorrectly qualified.");
+});
+await Check("fill-rate leaves appear in the same surfaces category as the packaged suite", () =>
+{
+    var catalog = JsonSerializer.SerializeToUtf8Bytes(new {
+        schema_version = 1, catalog_id = "sha256:" + new string('a', 64), leaf_count = 1, group_count = 0,
+        tests = new[] { new { id = "fill_rate.solid", revision = 1, kind = "leaf", suite_id = "fill_rate",
+            display_name = "Solid fill rate", supported_targets = new[] { "xemu" }, isolation = "same_process", timeout_ms = 1000,
+            execution = new { legacy_suite = "FillRate", legacy_test = "Solid" } } }
+    });
+    var parsed = XisoCatalog.Parse(catalog);
+    Require(parsed.Select(["surfaces"], [], null).Leaves.Single().Id == "fill_rate.solid", "Fill rate was not selectable under surfaces.");
+    return Task.CompletedTask;
 });
 await Check("registration reads the catalog inside the immutable ISO", async () =>
 {
@@ -47,6 +68,20 @@ await Check("category selection is small upload-only and freezes defaults", asyn
     var again = await host.Json("/api/v1/xiso-campaigns", HttpMethod.Post, new { id = "shader-run", application = "application", categories = new[] { "shaders" } });
     Require(again.GetProperty("revision").GetString() == value.GetProperty("revision").GetString(), "Idempotent creation drifted.");
     await host.Json("/api/v1/xiso-campaigns", HttpMethod.Post, new { id = "shader-run", application = "application", tests = new[] { "cpu.direct" } }, HttpStatusCode.Conflict);
+});
+await Check("paired full campaign refuses a suite with missing leaf oracles before starting", async () =>
+{
+    await using var host = new AgentFixture();
+    var suite = await SetupWithOracleChoice(host, omitLastOracle: true);
+    Require(suite.GetProperty("missingOracleCount").GetInt32() == 1, "Suite registration concealed missing oracle coverage.");
+    var rejected = await host.Json("/api/v1/xiso-campaigns", HttpMethod.Post,
+        new { id = "unsafe-pair", application = "application", referenceApplication = "application" }, HttpStatusCode.Conflict);
+    Require(rejected.GetProperty("code").GetString() == "xiso_oracle_coverage", "Paired campaign did not reject incomplete oracle coverage.");
+    await host.Json("/api/v1/xiso-campaigns/unsafe-pair", expected: HttpStatusCode.NotFound);
+    var diagnostic = await host.Json("/api/v1/xiso-campaigns", HttpMethod.Post,
+        new { id = "explore-full", application = "application", mode = "full" });
+    Require(diagnostic.GetProperty("selectedLeaves").GetInt32() == 9 && !diagnostic.GetProperty("startRequested").GetBoolean(),
+        "Read-only full diagnostic selection was blocked along with the paired benchmark.");
 });
 await Check("individual selection expands only inseparable memory checkpoints", async () =>
 {
@@ -102,6 +137,7 @@ await Check("private plan injection does not change the seed or grow the image",
     Require(before.SequenceEqual(after), "Shared seed was edited.");
 });
 await AdvancedChecks.Run(Check, Setup, Seed);
+await ReportChecks.Run(Check, Setup);
 Console.WriteLine($"XISO checks: {count - failures}/{count} passed.");
 return failures == 0 ? 0 : 1;
 
@@ -134,7 +170,8 @@ static byte[] Iso(byte[] catalog)
     bytes[33 * 2048 + 13] = 12; Encoding.ASCII.GetBytes("catalog.json").CopyTo(bytes, 33 * 2048 + 14);
     catalog.CopyTo(bytes, 34 * 2048); return bytes;
 }
-static async Task<JsonElement> Setup(AgentFixture host)
+static Task<JsonElement> Setup(AgentFixture host) => SetupWithOracleChoice(host, false);
+static async Task<JsonElement> SetupWithOracleChoice(AgentFixture host, bool omitLastOracle)
 {
     host.State.SetPhase("fixture");
     var ids = new[] { "cpu.direct", "surface.read", "shader_lifecycle.pipeline_train", "shader_lifecycle.pipeline_uniform_only" }
@@ -145,7 +182,7 @@ static async Task<JsonElement> Setup(AgentFixture host)
         execution = new { legacy_suite = id.StartsWith("shader") ? "ShaderLifecycle" : "Fixture", legacy_test = id.Contains("memory_pressure") ? "MemoryPressure" : id }
     }).ToArray();
     var catalog = JsonSerializer.SerializeToUtf8Bytes(new { schema_version = 1, catalog_id = "sha256:" + new string('c', 64), leaf_count = ids.Length, group_count = 0, tests = leaves });
-    var reference = JsonSerializer.SerializeToUtf8Bytes(ids.Select(id => new { schema_version = 1, id, kind = "leaf", revision = 1, outcome = "PASS", iterations = 1, sample_count = 1, measurement_iterations_multiplier = 1, warmup_iterations = 0, gpu_completion_mode = "per_iteration", framebuffer_fnv1a64 = "abc123", raw_results = new[] { 1 } }));
+    var reference = JsonSerializer.SerializeToUtf8Bytes(ids.Take(omitLastOracle ? ids.Length - 1 : ids.Length).Select(id => new { schema_version = 1, id, kind = "leaf", revision = 1, outcome = "PASS", iterations = 1, sample_count = 1, measurement_iterations_multiplier = 1, warmup_iterations = 0, gpu_completion_mode = "per_iteration", framebuffer_fnv1a64 = "abc123", raw_results = new[] { 1 } }));
     var payload = new Dictionary<string, byte[]> { ["xemu.bin"] = "fixture"u8.ToArray(), ["suite.iso"] = Iso(catalog), ["prepared.raw"] = Seed(), ["reference.json"] = reference, ["xemu.toml"] = "[system.files]\nhdd_path='{runtimeDir}/hdd.qcow2'\n"u8.ToArray() };
     var declarations = payload.Select(pair => new { path = pair.Key, length = pair.Value.LongLength, sha256 = Sha(pair.Value), executable = pair.Key == "xemu.bin" }).ToArray();
     await host.Json("/api/v1/jobs", HttpMethod.Post, new {

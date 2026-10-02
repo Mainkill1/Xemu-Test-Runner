@@ -95,10 +95,10 @@ public sealed partial class EmbeddedHttpServer
         throw new AgentRequestException(404, "route_not_found", "No matching build-results action.", "Read /api/v1/help?topic=build-results.");
     }
 
-    private static async Task WriteBuildTextAsync(Stream stream, string text, string format, CancellationToken ct)
+    private static async Task WriteBuildTextAsync(Stream stream, string text, string format, CancellationToken ct, int markdownMaximumBytes = 8192)
     {
         var bytes = Encoding.UTF8.GetBytes(text);
-        if (format != "csv" && bytes.Length > 8192) throw new InvalidDataException("Formatted result exceeds the report budget.");
+        if (format != "csv" && bytes.Length > markdownMaximumBytes) throw new InvalidDataException("Formatted result exceeds the report budget.");
         var headers = new Dictionary<string, string> {
             ["Content-Type"] = format == "csv" ? "text/csv; charset=utf-8" : "text/markdown; charset=utf-8",
             ["Content-Length"] = bytes.Length.ToString(CultureInfo.InvariantCulture), ["Cache-Control"] = "no-store"

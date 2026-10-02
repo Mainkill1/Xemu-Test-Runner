@@ -13,7 +13,8 @@ internal sealed record XisoSuiteRequest(string Id, string TestId, string Revisio
     string? Target = null, XisoSettings? Settings = null);
 internal sealed record XisoSuiteData(string Id, string TestId, string TemplateRevision,
     string? Target, string Qualification, string IsoSha256, XisoCatalog Catalog,
-    XisoSettings Settings, AgentTestDefinition Template);
+    XisoSettings Settings, AgentTestDefinition Template,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string[]? OracleIds = null);
 internal sealed record XisoSuite(string Revision, XisoSuiteData Data, DateTimeOffset CreatedUtc);
 internal sealed record XisoTarget(string Id, string Source, string IsoSha256, string CatalogId,
     int LeafCount, string Qualification);
@@ -23,10 +24,17 @@ internal sealed partial class AgentJobStore
     private readonly SemaphoreSlim _xisoRegistration = new(1, 1);
     private readonly object _xisoGate = new();
     private string XisoSuiteRoot => System.IO.Path.Combine(_paths.Pending, ".xiso-suites");
-    internal static readonly XisoTarget[] XisoTargets = [new(
-        "shader-pilot-51bc23d", "51bc23d3706dea771b76545594256376d8588364",
-        "b944d317035779afb15b7f7a0d90b0e35dd93b2257addba78c073438979cbf14",
-        "sha256:8307fde80201084ce39706e9490cbdf16cddfb1aa21fc19fecf34942fa2f3dd4", 160, "candidate")];
+    internal static readonly XisoTarget[] XisoTargets = [
+        new("shader-pilot-51bc23d", "51bc23d3706dea771b76545594256376d8588364",
+            "b944d317035779afb15b7f7a0d90b0e35dd93b2257addba78c073438979cbf14",
+            "sha256:8307fde80201084ce39706e9490cbdf16cddfb1aa21fc19fecf34942fa2f3dd4", 160, "candidate"),
+        new("shader-runner-suite-dc42b74", "dc42b7452a316adb193c9347134152b02d3d7c35",
+            "c2acf7ee3cd19b62cb25fba97453d8d4f2c800fe27372ae320b724d49ceb2162",
+            "sha256:8307fde80201084ce39706e9490cbdf16cddfb1aa21fc19fecf34942fa2f3dd4", 160, "candidate"),
+        new("shader-runner-suite-db9462f", "db9462f5abe3c7f192ae30eae67bcc72c676cd34",
+            "e6da3efe6f1e507edd9af7e1e9d2b3498459568a06d7bdf21556d72bc761b667",
+            "sha256:2490192671df057163aa6c7bb2f144491dfa35f42ef2f9318a87f50ec92e7747", 159, "candidate")
+    ];
 
     public async Task<object> RegisterXisoSuiteAsync(XisoSuiteRequest request, CancellationToken ct)
     {
@@ -105,6 +113,7 @@ internal sealed partial class AgentJobStore
             if (referenceBytes.Length > extraction.MaximumResultBytes || XisoData.Sha(referenceBytes) != extraction.ExpectedResultsSha256.ToLowerInvariant())
                 throw new InvalidDataException("Pinned XISO reference bytes are unavailable or changed.");
             var defaults = (request.Settings ?? new XisoSettings()).Resolve(ReferenceSettings(referenceBytes));
+            var oracleIds = ReferenceLeafIds(referenceBytes);
             // CLI DVD overrides would defeat the single authoritative effective config.
             for (var i = job.Arguments.Count - 1; i >= 0; i--)
                 if (job.Arguments[i] == "-dvd_path")
@@ -114,7 +123,7 @@ internal sealed partial class AgentJobStore
                 }
             var template = source with { Job = job, Files = files.ToArray(), BuildFiles = source.BuildFiles.Where(path => files.Any(x => x.Path == path)).ToArray() };
             var data = new XisoSuiteData(request.Id, request.TestId, baked.Revision, request.Target,
-                target?.Qualification ?? "unverified", iso.Sha256, suiteCatalog, defaults, template);
+                target?.Qualification ?? "unverified", iso.Sha256, suiteCatalog, defaults, template, oracleIds);
             var revision = HashJson(data);
             lock (_xisoGate)
             {
@@ -179,6 +188,32 @@ internal sealed partial class AgentJobStore
         if (values.Length != 1) throw new InvalidDataException("Reference has mixed work settings. Register separate suite templates instead of guessing defaults.");
         return values[0].Resolve();
     }
+    private static string[] ReferenceLeafIds(byte[] bytes)
+    {
+        using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 32 });
+        XisoData.NoDuplicateKeys(document.RootElement);
+        if (document.RootElement.ValueKind != JsonValueKind.Array || document.RootElement.GetArrayLength() > 512)
+            throw new InvalidDataException("XISO oracle reference must be a bounded result array.");
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var record in document.RootElement.EnumerateArray())
+        {
+            if (record.GetProperty("kind").GetString() != "leaf") continue;
+            var id = record.GetProperty("id").GetString();
+            XisoData.CheckStableId(id);
+            if (!ids.Add(id!)) throw new InvalidDataException("Duplicate XISO reference leaf: " + id);
+        }
+        return ids.Order(StringComparer.Ordinal).ToArray();
+    }
+    private string[] OracleIds(XisoSuite suite)
+    {
+        if (suite.Data.OracleIds is not null) return suite.Data.OracleIds;
+        var source = suite.Data.Template;
+        var path = ResolveFile(Locate(source.SourceJobId).Package, source.Job.Workload.GuestHddResults!.ExpectedResults);
+        var bytes = File.ReadAllBytes(path);
+        if (XisoData.Sha(bytes) != source.Job.Workload.GuestHddResults.ExpectedResultsSha256.ToLowerInvariant())
+            throw new InvalidDataException("Legacy XISO suite reference bytes changed after registration.");
+        return ReferenceLeafIds(bytes);
+    }
     private string XisoSuitePath(string id)
     {
         if (!IsId(id)) throw new InvalidDataException("Invalid suite ID.");
@@ -204,6 +239,9 @@ internal sealed partial class AgentJobStore
         id = suite.Data.Id, suite.Revision, suite.Data.Qualification, suite.Data.Target,
         suite.Data.IsoSha256, catalogId = suite.Data.Catalog.Id, catalogSha256 = suite.Data.Catalog.Sha256,
         leafCount = suite.Data.Catalog.Leaves.Length, groupCount = suite.Data.Catalog.Groups.Length,
+        oracleLeafCount = suite.Data.OracleIds?.Length,
+        missingOracleCount = suite.Data.OracleIds is null ? (int?)null :
+            suite.Data.Catalog.Leaves.Count(leaf => !suite.Data.OracleIds.Contains(leaf.Id, StringComparer.Ordinal)),
         settings = suite.Data.Settings, categories = "/api/v1/xiso-suites/" + suite.Data.Id + "/categories",
         tests = "/api/v1/xiso-suites/" + suite.Data.Id + "/tests"
     };
