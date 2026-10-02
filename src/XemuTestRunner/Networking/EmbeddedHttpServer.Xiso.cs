@@ -14,7 +14,7 @@ public sealed partial class EmbeddedHttpServer
             await WriteAgentJsonAsync(stream, new {
                 capability = "xisoCampaigns", targets = "/api/v1/xiso-targets", suites = "/api/v1/xiso-suites",
                 campaigns = "/api/v1/xiso-campaigns", viewer = "/xiso",
-                rule = "Register a matched suite once. Select categories or stable IDs. Omitted settings use frozen suite defaults. Creation never starts tests; explicitly start, then wait without an agent timer.",
+                rule = "Register a matched suite once. Select categories/stable IDs or compact test_ids/category_ids arrays from that suite's catalog. Numeric requests must include the matching catalogId. Omitted settings use frozen suite defaults. Creation never starts tests; explicitly start, then wait without an agent timer.",
                 seed = "A clean xiso-seed with a preallocated xemu_perf_tests/xemu_perf_tests_config.json is required."
             }, cancellationToken: ct).ConfigureAwait(false);
             return false;
@@ -50,8 +50,8 @@ public sealed partial class EmbeddedHttpServer
         {
             var parts = request.Path[(suites.Length + 1)..].Split('/');
             var id = Uri.UnescapeDataString(parts[0]);
-            object? response = parts.Length == 1 ? AgentJobs.DescribeXisoSuite(id) : parts.Length == 2 && parts[1] == "categories" ? AgentJobs.XisoCategories(id) :
-                parts.Length == 2 && parts[1] == "tests" ? AgentJobs.XisoTests(id, GetQueryValue(request.Query, "category"), GetQueryValue(request.Query, "q"), Offset(), Limit()) : null;
+            object? response = parts.Length == 1 ? AgentJobs.DescribeXisoSuite(id) : parts.Length == 2 && parts[1] == "categories" ? AgentJobs.XisoSelectorCategories(id) :
+                parts.Length == 2 && parts[1] == "tests" ? AgentJobs.XisoSelectorTests(id, GetQueryValue(request.Query, "category"), GetQueryValue(request.Query, "q"), Offset(), Limit()) : null;
             if (response is not null) { await WriteAgentJsonAsync(stream, response, cancellationToken: ct).ConfigureAwait(false); return false; }
         }
         if (request.Path == campaigns)
@@ -59,7 +59,7 @@ public sealed partial class EmbeddedHttpServer
             if (request.Method == "POST")
             {
                 if (!await EnsureOperationAllowedAsync(stream, "bulk_transfer", false, ct).ConfigureAwait(false)) return false;
-                var body = await ReadAgentBodyAsync<XisoCampaignRequest>(stream, request, ct).ConfigureAwait(false);
+                var body = await ReadAgentBodyAsync<XisoCampaignApiRequest>(stream, request, ct).ConfigureAwait(false);
                 using var activity = Activity.TrackTransfer(new { action = "createXisoCampaign", body.Id });
                 await WriteAgentJsonAsync(stream, AgentJobs.CreateXisoCampaign(body), cancellationToken: ct).ConfigureAwait(false); return false;
             }

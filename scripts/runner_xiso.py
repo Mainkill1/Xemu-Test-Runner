@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select XISO categories or individual tests through the runner HTTP API.
+"""Select XISO groups or individual tests through the runner HTTP API.
 
 Run on the agent/build machine with runner_transport.py beside this file.
 Applications are uploaded once using runner_tests.py. Selection creates an
@@ -21,7 +21,7 @@ from runner_transport import ClientError, RunnerApi
 
 class Parser(argparse.ArgumentParser):
     def error(self, message):
-        raise ClientError("arguments_invalid", message, "Use --help for XISO categories, selection and execution commands.")
+        raise ClientError("arguments_invalid", message, "Use --help for XISO categories, numeric selectors and execution commands.")
 
 
 def bounded_int(low: int, high: int):
@@ -30,6 +30,24 @@ def bounded_int(low: int, high: int):
         if not low <= number <= high:
             raise argparse.ArgumentTypeError(f"expected an integer from {low} to {high}")
         return number
+    return parse
+
+
+def bounded_id_list(high: int):
+    def parse(value: str) -> list[int]:
+        parts = [part.strip() for part in value.split(",")]
+        if not parts or any(not part for part in parts):
+            raise argparse.ArgumentTypeError("expected comma-separated numeric IDs")
+        numbers = []
+        for part in parts:
+            try:
+                number = int(part)
+            except ValueError as error:
+                raise argparse.ArgumentTypeError(f"invalid numeric ID: {part}") from error
+            if not 0 <= number <= high:
+                raise argparse.ArgumentTypeError(f"expected numeric IDs from 0 to {high}")
+            numbers.append(number)
+        return numbers
     return parse
 
 
@@ -47,9 +65,9 @@ def build_parser():
     register.add_argument("--id", required=True, help="New immutable suite name.")
     register.add_argument("--target", help="Optional known target pin, e.g. shader-pilot-51bc23d.")
     settings_options(register)
-    categories = commands.add_parser("categories", help="Show available subsystem categories and counts.")
+    categories = commands.add_parser("categories", help="Show stable numeric category IDs and counts.")
     categories.add_argument("suite")
-    tests = commands.add_parser("tests", help="Browse stable individual test IDs.")
+    tests = commands.add_parser("tests", help="Browse global numeric IDs and stable individual test IDs.")
     tests.add_argument("suite")
     tests.add_argument("--category")
     tests.add_argument("--search")
@@ -58,8 +76,13 @@ def build_parser():
     select.add_argument("application", help="Already-uploaded application ID.")
     select.add_argument("--id", required=True, help="New campaign ID; reuse it only for an identical request.")
     select.add_argument("--suite", help="May be omitted only when exactly one suite is installed.")
-    select.add_argument("--category", action="append", default=[], help="Repeat to union subsystem categories.")
+    select.add_argument("--category", action="append", default=[], help="Repeat to union named subsystem categories.")
     select.add_argument("--test", action="append", default=[], help="Repeat to union exact stable leaf IDs.")
+    select.add_argument("--test-ids", action="append", type=bounded_id_list(511), default=[], metavar="ID[,ID...]",
+                        help="Compact zero-based test IDs from this suite's tests catalog; repeat or comma-separate.")
+    select.add_argument("--category-ids", action="append", type=bounded_id_list(7), default=[], metavar="ID[,ID...]",
+                        help="Compact zero-based subsystem category IDs from this suite's catalog.")
+    select.add_argument("--catalog-id", help="Optional exact catalog pin for numeric selectors; reject a changed suite before campaign creation.")
     select.add_argument("--mode", choices=("smoke", "sections", "full", "monolithic"))
     select.add_argument("--reference", help="Reference application; defaults to the full suite with per-chunk ABBA and BAAB orders.")
     select.add_argument("--start", action="store_true", help="Explicitly authorize the campaign after creation succeeds.")
@@ -104,6 +127,21 @@ def settings(args):
         "measurement_iterations_multiplier": args.multiplier,
         "gpu_completion_mode": args.completion
     }.items() if value is not None}
+
+
+def flatten(values):
+    return [item for group in values for item in group]
+
+
+def compact_ids(values, limit: int, label: str) -> list[int]:
+    items = flatten(values)
+    if len(items) > limit:
+        raise ClientError(
+            "arguments_invalid",
+            f"At most {limit} numeric XISO {label} selectors may be supplied.",
+            "Narrow the selector list or choose a category instead of repeating individual IDs.",
+        )
+    return sorted(set(items))
 
 
 def quoted(value: str) -> str:
@@ -174,13 +212,25 @@ def read_report(api: RunnerApi, identity: str, format_name: str):
 
 
 def execute(args):
+    command = args.command
+    test_ids = []
+    category_ids = []
+    if command == "select":
+        # Validate before capability discovery so malformed compact requests never
+        # make an HTTP call, then send one deterministic canonical array.
+        test_ids = compact_ids(args.test_ids, 512, "test")
+        category_ids = compact_ids(args.category_ids, 8, "category")
+        if (test_ids or category_ids) and not args.suite:
+            raise ClientError("arguments_invalid", "Numeric XISO selectors require --suite so their catalog identity is explicit.")
+        if args.catalog_id and not (test_ids or category_ids):
+            raise ClientError("arguments_invalid", "--catalog-id applies only to numeric XISO selectors.")
+
     # Registration may verify/copy a large retained asset; its internal socket
     # budget is not exposed as an agent-estimated execution/wait deadline.
-    api = RunnerApi(args.url, timeout=1800 if args.command == "register" else 60)
+    api = RunnerApi(args.url, timeout=1800 if command == "register" else 60)
     info = api.json("/api/v1/help?topic=xiso")
     if not isinstance(info, dict) or info.get("capability") != "xisoCampaigns":
         raise ClientError("capability_missing", "This tester lacks XISO campaign support.", "Deploy the matching runner; do not replace the API with guest networking or SSH.")
-    command = args.command
     if command == "targets":
         return api.json("/api/v1/xiso-targets")
     if command == "register":
@@ -229,7 +279,15 @@ def execute(args):
         return value
     if command == "select":
         body = {"id": args.id, "application": args.application}
+        if test_ids or category_ids:
+            catalog = api.json("/api/v1/xiso-suites/" + quoted(args.suite) + "/categories")
+            if catalog.get("selectorVersion") != 1 or catalog.get("idBase") != 0 or not isinstance(catalog.get("catalogId"), str):
+                raise ClientError("selector_contract_invalid", "The suite has an unsupported numeric selector contract.")
+            if args.catalog_id and args.catalog_id != catalog["catalogId"]:
+                raise ClientError("xiso_catalog_changed", "The selected suite catalog differs from --catalog-id; inspect the stable test identities before creating a campaign.")
+            body["catalogId"] = catalog["catalogId"]
         for field, value in (("suite", args.suite), ("categories", args.category), ("tests", args.test),
+                             ("test_ids", test_ids), ("category_ids", category_ids),
                              ("mode", args.mode), ("referenceApplication", args.reference), ("settings", settings(args))):
             if value:
                 body[field] = value

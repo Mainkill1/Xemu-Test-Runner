@@ -55,6 +55,24 @@ await Check("registration reads the catalog inside the immutable ISO", async () 
     Require(tests.GetProperty("items").GetArrayLength() == 2, "Category did not filter shader leaves.");
     Require(!Directory.EnumerateDirectories(host.Paths.Pending).Any(x => !Path.GetFileName(x).StartsWith('.')), "Registration queued executable work.");
 });
+await Check("numeric selectors require the matching pinned catalog", async () =>
+{
+    await using var host = new AgentFixture();
+    var suite = await Setup(host);
+    var catalogId = suite.GetProperty("catalogId").GetString();
+    await host.Json("/api/v1/xiso-campaigns", HttpMethod.Post,
+        new { id = "numeric-guard", application = "application", suite = "fixture", test_ids = new[] { 0 } }, HttpStatusCode.BadRequest);
+    await host.Json("/api/v1/xiso-campaigns", HttpMethod.Post,
+        new { id = "numeric-guard", application = "application", suite = "fixture", catalogId = "sha256:" + new string('a', 64), test_ids = new[] { 0 } }, HttpStatusCode.Conflict);
+    var created = await host.Json("/api/v1/xiso-campaigns", HttpMethod.Post,
+        new { id = "numeric-guard", application = "application", suite = "fixture", catalogId, test_ids = new[] { 0 }, category_ids = new[] { 2 } });
+    Require(!created.GetProperty("startRequested").GetBoolean() && created.GetProperty("selectedLeaves").GetInt32() == 3,
+        "Pinned numeric selectors did not resolve to the intended CPU and shader leaves.");
+    var plan = await host.Json("/api/v1/xiso-campaigns/numeric-guard?view=plan");
+    Require(plan.GetProperty("tests").EnumerateArray().Select(x => x.GetString()).SequenceEqual(
+        new[] { "cpu.direct", "shader_lifecycle.pipeline_train", "shader_lifecycle.pipeline_uniform_only" }),
+        "Frozen plan did not retain stable selected test identities.");
+});
 await Check("category selection is small upload-only and freezes defaults", async () =>
 {
     await using var host = new AgentFixture();
