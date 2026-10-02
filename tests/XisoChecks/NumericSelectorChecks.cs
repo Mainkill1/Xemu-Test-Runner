@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using XemuTestRunner.Runtime;
 
 internal static class NumericSelectorChecks
@@ -34,6 +35,28 @@ internal static class NumericSelectorChecks
         Reject(() => catalog.Select(null, null, null, [-1], null), "Negative test-group ID was accepted.");
         Reject(() => catalog.Select(null, null, null, [XisoCatalog.Categories.Length], null),
             "Out-of-range test-group ID was accepted.");
+
+        VerifyRequestBinding();
+    }
+
+    private static void VerifyRequestBinding()
+    {
+        var requestType = typeof(XisoCatalog).Assembly.GetType(
+            "XemuTestRunner.Networking.XisoCampaignApiRequest", throwOnError: true)!;
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var request = JsonSerializer.Deserialize(
+            """{"id":"focused","application":"candidate","suite":"pilot","test_ids":[0,3,29],"test_groups":[0,2]}""",
+            requestType, options) ?? throw new InvalidOperationException("Numeric XISO request did not deserialize.");
+        var testIds = (int[]?)requestType.GetProperty("TestIds")?.GetValue(request);
+        var testGroups = (int[]?)requestType.GetProperty("TestGroups")?.GetValue(request);
+        Require(testIds is not null && testIds.SequenceEqual([0, 3, 29]),
+            "Server request binding lost test_ids.");
+        Require(testGroups is not null && testGroups.SequenceEqual([0, 2]),
+            "Server request binding lost test_groups.");
+
+        RejectJson(() => JsonSerializer.Deserialize(
+            """{"id":"focused","application":"candidate","testIds":[0]}""",
+            requestType, options), "Unexpected numeric selector spelling was accepted.");
     }
 
     private static IEnumerable<string> Ids(XisoSelection selection) => selection.Leaves.Select(x => x.Id);
@@ -47,6 +70,13 @@ internal static class NumericSelectorChecks
     {
         try { action(); }
         catch (InvalidDataException) { return; }
+        throw new InvalidOperationException(message);
+    }
+
+    private static void RejectJson(Action action, string message)
+    {
+        try { action(); }
+        catch (JsonException) { return; }
         throw new InvalidOperationException(message);
     }
 }
