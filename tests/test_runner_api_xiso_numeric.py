@@ -19,7 +19,7 @@ class XisoNumericClientChecks(unittest.TestCase):
             timeout=20,
         )
 
-    def test_compact_numeric_arrays_are_sent_without_expanding_names(self):
+    def test_compact_numeric_arrays_are_sorted_deduplicated_and_not_expanded(self):
         with fixture(responder()) as (origin, calls):
             result = self.invoke(
                 origin,
@@ -30,11 +30,11 @@ class XisoNumericClientChecks(unittest.TestCase):
                 "--suite",
                 "pilot",
                 "--test-ids",
-                "0,3,29",
+                "41,3,0,3,29",
                 "--test-ids",
                 "41",
                 "--test-groups",
-                "0,2",
+                "2,0,2",
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         body = next(
@@ -73,6 +73,22 @@ class XisoNumericClientChecks(unittest.TestCase):
                 "example",
                 "--test-groups",
                 "8",
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout)["code"], "arguments_invalid")
+        self.assertEqual(calls, [])
+
+    def test_numeric_selector_count_limit_fails_before_an_http_request(self):
+        too_many = ",".join("0" for _ in range(513))
+        with fixture(responder()) as (origin, calls):
+            result = self.invoke(
+                origin,
+                "select",
+                "build-a",
+                "--id",
+                "example",
+                "--test-ids",
+                too_many,
             )
         self.assertEqual(result.returncode, 1)
         self.assertEqual(json.loads(result.stdout)["code"], "arguments_invalid")
