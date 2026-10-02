@@ -32,6 +32,8 @@ The upload receipt supplies the executable SHA-256. `result SHA` uses the explic
 
 Results match executable bytes, procedure/fixed inputs, environment and metric contract. Do not mix workloads or omit failed repetitions. Execution, correctness, evidence and comparison remain separate. Missing/unindexed evidence is not a pass; resolve index-status errors before claiming complete coverage.
 
+For a preregistered generic game campaign, repeat `compare --run RUN_ID` for every archived A/B attempt in its manifest. Unscoped comparisons include qualification and unrelated historical attempts sharing the workload identity. Verify complete manifest membership, not just the reported A/B counts. The client requires `scopedBuildComparison`; do not substitute a local calculator or change the pinned baseline. XISO uses its existing campaign report and canonical child selection.
+
 Cache state is an input. Use RuntimeState.Isolation, explicit shader-cache behavior and private HDD/EEPROM. `state RUN_ID` exposes paths, before/after hashes/counts and unresolved controls. Cold application caches do not prove cold driver/OS caches. Do not enable AllowUncontrolledDriverCache just to obtain a green comparison, delete global caches or start unrequested warmups. See docs/RUN-STATE.md.
 
 Raw CSV and ZIP are explicit secondary downloads. `diagnostics RUN_ID` is a compact crash/bundle report; `--out FILE.zip` downloads and verifies its hash. Missing dumps do not make a crash pass. Let other requested tests proceed after confirmed exit and archival. See docs/CRASH-REPORTS.md.

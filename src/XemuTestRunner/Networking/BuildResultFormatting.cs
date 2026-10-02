@@ -10,6 +10,8 @@ internal static class BuildResultFormatting
         var text = new StringBuilder();
         text.AppendLine($"A {comparison.A[..12]} -> B {comparison.B[..12]} | {comparison.Status}");
         text.AppendLine($"Attempts {comparison.RunsA}/{comparison.RunsB}; blocked {comparison.BlockedRuns}. Reference: {(comparison.BaselinePinned ? "pinned baseline" : "explicit A")}.");
+        if (comparison.SelectedRunIds is not null)
+            text.AppendLine($"Scope: {comparison.SelectedRunIds.Count} explicitly selected archived attempts; qualification and unrelated runs are not pooled.");
         foreach (var section in comparison.Rows.GroupBy(row => (row.Test, row.TestKey, row.Context, row.Section)))
         {
             text.AppendLine();

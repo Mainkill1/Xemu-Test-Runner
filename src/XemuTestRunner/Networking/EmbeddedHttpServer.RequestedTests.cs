@@ -34,7 +34,7 @@ public sealed partial class EmbeddedHttpServer
         if (request.Path == "/api/v1/help" && GetQueryValue(request.Query, "topic") == "test-workflow" && request.Method == "GET")
         {
             await WriteAgentJsonAsync(stream, new {
-                version = 1, capabilities = new[] { "namedConfigs", "requestedTests", "uploadOnly", "executableHashResults", "pinnedBaseline", "serverComparison", "applicationIdentity", "performanceAnalysis", "xisoCampaigns" },
+                version = 1, capabilities = new[] { "namedConfigs", "requestedTests", "uploadOnly", "executableHashResults", "pinnedBaseline", "serverComparison", "scopedBuildComparison", "applicationIdentity", "performanceAnalysis", "xisoCampaigns" },
                 configs = "/api/v1/test-configs", viewer = "/tests", requests = "/api/v1/test-runs", results = "/api/v1/help?topic=build-results",
                 application = "/api/v1/applications/{id}", performance = "/api/v1/runs/{runId}/performance", xiso = "/api/v1/help?topic=xiso",
                 start = "POST /api/v1/test-runs/{id}/start", rule = "Uploads never start tests. Explicit start persists intent and queues behind current work."

@@ -23,6 +23,8 @@ def register(sub) -> None:
     compare = sub.add_parser("compare", help="Ask the tester to compare executable hashes; A defaults to the pinned baseline.")
     compare.add_argument("--a")
     compare.add_argument("--b", required=True)
+    compare.add_argument("--run", dest="runs", action="append",
+                         help="Archived campaign run ID; repeat for EVERY preregistered A/B attempt. No local calculation.")
     compare.add_argument("--format", choices=("json", "markdown", "csv"))
     compare.add_argument("--out", type=Path)
     baseline = sub.add_parser("baseline", help="Show the current pin; supplying SHA256 explicitly replaces it.")
@@ -108,6 +110,9 @@ def execute(api: RunnerApi, args):
     info = api.json("/api/v1/help?topic=build-results")
     if not isinstance(info, dict) or "executableHashResults" not in info.get("capabilities", []):
         raise ClientError("capability_missing", "The tester does not support executable-hash results.", "Deploy the matching runner version; no client-side comparison fallback is used.")
+    if args.command == "compare" and args.runs and "scopedBuildComparison" not in info.get("capabilities", []):
+        raise ClientError("capability_missing", "The tester cannot select archived comparison runs.",
+                          "Upgrade the runner; an older server could ignore this scope and pool unrelated attempts.")
     if args.command == "baseline":
         return api.json("/api/v1/baseline", "PUT", {"sha256": sha(args.sha256)}) if args.sha256 else api.json("/api/v1/baseline")
     if args.command == "index":
@@ -126,6 +131,8 @@ def execute(api: RunnerApi, args):
         query["B"] = sha(args.b)
         if args.a:
             query["A"] = sha(args.a)
+        if args.runs:
+            query["runs"] = ",".join(args.runs)
         path = "/api/v1/compare?" + urllib.parse.urlencode(query)
     else:
         path = "/api/v1/build-results/" + sha(args.sha256) + "?" + urllib.parse.urlencode(query)

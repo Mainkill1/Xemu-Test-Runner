@@ -17,10 +17,10 @@ public sealed partial class EmbeddedHttpServer
         {
             await WriteAgentJsonAsync(stream, new
             {
-                capabilities = new[] { "executableHashResults", "pinnedBaseline", "serverComparison", "compactReports" },
+                capabilities = new[] { "executableHashResults", "pinnedBaseline", "serverComparison", "scopedBuildComparison", "compactReports" },
                 result = "/api/v1/build-results/{sha256}", comparison = "/api/v1/compare?A={sha256}&B={sha256}",
                 baseline = "/api/v1/baseline", formats = new[] { "json", "markdown", "csv (comparison only)" },
-                rule = "A omitted uses the explicitly pinned baseline. No first/latest baseline is selected automatically. Indexing reads archived evidence, never starts tests.",
+                rule = "A omitted uses the explicitly pinned baseline. Optional runs is a comma-separated scope of 1-128 distinct archived run IDs from both builds; include every preregistered attempt. Missing or foreign IDs are rejected. Indexing and comparison never start tests or change the baseline.",
                 index = "POST /api/v1/build-results/index {runId}", indexStatus = "/api/v1/build-results/index-status"
             }, cancellationToken: ct).ConfigureAwait(false);
             return false;
@@ -64,7 +64,8 @@ public sealed partial class EmbeddedHttpServer
             var b = GetQueryValue(request.Query, "B");
             _ = BuildResultStore.Sha(b);
             if (a is not null) _ = BuildResultStore.Sha(a);
-            var result = AgentJobs.BuildResults.Compare(a, b!, format == "csv");
+            var scope = GetQueryValue(request.Query, "runs")?.Split(',');
+            var result = AgentJobs.BuildResults.Compare(a, b!, format == "csv", scope);
             if (format == "json") await WriteAgentJsonAsync(stream, result, cancellationToken: ct).ConfigureAwait(false);
             else await WriteBuildTextAsync(stream, format == "csv" ? BuildResultFormatting.Csv(result) : BuildResultFormatting.Markdown(result), format, ct).ConfigureAwait(false);
             return false;

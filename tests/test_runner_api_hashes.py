@@ -17,7 +17,7 @@ REPORT = "A aaaaaa -> B bbbbbb | server comparison\nruntime | 100 | 80 | -20% | 
 def respond(method, path, body, headers):
     route = urlsplit(path).path
     if route == "/api/v1/help":
-        return 200, {"capabilities": ["executableHashResults", "serverComparison"]}, {}
+        return 200, {"capabilities": ["executableHashResults", "serverComparison", "scopedBuildComparison"]}, {}
     if route == "/api/v1/baseline":
         return 200, {"configured": method == "PUT", "sha256": body.get("sha256") if body else None}, {}
     if route.endswith("metrics.csv"):
@@ -48,6 +48,26 @@ class HashClientChecks(unittest.TestCase):
             result = self.run_client(origin, "compare", "--b", B)
         self.assertEqual(result.returncode, 0)
         self.assertNotIn("A", parse_qs(urlsplit(calls[-1][1]).query))
+
+    def test_explicit_campaign_runs_are_forwarded_without_local_calculation(self):
+        with fixture(respond) as (origin, calls):
+            result = self.run_client(origin, "compare", "--a", A, "--b", B,
+                                     "--run", "run-first", "--run", "run-second")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), REPORT.strip())
+        self.assertEqual(parse_qs(urlsplit(calls[-1][1]).query)["runs"], ["run-first,run-second"])
+        self.assertTrue(all(method == "GET" for method, _, _, _ in calls))
+
+    def test_scope_is_refused_when_an_older_server_would_ignore_it(self):
+        def older_server(method, path, body, headers):
+            if urlsplit(path).path == "/api/v1/help":
+                return 200, {"capabilities": ["executableHashResults", "serverComparison"]}, {}
+            return respond(method, path, body, headers)
+        with fixture(older_server) as (origin, calls):
+            result = self.run_client(origin, "compare", "--a", A, "--b", B, "--run", "run-first")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout)["code"], "capability_missing")
+        self.assertFalse(any(urlsplit(path).path == "/api/v1/compare" for _, path, _, _ in calls))
 
     def test_setting_a_baseline_requires_the_explicit_hash_command(self):
         with fixture(respond) as (origin, calls):

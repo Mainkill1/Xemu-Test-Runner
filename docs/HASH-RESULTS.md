@@ -17,6 +17,29 @@ Result and comparison commands print a small Markdown report returned by the tes
 
 The Python helper forwards hashes and prints the server response. It does not download measurements to calculate percentages, choose a baseline, hide failed runs or invent performance results.
 
+### Compare a preregistered campaign
+
+Without a scope, comparison includes every indexed attempt for each executable,
+including route-qualification attempts with the same workload identity. For a
+balanced campaign, pass **every** archived run ID in its frozen manifest using
+repeated `--run RUN_ID` arguments. Do not omit failed or slower scheduled runs.
+The tester still calculates the comparison; the client only forwards the list.
+
+The API accepts `runs=RUN_A1,RUN_B1,...` with 1-128 distinct valid run IDs.
+It rejects unknown/foreign IDs, duplicates, empty lists and one-sided scopes.
+Selected failed/incomplete attempts retain their normal blocking behavior.
+JSON records `selectedRunIds` and the compared `recordSet`; its full CSV link
+preserves the scope. A scope never changes the pinned baseline or archived
+results. When A is omitted, selected A runs must already belong to the immutable
+pinned reference; later runs cannot expand that reference.
+
+This feature requires the server's `scopedBuildComparison` capability. The
+client refuses older servers that could silently ignore `runs`. The server
+does not independently know a generic game's preregistered manifest: preserve
+that manifest and verify its complete membership and A/B counts alongside the
+report. XISO campaigns already select their own canonical child attempts and
+continue using their existing campaign report.
+
 ## API
 
 | Request | Behavior |
@@ -30,7 +53,7 @@ The Python helper forwards hashes and prints the server response. It does not do
 | POST /api/v1/build-results/index with {"runId":"..."} | Import existing canonical archived evidence; no execution. |
 | GET /api/v1/build-results/index-status | Inspect recent automatic indexing problems. |
 
-Append `format=markdown` for readable reports. Comparison also supports `format=csv`. JSON summaries are byte-bounded and retain MoreRows/MoreRuns/MoreMetrics indicators when details are omitted. Full CSV and paged run records are secondary detail operations. API error/absence is never a passing result.
+Append `format=markdown` for readable reports. Comparison also supports `format=csv`. Explicit run scopes have a separate bounded metadata allowance (up to 128 IDs), so scope identity cannot consume the compact metric budget. JSON summaries are byte-bounded and retain MoreRows/MoreRuns/MoreMetrics indicators when details are omitted. Full CSV and paged run records are secondary detail operations. API error/absence is never a passing result.
 
 ## What is compared
 
