@@ -7,7 +7,7 @@ Dead or Alive Xtreme Beach Volleyball (USA).
 
 | Procedure | Input | Measurement |
 |---|---|---|
-| Conker v2 | Full Xbox startup; wait15s +15s, A100ms, wait20s, A100ms, wait15s for bar transition | 30 seconds in the bar menu |
+| Conker v2 | Full Xbox startup; wait 15 s + 15 s, A for 100 ms, wait 20 s, A for 100 ms, wait 15 s for bar transition | 30 seconds in the bar menu |
 | PGR2 | Existing `pgr2-parked-v1` inputs and portable save | 30 seconds parked; no gameplay input |
 | DOAXBV | Wait 90 seconds, A for 100 ms; wait 5 seconds, A for 100 ms | 30 seconds after the final input |
 
@@ -18,7 +18,10 @@ The original Conker v1 candidate remains as a failed proposal: its two
 The revised `conker-menu-fresh-v2.json` uses two A presses and a transition wait;
 it reached **Xbox Live & Co** at both measurement screenshots on both builds
 and hosts. These are nominal wall-clock allowances, not a detected Xbox boot
-boundary. The menu animates; this does not promise identical simulation time.
+boundary. The user clarified that the requested 15-second delay starts at
+the Rare/Conker intro, then authorized qualification of the working skip
+sequence. Version 2 is that qualified fixed-delay route; it does not detect
+the intro or guarantee an input exactly 15 guest seconds afterward. The menu animates; this does not promise identical simulation time.
 
 Use one immutable saved-test revision per host/game, and the same procedure for
 both application hashes. Run `A B B A`, then `B A A B`; retain failed attempts.
@@ -74,7 +77,8 @@ those changes and must not be substituted for this campaign.
   then the identical procedure qualified after inactive staging was archived.
   Preserve that failed request; do not pool movie measurements with the menu.
 
-These contracts preserve the requested inputs as reproducible test sources.
+PGR2 and DOAXBV preserve the requested inputs. Conker v2 preserves the
+separately authorized, qualified skip route as a reproducible test source.
 Their presence is not proof of consumed guest input, identical simulation time,
 a benchmark pass, or a performance result. Numeric correctness checks and scene
 qualification are separate. The runner has no qualified external frame provider
