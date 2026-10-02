@@ -7,17 +7,18 @@ Dead or Alive Xtreme Beach Volleyball (USA).
 
 | Procedure | Input | Measurement |
 |---|---|---|
-| Conker (candidate, not qualified) | Full Xbox startup; nominal 15-second startup allowance, then 15 seconds and A for 100 ms | 30 seconds after the final input |
+| Conker v2 | Full Xbox startup; wait15s +15s, A100ms, wait20s, A100ms, wait15s for bar transition | 30 seconds in the bar menu |
 | PGR2 | Existing `pgr2-parked-v1` inputs and portable save | 30 seconds parked; no gameplay input |
 | DOAXBV | Wait 90 seconds, A for 100 ms; wait 5 seconds, A for 100 ms | 30 seconds after the final input |
 
 Qualification must confirm each intended scene on both devices and both builds.
 A non-black screenshot alone does not prove that the menu input succeeded.
-Conker's game-start boundary remains under qualification. The candidate's two
-15-second waits are wall-clock waits; the first is not a detected Xbox boot
-boundary. Native Windows and Steam Deck checks remained in the opening movie.
-Do not present that candidate as a working menu benchmark or describe it as
-15 seconds after a measured guest startup boundary.
+The original Conker v1 candidate remains as a failed proposal: its two
+15-second wall-clock waits and one A press did not skip the movie on either rig.
+The revised `conker-menu-fresh-v2.json` uses two A presses and a transition wait;
+it reached **Xbox Live & Co** at both measurement screenshots on both builds
+and hosts. These are nominal wall-clock allowances, not a detected Xbox boot
+boundary. The menu animates; this does not promise identical simulation time.
 
 Use one immutable saved-test revision per host/game, and the same procedure for
 both application hashes. Run `A B B A`, then `B A A B`; retain failed attempts.
@@ -30,6 +31,10 @@ The normal measurement contract is the existing named CPU segment and bounded
 and at least 160 guest-frame intervals. Record both windows as distinct: authored
 screenshots and finalization can move the frame tail relative to segment bounds.
 Use the saved `performance.json` and tester comparison API; no separate sampler.
+For a generic game campaign, supply every preregistered archived run ID to the
+`scopedBuildComparison` report capability; executable hashes alone also select
+qualification and historical attempts. Do not locally calculate CPU/frame
+comparisons or replace the pinned baseline.
 GPU readings are already in the original `metrics.csv`; unavailable process-GPU
 readings must not be replaced by total-device usage without labeling that change.
 
@@ -63,9 +68,11 @@ those changes and must not be substituted for this campaign.
   reached the menu by the end screenshot but was still transitioning at the
   start screenshot. An earlier Deck attempt displayed a guest disc error.
   Retain that failure; this retry does not establish its root cause.
-- Conker's candidate A press did not skip the movie on either rig. It remains
-  unqualified. Do not silently replace A with another button or pool movie
-  measurements with menu measurements.
+- Conker v2 reached the bar menu on Windows and Deck with both builds. Its
+  source preserves the changed route explicitly; v1 stays unqualified. A
+  separate Deck fork preparation failed before launch at the free-space floor,
+  then the identical procedure qualified after inactive staging was archived.
+  Preserve that failed request; do not pool movie measurements with the menu.
 
 These contracts preserve the requested inputs as reproducible test sources.
 Their presence is not proof of consumed guest input, identical simulation time,
