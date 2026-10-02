@@ -41,18 +41,32 @@ class XisoViewerChecks(unittest.TestCase):
         if path == '/xiso':
             route.fulfill(status=200, body=HTML, content_type='text/html')
             return
-        suite = {'id': 'pilot', 'leafCount': 7, 'qualification': 'candidate',
+        suite = {'id': 'pilot', 'leafCount': 30, 'qualification': 'candidate',
                  'isoSha256': 'a' * 64, 'catalogId': 'sha256:' + 'b' * 64}
         if path == '/api/v1/xiso-suites':
             value = {'items': [suite], 'nextOffset': None}
         elif path == '/api/v1/xiso-suites/pilot':
             value = suite
         elif path.endswith('/categories'):
-            value = {'items': [{'id': 'cpu', 'name': 'CPU and translation', 'count': 1},
-                               {'id': 'shaders', 'name': 'Shaders and pipelines', 'count': 6}]}
+            value = {
+                'selectorVersion': 1,
+                'idBase': 0,
+                'items': [
+                    {'group_id': 0, 'id': 'cpu', 'name': 'CPU and translation', 'count': 1, 'available': True},
+                    {'group_id': 2, 'id': 'shaders', 'name': 'Shaders and pipelines', 'count': 6, 'available': True},
+                    {'group_id': 5, 'id': 'surfaces', 'name': 'Surfaces and memory', 'count': 0, 'available': False},
+                ],
+            }
         elif path.endswith('/tests'):
-            value = {'items': [{'id': 'cpu.direct', 'category': 'cpu', 'freshProcess': False},
-                               {'id': 'shader_lifecycle.pipeline_train', 'category': 'shaders', 'freshProcess': True}], 'nextOffset': None}
+            value = {
+                'selectorVersion': 1,
+                'idBase': 0,
+                'items': [
+                    {'test_id': 0, 'id': 'cpu.direct', 'category': 'cpu', 'freshProcess': False},
+                    {'test_id': 29, 'id': 'shader_lifecycle.pipeline_train', 'category': 'shaders', 'freshProcess': True},
+                ],
+                'nextOffset': None,
+            }
         elif path == '/api/v1/xiso-campaigns':
             value = {'id': body['id'], 'state': 'uploaded', 'startRequested': False}
         elif path.endswith('/start'):
@@ -68,19 +82,28 @@ class XisoViewerChecks(unittest.TestCase):
         self.page.wait_for_function("document.getElementById('result').textContent.includes('uploaded')")
         return next(body for method, path, body in self.calls if method == 'POST' and path == '/api/v1/xiso-campaigns')
 
-    def test_category_selection_does_not_submit_unused_settings_or_start(self):
-        self.page.locator('#categories input[value=shaders]').check()
+    def test_group_selection_submits_compact_numeric_array_without_start(self):
+        self.page.locator('#categories input[value="2"]').check()
         body = self.create()
-        self.assertEqual(body, {'id': 'browser-campaign', 'application': 'candidate', 'suite': 'pilot', 'categories': ['shaders']})
+        self.assertEqual(body, {'id': 'browser-campaign', 'application': 'candidate',
+                               'suite': 'pilot', 'test_groups': [2]})
         self.assertFalse(any(path.endswith('/start') for _, path, _ in self.calls))
 
-    def test_individual_selection_exposes_fresh_process_isolation(self):
+    def test_individual_selection_submits_global_numeric_test_id(self):
         row = self.page.locator('#tests tr').filter(has_text='shader_lifecycle.pipeline_train')
         self.assertIn('Separate process', row.inner_text())
+        self.assertEqual(row.locator('td').first.inner_text(), '29')
         row.locator('input').check()
         body = self.create()
-        self.assertEqual(body['tests'], ['shader_lifecycle.pipeline_train'])
+        self.assertEqual(body['test_ids'], [29])
+        self.assertNotIn('tests', body)
         self.assertNotIn('categories', body)
+
+    def test_selector_ids_are_visible_and_empty_groups_are_disabled(self):
+        categories = self.page.locator('#categories').inner_text()
+        self.assertIn('#0 CPU and translation', categories)
+        self.assertIn('#2 Shaders and pipelines', categories)
+        self.assertTrue(self.page.locator('#categories input[value="5"]').is_disabled())
 
     def test_start_is_a_separate_intent_after_creation(self):
         self.create()
