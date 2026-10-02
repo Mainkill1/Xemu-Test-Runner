@@ -17,26 +17,40 @@ internal static class NumericSelectorChecks
         };
         var catalog = new XisoCatalog("sha256:" + new string('a', 64), new string('b', 64), leaves, []);
 
-        var individual = catalog.Select(null, null, [3, 0, 3], null, null);
+        Require(Enumerable.Range(0, XisoNumericSelectorExtensions.TestGroupCount)
+                .Select(XisoNumericSelectorExtensions.TestGroupCategory)
+                .SequenceEqual(["cpu", "commands", "shaders", "textures", "geometry", "surfaces", "scenarios", "other"], StringComparer.Ordinal),
+            "Selector-version 1 test-group IDs changed.");
+
+        var individual = Select(catalog, null, null, [3, 0, 3], null);
         Require(individual.Mode == "sections", "Numeric selectors did not choose sections mode.");
         Require(Ids(individual).SequenceEqual(["cpu.zero", "shader.three"], StringComparer.Ordinal),
             "Numeric test IDs did not resolve in pinned catalog order or de-duplicate.");
 
-        var grouped = catalog.Select(null, null, null, [2, 0, 2], null);
+        var grouped = Select(catalog, null, null, null, [2, 0, 2]);
         Require(Ids(grouped).SequenceEqual(["cpu.zero", "shader.two", "shader.three"], StringComparer.Ordinal),
             "Numeric test groups did not resolve to the stable subsystem table.");
 
-        var union = catalog.Select(["cpu"], ["texture.four"], [1], [2], null);
+        var union = Select(catalog, ["cpu"], ["texture.four"], [1], [2]);
         Require(Ids(union).SequenceEqual(leaves.Select(x => x.Id), StringComparer.Ordinal),
             "Named and numeric selectors were not unioned.");
 
-        Reject(() => catalog.Select(null, null, [-1], null, null), "Negative test ID was accepted.");
-        Reject(() => catalog.Select(null, null, [leaves.Length], null, null), "Out-of-range test ID was accepted.");
-        Reject(() => catalog.Select(null, null, null, [-1], null), "Negative test-group ID was accepted.");
-        Reject(() => catalog.Select(null, null, null, [XisoCatalog.Categories.Length], null),
+        Reject(() => Select(catalog, null, null, [-1], null), "Negative test ID was accepted.");
+        Reject(() => Select(catalog, null, null, [leaves.Length], null), "Out-of-range test ID was accepted.");
+        Reject(() => Select(catalog, null, null, null, [-1]), "Negative test-group ID was accepted.");
+        Reject(() => Select(catalog, null, null, null, [XisoNumericSelectorExtensions.TestGroupCount]),
             "Out-of-range test-group ID was accepted.");
+        Reject(() => Select(catalog, null, null, null, [5]),
+            "An unavailable test group was accepted for this suite.");
 
         VerifyRequestBinding();
+    }
+
+    private static XisoSelection Select(XisoCatalog catalog, string[]? categories, string[]? tests,
+        int[]? testIds, int[]? testGroups)
+    {
+        var resolved = catalog.ResolveSelectors(categories, tests, testIds, testGroups);
+        return catalog.Select(resolved.Categories, resolved.Tests, null);
     }
 
     private static void VerifyRequestBinding()
