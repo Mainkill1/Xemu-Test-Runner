@@ -27,11 +27,15 @@ internal sealed partial class AgentJobStore
                                   (request.TestGroups?.Length ?? 0) > 0;
         if (hasNumericSelectors)
         {
+            // Preserve the established cheap validation order before reading a suite.
+            if (!IsId(request.Id) || request.Id.Length > 38)
+                throw new InvalidDataException("Campaign ID must be a runner ID of at most 38 characters.");
             var suite = ReadXisoSuite(request.Suite);
-            var resolved = suite.Data.Catalog.ResolveNumericSelectors(request.TestIds, request.TestGroups);
+            var resolved = suite.Data.Catalog.ResolveSelectors(
+                request.Categories, request.Tests, request.TestIds, request.TestGroups);
             suiteId = suite.Data.Id;
-            categories = MergeSelectors(request.Categories, resolved.Categories);
-            tests = MergeSelectors(request.Tests, resolved.Tests);
+            categories = resolved.Categories;
+            tests = resolved.Tests;
         }
 
         return CreateXisoCampaign(new XisoCampaignRequest(
@@ -48,13 +52,15 @@ internal sealed partial class AgentJobStore
     public object XisoSelectorCategories(string id)
     {
         var catalog = ReadXisoSuite(id).Data.Catalog;
-        var items = XisoCatalog.Categories.Select((category, groupId) =>
+        var items = Enumerable.Range(0, XisoNumericSelectorExtensions.TestGroupCount).Select(groupId =>
         {
-            var count = catalog.Leaves.Count(x => x.Category == category.Id);
+            var categoryId = XisoNumericSelectorExtensions.TestGroupCategory(groupId);
+            var category = XisoCatalog.Categories.Single(x => x.Id == categoryId);
+            var count = catalog.Leaves.Count(x => x.Category == categoryId);
             return new
             {
                 group_id = groupId,
-                id = category.Id,
+                id = categoryId,
                 name = category.Name,
                 count,
                 available = count > 0
@@ -104,7 +110,4 @@ internal sealed partial class AgentJobStore
             nextOffset = found.Length > limit ? (int?)(offset + limit) : null
         };
     }
-
-    private static string[] MergeSelectors(string[]? named, string[] numeric) =>
-        (named ?? []).Concat(numeric).Distinct(StringComparer.Ordinal).ToArray();
 }
