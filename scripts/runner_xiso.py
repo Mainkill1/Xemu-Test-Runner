@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select XISO categories or individual tests through the runner HTTP API.
+"""Select XISO groups or individual tests through the runner HTTP API.
 
 Run on the agent/build machine with runner_transport.py beside this file.
 Applications are uploaded once using runner_tests.py. Selection creates an
@@ -21,7 +21,7 @@ from runner_transport import ClientError, RunnerApi
 
 class Parser(argparse.ArgumentParser):
     def error(self, message):
-        raise ClientError("arguments_invalid", message, "Use --help for XISO categories, selection and execution commands.")
+        raise ClientError("arguments_invalid", message, "Use --help for XISO categories, numeric selectors and execution commands.")
 
 
 def bounded_int(low: int, high: int):
@@ -30,6 +30,24 @@ def bounded_int(low: int, high: int):
         if not low <= number <= high:
             raise argparse.ArgumentTypeError(f"expected an integer from {low} to {high}")
         return number
+    return parse
+
+
+def bounded_id_list(high: int):
+    def parse(value: str) -> list[int]:
+        parts = [part.strip() for part in value.split(",")]
+        if not parts or any(not part for part in parts):
+            raise argparse.ArgumentTypeError("expected comma-separated numeric IDs")
+        numbers = []
+        for part in parts:
+            try:
+                number = int(part)
+            except ValueError as error:
+                raise argparse.ArgumentTypeError(f"invalid numeric ID: {part}") from error
+            if not 0 <= number <= high:
+                raise argparse.ArgumentTypeError(f"expected numeric IDs from 0 to {high}")
+            numbers.append(number)
+        return numbers
     return parse
 
 
@@ -47,9 +65,9 @@ def build_parser():
     register.add_argument("--id", required=True, help="New immutable suite name.")
     register.add_argument("--target", help="Optional known target pin, e.g. shader-pilot-51bc23d.")
     settings_options(register)
-    categories = commands.add_parser("categories", help="Show available subsystem categories and counts.")
+    categories = commands.add_parser("categories", help="Show stable numeric test-group IDs and counts.")
     categories.add_argument("suite")
-    tests = commands.add_parser("tests", help="Browse stable individual test IDs.")
+    tests = commands.add_parser("tests", help="Browse global numeric IDs and stable individual test IDs.")
     tests.add_argument("suite")
     tests.add_argument("--category")
     tests.add_argument("--search")
@@ -58,8 +76,12 @@ def build_parser():
     select.add_argument("application", help="Already-uploaded application ID.")
     select.add_argument("--id", required=True, help="New campaign ID; reuse it only for an identical request.")
     select.add_argument("--suite", help="May be omitted only when exactly one suite is installed.")
-    select.add_argument("--category", action="append", default=[], help="Repeat to union subsystem categories.")
+    select.add_argument("--category", action="append", default=[], help="Repeat to union named subsystem categories.")
     select.add_argument("--test", action="append", default=[], help="Repeat to union exact stable leaf IDs.")
+    select.add_argument("--test-ids", action="append", type=bounded_id_list(511), default=[], metavar="ID[,ID...]",
+                        help="Compact zero-based test IDs from this suite's tests catalog; repeat or comma-separate.")
+    select.add_argument("--test-groups", action="append", type=bounded_id_list(7), default=[], metavar="ID[,ID...]",
+                        help="Compact zero-based subsystem group IDs from this suite's categories catalog.")
     select.add_argument("--mode", choices=("smoke", "sections", "full", "monolithic"))
     select.add_argument("--reference", help="Reference application; defaults to the full suite with per-chunk ABBA and BAAB orders.")
     select.add_argument("--start", action="store_true", help="Explicitly authorize the campaign after creation succeeds.")
@@ -104,6 +126,10 @@ def settings(args):
         "measurement_iterations_multiplier": args.multiplier,
         "gpu_completion_mode": args.completion
     }.items() if value is not None}
+
+
+def flatten(values):
+    return [item for group in values for item in group]
 
 
 def quoted(value: str) -> str:
@@ -230,6 +256,7 @@ def execute(args):
     if command == "select":
         body = {"id": args.id, "application": args.application}
         for field, value in (("suite", args.suite), ("categories", args.category), ("tests", args.test),
+                             ("test_ids", flatten(args.test_ids)), ("test_groups", flatten(args.test_groups)),
                              ("mode", args.mode), ("referenceApplication", args.reference), ("settings", settings(args))):
             if value:
                 body[field] = value
