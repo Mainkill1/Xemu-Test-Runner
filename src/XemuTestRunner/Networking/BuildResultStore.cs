@@ -107,7 +107,7 @@ internal sealed class BuildResultStore(string resultsRoot)
         return value;
     }
 
-    public BuildComparison Compare(string? a, string b, bool full = false)
+    public BuildComparison Compare(string? a, string b, bool full = false, IReadOnlyList<string>? runIds = null)
     {
         lock (_gate)
         {
@@ -118,6 +118,20 @@ internal sealed class BuildResultStore(string resultsRoot)
             var right = Runs(b);
             var shaA = baseline?.Sha256 ?? Sha(a!);
             var shaB = Sha(b);
+            if (runIds is not null)
+            {
+                if (runIds.Count is < 1 or > 128 || runIds.Any(id => !SafeRunId(id)) ||
+                    runIds.Distinct(StringComparer.Ordinal).Count() != runIds.Count)
+                    throw new InvalidDataException("Comparison scope requires 1-128 distinct valid run IDs.");
+                var scope = runIds.ToHashSet(StringComparer.Ordinal);
+                var available = left.Concat(right).Select(run => run.RunId).ToHashSet(StringComparer.Ordinal);
+                if (scope.Any(id => !available.Contains(id)))
+                    throw new AgentRequestException(404, "comparison_run_not_found", "A selected run is missing from the requested builds or pinned reference.", "Use archived run IDs from the preregistered campaign; missing attempts are not ignored.");
+                left = left.Where(run => scope.Contains(run.RunId)).ToArray();
+                right = right.Where(run => scope.Contains(run.RunId)).ToArray();
+                if (left.Count == 0 || right.Count == 0)
+                    throw new AgentRequestException(409, "comparison_scope_unpaired", "Comparison scope must include both A and B.", "Include every preregistered attempt from both builds.");
+            }
             var all = new List<BuildDelta>();
             foreach (var key in left.Concat(right).Select(value => (value.TestKey, value.EnvironmentKey)).Distinct().OrderBy(key => key.TestKey).ThenBy(key => key.EnvironmentKey))
             {
@@ -169,9 +183,11 @@ internal sealed class BuildResultStore(string resultsRoot)
             var measured = all.Count(row => row.ChangePercent.HasValue);
             var status = measured == 0 ? "incomparable" : measured == all.Count ? "comparable" : "partial";
             var endpoint = "/api/v1/compare?" + (a is null ? "" : "A=" + shaA + "&") + "B=" + shaB + "&format=csv";
+            if (runIds is not null) endpoint += "&runs=" + Uri.EscapeDataString(string.Join(',', runIds));
             var result = new BuildComparison(shaA, shaB, baseline is not null, baseline?.Revision,
                 left.Count, right.Count, left.Concat(right).Count(value => !value.Eligible), status,
-                "medianOfAttempts", Hash(new { left, right }), all, 0, endpoint);
+                "medianOfAttempts", Hash(new { left, right }), all, 0, endpoint,
+                runIds?.OrderBy(id => id, StringComparer.Ordinal).ToArray());
             return full ? result : Bound(result);
         }
     }
@@ -205,7 +221,11 @@ internal sealed class BuildResultStore(string resultsRoot)
     {
         var kept = value.Rows.Take(8).ToArray();
         value = value with { Rows = kept, MoreRows = value.MoreRows + Math.Max(0, value.Rows.Count - kept.Length) };
-        while (JsonSerializer.SerializeToUtf8Bytes(value, WireJson).Length > 4096 && value.Rows.Count > 0)
+        // Scope identity has its own bounded allowance (at most 128 run IDs).
+        // It must not consume the compact metric budget and erase all rows.
+        var budget = value.SelectedRunIds is null ? 4096 :
+            JsonSerializer.SerializeToUtf8Bytes(value with { Rows = [] }, WireJson).Length + 4096;
+        while (JsonSerializer.SerializeToUtf8Bytes(value, WireJson).Length > budget && value.Rows.Count > 0)
             value = value with { Rows = value.Rows.SkipLast(1).ToArray(), MoreRows = value.MoreRows + 1 };
         return value;
     }

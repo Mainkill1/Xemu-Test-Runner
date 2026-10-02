@@ -17,7 +17,7 @@ internal sealed record BuildDelta(string Test, string TestKey, string Context, s
 }
 internal sealed record BuildComparison(string A, string B, bool BaselinePinned, string? BaselineRevision,
     int RunsA, int RunsB, int BlockedRuns, string Status, string Statistic, string RecordSet,
-    IReadOnlyList<BuildDelta> Rows, int MoreRows, string Csv);
+    IReadOnlyList<BuildDelta> Rows, int MoreRows, string Csv, IReadOnlyList<string>? SelectedRunIds = null);
 internal sealed record BuildRunBrief(string RunId, string Test, AgentOutcome Outcome, bool Eligible,
     IReadOnlyList<BuildMetric> Metrics, int MoreMetrics, IReadOnlyList<string> Issues, string RawCsv)
 {

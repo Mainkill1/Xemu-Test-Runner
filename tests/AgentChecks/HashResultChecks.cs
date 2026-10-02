@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using XemuTestRunner.Reliability;
 using static AgentFixture;
 
@@ -12,6 +13,75 @@ internal static class HashResultChecks
 
     public static void Register(List<(string Name, Func<Task> Run)> checks)
     {
+        checks.Add(("explicit comparison scope excludes qualification and preserves failed scheduled runs", async () =>
+        {
+            await using var host = new AgentFixture();
+            await Archive(host, "qualification-a", "baseline", 900);
+            await Archive(host, "qualification-b", "candidate", 1);
+            await Archive(host, "scheduled-a", "baseline", 100);
+            await Archive(host, "scheduled-b", "candidate", 80);
+            await Archive(host, "scheduled-failed", "candidate", 1, eligible: false);
+            var result = await host.Json($"/api/v1/compare?A={A}&B={B}&runs=run-scheduled-a,run-scheduled-b");
+            var row = result.GetProperty("rows")[0];
+            Require(result.GetProperty("runsA").GetInt32() == 1 && result.GetProperty("runsB").GetInt32() == 1,
+                "Qualification runs polluted the explicit campaign scope.");
+            Require(row.GetProperty("a").GetDouble() == 100 && row.GetProperty("b").GetDouble() == 80,
+                "Scoped comparison did not retain scheduled measurements.");
+            Require(result.GetProperty("csv").GetString()!.Contains("runs="), "CSV link lost the scope.");
+            var failed = await host.Json($"/api/v1/compare?A={A}&B={B}&runs=run-scheduled-a,run-scheduled-b,run-scheduled-failed");
+            Require(failed.GetProperty("blockedRuns").GetInt32() == 1 &&
+                failed.GetProperty("rows")[0].GetProperty("changePercent").ValueKind == JsonValueKind.Null,
+                "A failed scheduled repetition was silently omitted.");
+            Require(!(await host.Json("/api/v1/baseline")).GetProperty("configured").GetBoolean(),
+                "Selecting a scope changed the pinned baseline.");
+        }));
+        checks.Add(("comparison scope rejects missing duplicate foreign and one-sided run IDs", async () =>
+        {
+            await using var host = new AgentFixture();
+            await Archive(host, "a", "baseline", 100);
+            await Archive(host, "b", "candidate", 80);
+            await Archive(host, "foreign", "other-build", 50);
+            foreach (var scope in new[] { "run-a,missing", "run-a,run-foreign" })
+                await host.Json($"/api/v1/compare?A={A}&B={B}&runs={scope}", expected: HttpStatusCode.NotFound);
+            foreach (var scope in new[] { "", "run-a,run-a,run-b", "../unsafe,run-b" })
+                await host.Json($"/api/v1/compare?A={A}&B={B}&runs={scope}", expected: HttpStatusCode.BadRequest);
+            await host.Json($"/api/v1/compare?A={A}&B={B}&runs=run-a", expected: HttpStatusCode.Conflict);
+            var excessive = string.Join(',', Enumerable.Range(0, 129).Select(i => "run-" + i));
+            await host.Json($"/api/v1/compare?A={A}&B={B}&runs={excessive}", expected: HttpStatusCode.BadRequest);
+        }));
+        checks.Add(("scoped default reference stays inside the immutable pinned run set", async () =>
+        {
+            await using var host = new AgentFixture();
+            await Archive(host, "pinned-a", "baseline", 100);
+            await Archive(host, "b", "candidate", 80);
+            var original = await host.Json("/api/v1/baseline", HttpMethod.Put, new { sha256 = A });
+            await Archive(host, "later-a", "baseline", 900);
+            var selected = await host.Json($"/api/v1/compare?B={B}&runs=run-pinned-a,run-b");
+            Require(selected.GetProperty("baselinePinned").GetBoolean() &&
+                selected.GetProperty("baselineRevision").GetString() == original.GetProperty("revision").GetString(),
+                "Scoped comparison changed its pinned reference.");
+            Require(selected.GetProperty("selectedRunIds").GetArrayLength() == 2, "Explicit scope not recorded.");
+            await host.Json($"/api/v1/compare?B={B}&runs=run-later-a,run-b", expected: HttpStatusCode.NotFound);
+        }));
+        checks.Add(("large explicit scope metadata cannot erase every comparison metric", async () =>
+        {
+            await using var host = new AgentFixture();
+            await Archive(host, "a", "baseline", 100);
+            await Archive(host, "b", "candidate", 80);
+            var scope = Enumerable.Range(0, 40).Select(i => "run-" + new string('x', 43) + i.ToString("D4")).ToArray();
+            for (var i = 0; i < scope.Length; i++)
+            {
+                var directory = Path.Combine(host.Paths.Results, ".build-results", i % 2 == 0 ? A : B);
+                var template = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(directory, i % 2 == 0 ? "run-a.json" : "run-b.json")))!;
+                template["RunId"] = scope[i];
+                await File.WriteAllTextAsync(Path.Combine(directory, scope[i] + ".json"), template.ToJsonString());
+            }
+            var result = await host.Json($"/api/v1/compare?A={A}&B={B}&runs={string.Join(',', scope)}");
+            Require(result.GetProperty("rows").GetArrayLength() == 1, "Scope metadata erased its metric rows.");
+            Require(result.GetProperty("runsA").GetInt32() == 20 && result.GetProperty("runsB").GetInt32() == 20,
+                "Large scope lost scheduled attempts.");
+            Require(result.GetProperty("selectedRunIds").GetArrayLength() == 40, "Large scope identity was truncated.");
+        }));
         checks.Add(("hash comparisons use matched server-side medians not executable names", async () =>
         {
             await using var host = new AgentFixture();
