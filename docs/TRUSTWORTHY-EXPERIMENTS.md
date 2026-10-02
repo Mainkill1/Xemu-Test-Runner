@@ -45,6 +45,7 @@ CorrectnessChecks and EvidenceRequirements use artifact checks with result/packa
 - minimum byte size
 - minimum visible non-black pixel ratio for non-interlaced 8-bit PNGs
 - optional normalized PNG region and RGB brightness threshold
+- a 64-bit PNG scene difference hash with a bounded Hamming distance
 - SHA-256
 - contains text
 - exact text
@@ -59,6 +60,21 @@ retain their existing artifact behavior.
 nonzero RGB channel to any RGB channel greater than the declared 0–255 value.
 Use both when a whole-image non-black check could confuse a menu, loading
 screen, or dialog with the intended gameplay state.
+
+`ExpectedImageDHash` is a 16-digit hexadecimal difference hash. Pair it with
+`MaximumImageHammingDistance` from 0 through 64. `ImageRegion` may restrict the
+hash to a stable HUD or scene region. The runner reports the actual hash and
+distance when a check fails, so a diagnostic attempt can be visually reviewed
+before its value is pinned in a new immutable test revision. A visible-pixel
+check is not a scene check.
+
+Input-driven benchmark plans that start a measurement segment are rejected at
+definition load unless their correctness contract fingerprints
+`screenshots/recording-start.png` with a distance limit no greater than 16.
+This prevents a menu, loading screen, or flyover from producing
+comparison-eligible measurements merely because it is visible. Use a tight
+region and tolerance established from separately reviewed good occurrences;
+do not raise the tolerance to admit a known wrong scene.
 
 ReportedMetrics extracts finite numeric values from JSON artifacts using dot-separated object-property paths. These measurements feed the compare command.
 

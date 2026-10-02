@@ -243,6 +243,90 @@ try
                darkRight.Detail.Contains("region", StringComparison.OrdinalIgnoreCase),
             "A region without pixels above the declared threshold passed.");
     });
+    await Check("artifact checks distinguish a declared measurement scene", async () =>
+    {
+        var directory = Path.Combine(root, "image-scene-artifacts");
+        Directory.CreateDirectory(directory);
+        var expected = Path.Combine(directory, "expected.png");
+        var wrong = Path.Combine(directory, "wrong.png");
+        WriteRgbPng(expected, 90, 80, (x, y) =>
+            x < 45 == y < 40 ? (byte.MaxValue, (byte)20, (byte)10) : ((byte)5, (byte)10, (byte)200));
+        WriteRgbPng(wrong, 90, 80, (x, _) =>
+            x < 45 ? (byte.MaxValue, byte.MaxValue, byte.MaxValue) : ((byte)0, (byte)0, (byte)0));
+
+        string fingerprint;
+        await using (var stream = File.OpenRead(expected))
+            fingerprint = await PngInspector.CalculateDifferenceHashAsync(
+                stream, null, CancellationToken.None);
+        var requirement = new ArtifactCheckDefinition
+        {
+            Scope = "result",
+            Path = "screenshots/recording-start.png",
+            ExpectedImageDHash = fingerprint,
+            MaximumImageHammingDistance = 0
+        };
+        var matching = await ArtifactInspector.CheckAsync(
+            requirement, expected, CancellationToken.None);
+        Assert(matching.Passed, matching.Detail);
+        var rejected = await ArtifactInspector.CheckAsync(
+            requirement, wrong, CancellationToken.None);
+        Assert(!rejected.Passed &&
+               rejected.Detail.Contains("fingerprint", StringComparison.OrdinalIgnoreCase),
+            "A different scene passed the declared image fingerprint.");
+    });
+    await Check("input benchmarks require a measurement-start scene checkpoint", async () =>
+    {
+        var package = Path.Combine(root, "benchmark-scene-contract");
+        Directory.CreateDirectory(package);
+        await File.WriteAllTextAsync(Path.Combine(package, "xemu"), "fixture");
+        var job = new JobDefinition
+        {
+            Id = "benchmark-scene-contract",
+            Executable = "xemu",
+            RequireInput = true,
+            Operations = new OperationPolicyDefinition { Mode = "benchmark" },
+            Plan =
+            [
+                new JobStep { Type = "segment_start", Name = "stationary-start" },
+                new JobStep { Type = "segment_end", Name = "stationary-start" }
+            ]
+        };
+        AtomicJson.Write(Path.Combine(package, "job.json"), job);
+        try
+        {
+            _ = JobDefinition.LoadPackage(package);
+            throw new Exception("An input benchmark without a scene checkpoint was accepted.");
+        }
+        catch (InvalidDataException error)
+        {
+            Assert(error.Message.Contains("measurement-start scene", StringComparison.OrdinalIgnoreCase),
+                "The missing scene checkpoint produced an unrelated validation error.");
+        }
+
+        job.Workload.CorrectnessChecks.Add(new ArtifactCheckDefinition
+        {
+            Name = "measurement-start-scene",
+            Scope = "result",
+            Path = "screenshots/recording-start.png",
+            ExpectedImageDHash = "0123456789abcdef",
+            MaximumImageHammingDistance = 64
+        });
+        AtomicJson.Write(Path.Combine(package, "job.json"), job);
+        try
+        {
+            _ = JobDefinition.LoadPackage(package);
+            throw new Exception("A measurement scene checkpoint that accepts every hash was accepted.");
+        }
+        catch (InvalidDataException error)
+        {
+            Assert(error.Message.Contains("no greater than 16", StringComparison.OrdinalIgnoreCase),
+                "The lax scene checkpoint produced an unrelated validation error.");
+        }
+
+        job.Workload.CorrectnessChecks[0].MaximumImageHammingDistance = 8;
+        AtomicJson.Write(Path.Combine(package, "job.json"), job);
+        _ = JobDefinition.LoadPackage(package);
+    });
     await Check("workspace lease excludes a second owner and can be reacquired", () =>
     {
         var workspace = Path.Combine(root, "lease");
