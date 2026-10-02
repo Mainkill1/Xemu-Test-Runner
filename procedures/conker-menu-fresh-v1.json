@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "conker-menu-fresh-v1",
+  "title": "Conker: Live & Reloaded",
+  "description": "Unqualified candidate: full Xbox startup with a nominal 15-second wall-clock allowance, then 15 seconds and A. This is not a detected boot boundary. Native checks remained in the movie; do not claim menu qualification.",
+  "planPrefix": [
+    {
+      "type": "wait",
+      "delayMs": 15000
+    },
+    {
+      "type": "wait",
+      "delayMs": 15000
+    },
+    {
+      "type": "button",
+      "button": "A",
+      "durationMs": 100
+    },
+    {
+      "type": "segment_start",
+      "name": "stationary-start"
+    }
+  ],
+  "measurementMs": 30000,
+  "minimumFrameSamples": 160
+}
