@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "pgr2-parked-v1",
+  "sourceTestId": "pr267-deck-pgr2-stationary-base-v6",
+  "sourceRevision": "bbdb66578f2f7200d14164d98c56c63e57300d1af782f1771872c5627c24deee",
+  "planPrefix": [
+    {"type": "wait", "delayMs": 30000},
+    {"type": "button", "button": "A", "durationMs": 100},
+    {"type": "wait", "delayMs": 12000},
+    {"type": "button", "button": "A", "durationMs": 100},
+    {"type": "wait", "delayMs": 4000},
+    {"type": "button", "button": "A", "durationMs": 100},
+    {"type": "wait", "delayMs": 4000},
+    {"type": "button", "button": "A", "durationMs": 100},
+    {"type": "wait", "delayMs": 4000},
+    {"type": "button", "button": "LStickRight", "durationMs": 80},
+    {"type": "wait", "delayMs": 4000},
+    {"type": "button", "button": "A", "durationMs": 100},
+    {"type": "wait", "delayMs": 4000},
+    {"type": "button", "button": "A", "durationMs": 100},
+    {"type": "wait", "delayMs": 4000},
+    {"type": "button", "button": "A", "durationMs": 100},
+    {"type": "wait", "delayMs": 4000},
+    {"type": "button", "button": "A", "durationMs": 100},
+    {"type": "wait", "delayMs": 4000},
+    {"type": "button", "button": "A", "durationMs": 100},
+    {"type": "wait", "delayMs": 10000},
+    {"type": "button", "button": "A", "durationMs": 100},
+    {"type": "segment_start", "name": "stationary-start"}
+  ],
+  "measurementMs": 30000,
+  "minimumFrameSamples": 160
+}
