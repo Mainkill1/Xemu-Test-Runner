@@ -70,7 +70,7 @@ python scripts/runner_xiso.py --url http://DECK:9368 select candidate --referenc
 python scripts/runner_xiso.py --url http://WINDOWS:9368 check-pair pr-example-windows --other-url http://DECK:9368 --other-id pr-example-deck
 ```
 
-`check-pair` compares portable frozen media, selection, settings, dependencies, chunk contents and A/B attempt order. It does not equate Windows and Linux renderer/driver environments; compare results within each host before interpreting cross-host trends. Both hosts need the same hash-pinned ISO and compatible clean seed and reference. Existing tests must not change between PR campaigns without a new suite identity.
+`check-pair` compares portable frozen media, selection, settings, dependencies, chunk contents and A/B attempt order. Use it across hosts and again between different PR campaigns on each host, so the benchmark workload does not drift between code changes. It does not equate Windows and Linux renderer/driver environments; compare results within each host before interpreting cross-host trends. Both hosts need the same hash-pinned ISO and compatible clean seed and reference. Existing tests must not change between PR campaigns without a new suite identity.
 
 If any selected leaf lacks an oracle in the pinned reference, creation fails before child tests are scheduled and lists the missing coverage. First run an **unpaired full diagnostic** with the exact ISO to obtain raw output, qualify its reference, then register a new immutable suite. Do not fabricate the missing oracle or override driver-cache qualification to turn a failed campaign green.
 
