@@ -13,7 +13,8 @@ class XisoNumericClientChecks(unittest.TestCase):
     def invoke(self, origin, *args):
         return subprocess.run(
             [sys.executable, str(SCRIPT), *args],
-            env={**os.environ, "XEMU_RUNNER_URL": origin},
+            env={**{key: value for key, value in os.environ.items() if key != "SSH_CONNECTION"},
+                 "XEMU_RUNNER_URL": origin},
             capture_output=True,
             text=True,
             timeout=20,
@@ -33,7 +34,7 @@ class XisoNumericClientChecks(unittest.TestCase):
                 "41,3,0,3,29",
                 "--test-ids",
                 "41",
-                "--test-groups",
+                "--category-ids",
                 "2,0,2",
             )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -43,11 +44,21 @@ class XisoNumericClientChecks(unittest.TestCase):
             if path == "/api/v1/xiso-campaigns" and method == "POST"
         )
         self.assertEqual(body["test_ids"], [0, 3, 29, 41])
-        self.assertEqual(body["test_groups"], [0, 2])
+        self.assertEqual(body["category_ids"], [0, 2])
+        self.assertEqual(body["catalogId"], "sha256:" + "b" * 64)
         self.assertEqual(body["suite"], "pilot")
         self.assertNotIn("tests", body)
         self.assertNotIn("categories", body)
-        self.assertLess(len(json.dumps(body)), 170)
+        self.assertLess(len(json.dumps(body)), 270)
+
+    def test_numeric_pin_rejects_changed_catalog_before_campaign_post(self):
+        with fixture(responder()) as (origin, calls):
+            result = self.invoke(origin, "select", "build-a", "--id", "example", "--suite", "pilot",
+                                 "--test-ids", "3", "--catalog-id", "sha256:" + "a" * 64)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout)["code"], "xiso_catalog_changed")
+        self.assertFalse(any(path == "/api/v1/xiso-campaigns" and method == "POST"
+                             for method, path, _, _ in calls))
 
     def test_numeric_selector_bounds_fail_before_an_http_request(self):
         with fixture(responder()) as (origin, calls):
@@ -71,7 +82,7 @@ class XisoNumericClientChecks(unittest.TestCase):
                 "build-a",
                 "--id",
                 "example",
-                "--test-groups",
+                "--category-ids",
                 "8",
             )
         self.assertEqual(result.returncode, 1)

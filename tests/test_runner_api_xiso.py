@@ -28,7 +28,8 @@ def responder():
             return 200, {'id': 'example', 'event': 'finished' if done else 'heartbeat', 'terminal': done,
                          'state': 'passed' if done else 'running', 'next': '/api/v1/xiso-campaigns/example/wait'}, {}
         if route.endswith('/categories'):
-            return 200, {'items': [{'id': 'shaders', 'name': 'Shaders and pipelines', 'count': 6}]}, {}
+            return 200, {'selectorVersion': 1, 'idBase': 0, 'catalogId': 'sha256:' + 'b' * 64,
+                         'items': [{'id': 'shaders', 'name': 'Shaders and pipelines', 'count': 6}]}, {}
         return 404, {'code': 'unexpected', 'error': path}, {}
     return respond
 

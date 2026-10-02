@@ -51,16 +51,18 @@ class XisoViewerChecks(unittest.TestCase):
             value = {
                 'selectorVersion': 1,
                 'idBase': 0,
+                'catalogId': suite['catalogId'],
                 'items': [
-                    {'group_id': 0, 'id': 'cpu', 'name': 'CPU and translation', 'count': 1, 'available': True},
-                    {'group_id': 2, 'id': 'shaders', 'name': 'Shaders and pipelines', 'count': 6, 'available': True},
-                    {'group_id': 5, 'id': 'surfaces', 'name': 'Surfaces and memory', 'count': 0, 'available': False},
+                    {'category_id': 0, 'id': 'cpu', 'name': 'CPU and translation', 'count': 1, 'available': True},
+                    {'category_id': 2, 'id': 'shaders', 'name': 'Shaders and pipelines', 'count': 6, 'available': True},
+                    {'category_id': 5, 'id': 'surfaces', 'name': 'Surfaces and memory', 'count': 0, 'available': False},
                 ],
             }
         elif path.endswith('/tests'):
             value = {
                 'selectorVersion': 1,
                 'idBase': 0,
+                'catalogId': suite['catalogId'],
                 'items': [
                     {'test_id': 0, 'id': 'cpu.direct', 'category': 'cpu', 'freshProcess': False},
                     {'test_id': 29, 'id': 'shader_lifecycle.pipeline_train', 'category': 'shaders', 'freshProcess': True},
@@ -82,11 +84,12 @@ class XisoViewerChecks(unittest.TestCase):
         self.page.wait_for_function("document.getElementById('result').textContent.includes('uploaded')")
         return next(body for method, path, body in self.calls if method == 'POST' and path == '/api/v1/xiso-campaigns')
 
-    def test_group_selection_submits_compact_numeric_array_without_start(self):
+    def test_category_selection_submits_compact_numeric_array_without_start(self):
         self.page.locator('#categories input[value="2"]').check()
         body = self.create()
         self.assertEqual(body, {'id': 'browser-campaign', 'application': 'candidate',
-                               'suite': 'pilot', 'test_groups': [2]})
+                               'suite': 'pilot', 'catalogId': 'sha256:' + 'b' * 64,
+                               'category_ids': [2]})
         self.assertFalse(any(path.endswith('/start') for _, path, _ in self.calls))
 
     def test_individual_selection_submits_global_numeric_test_id(self):
@@ -96,10 +99,11 @@ class XisoViewerChecks(unittest.TestCase):
         row.locator('input').check()
         body = self.create()
         self.assertEqual(body['test_ids'], [29])
+        self.assertEqual(body['catalogId'], 'sha256:' + 'b' * 64)
         self.assertNotIn('tests', body)
         self.assertNotIn('categories', body)
 
-    def test_selector_ids_are_visible_and_empty_groups_are_disabled(self):
+    def test_selector_ids_are_visible_and_empty_categories_are_disabled(self):
         categories = self.page.locator('#categories').inner_text()
         self.assertIn('#0 CPU and translation', categories)
         self.assertIn('#2 Shaders and pipelines', categories)

@@ -17,10 +17,10 @@ internal static class NumericSelectorChecks
         };
         var catalog = new XisoCatalog("sha256:" + new string('a', 64), new string('b', 64), leaves, []);
 
-        Require(Enumerable.Range(0, XisoNumericSelectorExtensions.TestGroupCount)
-                .Select(XisoNumericSelectorExtensions.TestGroupCategory)
+        Require(Enumerable.Range(0, XisoNumericSelectorExtensions.CategoryCount)
+                .Select(XisoNumericSelectorExtensions.CategoryName)
                 .SequenceEqual(["cpu", "commands", "shaders", "textures", "geometry", "surfaces", "scenarios", "other"], StringComparer.Ordinal),
-            "Selector-version 1 test-group IDs changed.");
+            "Selector-version 1 category IDs changed.");
 
         var individual = Select(catalog, null, null, [3, 0, 3], null);
         Require(individual.Mode == "sections", "Numeric selectors did not choose sections mode.");
@@ -29,7 +29,7 @@ internal static class NumericSelectorChecks
 
         var grouped = Select(catalog, null, null, null, [2, 0, 2]);
         Require(Ids(grouped).SequenceEqual(["cpu.zero", "shader.two", "shader.three"], StringComparer.Ordinal),
-            "Numeric test groups did not resolve to the stable subsystem table.");
+            "Numeric categorys did not resolve to the stable subsystem table.");
 
         var union = Select(catalog, ["cpu"], ["texture.four"], [1], [2]);
         Require(Ids(union).SequenceEqual(leaves.Select(x => x.Id), StringComparer.Ordinal),
@@ -37,19 +37,19 @@ internal static class NumericSelectorChecks
 
         Reject(() => Select(catalog, null, null, [-1], null), "Negative test ID was accepted.");
         Reject(() => Select(catalog, null, null, [leaves.Length], null), "Out-of-range test ID was accepted.");
-        Reject(() => Select(catalog, null, null, null, [-1]), "Negative test-group ID was accepted.");
-        Reject(() => Select(catalog, null, null, null, [XisoNumericSelectorExtensions.TestGroupCount]),
-            "Out-of-range test-group ID was accepted.");
+        Reject(() => Select(catalog, null, null, null, [-1]), "Negative category ID was accepted.");
+        Reject(() => Select(catalog, null, null, null, [XisoNumericSelectorExtensions.CategoryCount]),
+            "Out-of-range category ID was accepted.");
         Reject(() => Select(catalog, null, null, null, [5]),
-            "An unavailable test group was accepted for this suite.");
+            "An unavailable category was accepted for this suite.");
 
         VerifyRequestBinding();
     }
 
     private static XisoSelection Select(XisoCatalog catalog, string[]? categories, string[]? tests,
-        int[]? testIds, int[]? testGroups)
+        int[]? testIds, int[]? categoryIds)
     {
-        var resolved = catalog.ResolveSelectors(categories, tests, testIds, testGroups);
+        var resolved = catalog.ResolveSelectors(categories, tests, testIds, categoryIds);
         return catalog.Select(resolved.Categories, resolved.Tests, null);
     }
 
@@ -59,14 +59,16 @@ internal static class NumericSelectorChecks
             "XemuTestRunner.Networking.XisoCampaignApiRequest", throwOnError: true)!;
         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
         var request = JsonSerializer.Deserialize(
-            """{"id":"focused","application":"candidate","suite":"pilot","test_ids":[0,3,29],"test_groups":[0,2]}""",
+            """{"id":"focused","application":"candidate","suite":"pilot","catalogId":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","test_ids":[0,3,29],"category_ids":[0,2]}""",
             requestType, options) ?? throw new InvalidOperationException("Numeric XISO request did not deserialize.");
         var testIds = (int[]?)requestType.GetProperty("TestIds")?.GetValue(request);
-        var testGroups = (int[]?)requestType.GetProperty("TestGroups")?.GetValue(request);
+        var categoryIds = (int[]?)requestType.GetProperty("CategoryIds")?.GetValue(request);
+        var catalogId = (string?)requestType.GetProperty("CatalogId")?.GetValue(request);
         Require(testIds is not null && testIds.SequenceEqual([0, 3, 29]),
             "Server request binding lost test_ids.");
-        Require(testGroups is not null && testGroups.SequenceEqual([0, 2]),
-            "Server request binding lost test_groups.");
+        Require(categoryIds is not null && categoryIds.SequenceEqual([0, 2]),
+            "Server request binding lost category_ids.");
+        Require(catalogId == "sha256:" + new string('b', 64), "Server request binding lost numeric catalog identity.");
 
         RejectJson(() => JsonSerializer.Deserialize(
             """{"id":"focused","application":"candidate","testIds":[0]}""",

@@ -65,7 +65,7 @@ def build_parser():
     register.add_argument("--id", required=True, help="New immutable suite name.")
     register.add_argument("--target", help="Optional known target pin, e.g. shader-pilot-51bc23d.")
     settings_options(register)
-    categories = commands.add_parser("categories", help="Show stable numeric test-group IDs and counts.")
+    categories = commands.add_parser("categories", help="Show stable numeric category IDs and counts.")
     categories.add_argument("suite")
     tests = commands.add_parser("tests", help="Browse global numeric IDs and stable individual test IDs.")
     tests.add_argument("suite")
@@ -80,8 +80,9 @@ def build_parser():
     select.add_argument("--test", action="append", default=[], help="Repeat to union exact stable leaf IDs.")
     select.add_argument("--test-ids", action="append", type=bounded_id_list(511), default=[], metavar="ID[,ID...]",
                         help="Compact zero-based test IDs from this suite's tests catalog; repeat or comma-separate.")
-    select.add_argument("--test-groups", action="append", type=bounded_id_list(7), default=[], metavar="ID[,ID...]",
-                        help="Compact zero-based subsystem group IDs from this suite's categories catalog.")
+    select.add_argument("--category-ids", action="append", type=bounded_id_list(7), default=[], metavar="ID[,ID...]",
+                        help="Compact zero-based subsystem category IDs from this suite's catalog.")
+    select.add_argument("--catalog-id", help="Optional exact catalog pin for numeric selectors; reject a changed suite before campaign creation.")
     select.add_argument("--mode", choices=("smoke", "sections", "full", "monolithic"))
     select.add_argument("--reference", help="Reference application; defaults to the full suite with per-chunk ABBA and BAAB orders.")
     select.add_argument("--start", action="store_true", help="Explicitly authorize the campaign after creation succeeds.")
@@ -138,7 +139,7 @@ def compact_ids(values, limit: int, label: str) -> list[int]:
         raise ClientError(
             "arguments_invalid",
             f"At most {limit} numeric XISO {label} selectors may be supplied.",
-            "Narrow the selector list or choose a test group instead of repeating individual IDs.",
+            "Narrow the selector list or choose a category instead of repeating individual IDs.",
         )
     return sorted(set(items))
 
@@ -213,12 +214,16 @@ def read_report(api: RunnerApi, identity: str, format_name: str):
 def execute(args):
     command = args.command
     test_ids = []
-    test_groups = []
+    category_ids = []
     if command == "select":
         # Validate before capability discovery so malformed compact requests never
         # make an HTTP call, then send one deterministic canonical array.
         test_ids = compact_ids(args.test_ids, 512, "test")
-        test_groups = compact_ids(args.test_groups, 8, "test-group")
+        category_ids = compact_ids(args.category_ids, 8, "category")
+        if (test_ids or category_ids) and not args.suite:
+            raise ClientError("arguments_invalid", "Numeric XISO selectors require --suite so their catalog identity is explicit.")
+        if args.catalog_id and not (test_ids or category_ids):
+            raise ClientError("arguments_invalid", "--catalog-id applies only to numeric XISO selectors.")
 
     # Registration may verify/copy a large retained asset; its internal socket
     # budget is not exposed as an agent-estimated execution/wait deadline.
@@ -274,8 +279,15 @@ def execute(args):
         return value
     if command == "select":
         body = {"id": args.id, "application": args.application}
+        if test_ids or category_ids:
+            catalog = api.json("/api/v1/xiso-suites/" + quoted(args.suite) + "/categories")
+            if catalog.get("selectorVersion") != 1 or catalog.get("idBase") != 0 or not isinstance(catalog.get("catalogId"), str):
+                raise ClientError("selector_contract_invalid", "The suite has an unsupported numeric selector contract.")
+            if args.catalog_id and args.catalog_id != catalog["catalogId"]:
+                raise ClientError("xiso_catalog_changed", "The selected suite catalog differs from --catalog-id; inspect the stable test identities before creating a campaign.")
+            body["catalogId"] = catalog["catalogId"]
         for field, value in (("suite", args.suite), ("categories", args.category), ("tests", args.test),
-                             ("test_ids", test_ids), ("test_groups", test_groups),
+                             ("test_ids", test_ids), ("category_ids", category_ids),
                              ("mode", args.mode), ("referenceApplication", args.reference), ("settings", settings(args))):
             if value:
                 body[field] = value
