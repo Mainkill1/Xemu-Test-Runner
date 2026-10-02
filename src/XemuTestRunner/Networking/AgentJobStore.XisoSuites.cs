@@ -31,7 +31,7 @@ internal sealed partial class AgentJobStore
         new("shader-runner-suite-dc42b74", "dc42b7452a316adb193c9347134152b02d3d7c35",
             "c2acf7ee3cd19b62cb25fba97453d8d4f2c800fe27372ae320b724d49ceb2162",
             "sha256:8307fde80201084ce39706e9490cbdf16cddfb1aa21fc19fecf34942fa2f3dd4", 160, "candidate"),
-        new("shader-runner-suite-6a87374", "6a87374fd807a9391e198928907b75462e1b246e",
+        new("shader-runner-suite-db9462f", "db9462f5abe3c7f192ae30eae67bcc72c676cd34",
             "e6da3efe6f1e507edd9af7e1e9d2b3498459568a06d7bdf21556d72bc761b667",
             "sha256:2490192671df057163aa6c7bb2f144491dfa35f42ef2f9318a87f50ec92e7747", 159, "candidate")
     ];

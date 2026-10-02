@@ -26,7 +26,7 @@ await Check("known shader target is pinned and explicitly candidate", async () =
     Require(packaged.GetProperty("isoSha256").GetString() == "c2acf7ee3cd19b62cb25fba97453d8d4f2c800fe27372ae320b724d49ceb2162" &&
         packaged.GetProperty("leafCount").GetInt32() == 160 && packaged.GetProperty("qualification").GetString() == "candidate",
         "Exact packaged XISO target is missing or incorrectly qualified.");
-    var latest = targets.GetProperty("items").EnumerateArray().Single(x => x.GetProperty("id").GetString() == "shader-runner-suite-6a87374");
+    var latest = targets.GetProperty("items").EnumerateArray().Single(x => x.GetProperty("id").GetString() == "shader-runner-suite-db9462f");
     Require(latest.GetProperty("isoSha256").GetString() == "e6da3efe6f1e507edd9af7e1e9d2b3498459568a06d7bdf21556d72bc761b667" &&
         latest.GetProperty("catalogId").GetString() == "sha256:2490192671df057163aa6c7bb2f144491dfa35f42ef2f9318a87f50ec92e7747" &&
         latest.GetProperty("leafCount").GetInt32() == 159 && latest.GetProperty("qualification").GetString() == "candidate",
