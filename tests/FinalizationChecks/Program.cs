@@ -162,8 +162,15 @@ async Task<(JsonElement Result, string Directory, string Captures)> Run(string n
         File.Copy(source, target);
         if (OperatingSystem.IsLinux()) File.SetUnixFileMode(target, File.GetUnixFileMode(source));
     }
+    await File.WriteAllTextAsync(Path.Combine(package, "xemu.toml"),
+        "[input]\nauto_bind = false\n[input.bindings]\n" +
+        "port1 = 'keyboard'\nport1_driver = 'usb-xbox-gamepad'\n" +
+        "[perf]\ncache_shaders = true\n");
     var job = new JobDefinition { Id = name, Executable = Path.GetFileName(Environment.ProcessPath!), Arguments = ["--target"],
         TimeoutSeconds = 15, RequireInput = mode == "control-error",
+        RuntimeState = mode == "control-error" ? new() { Isolation = new() {
+            CacheMode = "cold", CacheShaders = true, RequirePrivateGuestState = false
+        } } : new(),
         Plan = mode == "plan-error" ? [new JobStep { Type = "button", Button = "A", DurationMs = 10 }] :
             mode == "clean" ? [new JobStep { Type = "wait", DelayMs = 100 }, new JobStep { Type = "quit" }] :
             [new JobStep { Type = "wait", DelayMs = 10000 }] };
