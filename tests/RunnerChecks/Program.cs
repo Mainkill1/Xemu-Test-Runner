@@ -369,6 +369,13 @@ try
         {
             Assert(error.Message.Contains("fingerprint distance", StringComparison.OrdinalIgnoreCase),
                 "The live scene timeout omitted the last mismatch detail.");
+            var preserved = Path.Combine(
+                directory, "screenshots", "measurement-ready.last-mismatch.png");
+            Assert(File.Exists(preserved),
+                "The live scene timeout discarded the last mismatching frame.");
+            Assert(error.Message.Contains("measurement-ready.last-mismatch.png",
+                    StringComparison.OrdinalIgnoreCase),
+                "The live scene timeout did not identify the preserved mismatch.");
         }
     });
     await Check("input benchmarks require a measurement-start scene checkpoint", async () =>
