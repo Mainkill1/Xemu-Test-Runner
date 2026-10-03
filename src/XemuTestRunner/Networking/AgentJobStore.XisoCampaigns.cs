@@ -59,7 +59,7 @@ internal sealed partial class AgentJobStore
             if (File.Exists(path))
             {
                 var current = ReadXisoCampaign(request.Id);
-                if (!JsonIdentity.Matches(request, current.RequestIdentity)) throw Conflict("xiso_campaign_conflict", "This campaign ID already represents a different request.", "Use a new ID for changed inputs. Repeating an identical request never adds more tests.");
+                if (!MatchesXisoCampaignRequest(request, current.RequestIdentity)) throw Conflict("xiso_campaign_conflict", "This campaign ID already represents a different request.", "Use a new ID for changed inputs. Repeating an identical request never adds more tests.");
                 return ObserveXisoCampaign(current);
             }
             var suite = ReadXisoSuite(request.Suite);
@@ -404,10 +404,18 @@ internal sealed partial class AgentJobStore
         var value = ReadJson<XisoCampaign>(path);
         if (value.Plan is null || value.Request is null || value.Plan.Id != id ||
             !JsonIdentity.Matches(value.Plan, value.Revision) ||
-            !JsonIdentity.Matches(value.Request, value.RequestIdentity))
+            !MatchesXisoCampaignRequest(value.Request, value.RequestIdentity))
             throw new InvalidDataException("Stored campaign identity does not match its immutable plan.");
         CacheXisoValue(_xisoCampaignCache, id, value, 32); return value;
     }
+    private static bool MatchesXisoCampaignRequest(XisoCampaignRequest request, string identity) =>
+        JsonIdentity.Matches(request, identity) ||
+        // Before ConfigurationSource existed, the canonical request had these eight fields.
+        // Accept that exact shape only for an unspecified source; keep every other pin checked.
+        (request.ConfigurationSource is null && JsonIdentity.Matches(new {
+            request.Id, request.Application, request.Suite, request.Categories,
+            request.Tests, request.Mode, request.Settings, request.ReferenceApplication
+        }, identity));
     private XisoCampaign? TryReadXisoCampaign(string id)
     {
         try { var value = ReadXisoCampaign(id); _xisoReadIssues.Remove(id); return value; }
