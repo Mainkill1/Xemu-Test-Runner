@@ -58,7 +58,8 @@ internal sealed partial class AgentJobStore
 
     public object ListTests(int offset, int limit)
     {
-        if (!Directory.Exists(TestRoot)) return new { items = Array.Empty<AgentTestSummary>(), nextOffset = (int?)null };
+        if (!Directory.Exists(TestRoot)) return new { items = Array.Empty<AgentTestSummary>(),
+            issues = Array.Empty<AgentTestCatalogIssue>(), nextOffset = (int?)null };
         RejectLinkedDirectory(TestRoot);
         var paths = Directory.EnumerateDirectories(TestRoot).Where(path => IsId(System.IO.Path.GetFileName(path)))
             .OrderBy(path => path, StringComparer.Ordinal).SelectMany(path =>
@@ -66,12 +67,34 @@ internal sealed partial class AgentJobStore
                 RejectLinkedDirectory(path);
                 return Directory.EnumerateFiles(path, "*.summary.json").OrderBy(file => file, StringComparer.Ordinal);
             }).Skip(offset).Take(limit + 1).ToArray();
-        var items = paths.Take(limit).Select(path =>
+        var items = new List<AgentTestSummary>();
+        var issues = new List<AgentTestCatalogIssue>();
+        foreach (var path in paths.Take(limit))
         {
-            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException("Linked test metadata is not supported.");
-            return ReadJson<AgentTestSummary>(path);
-        }).ToArray();
-        return new { items, nextOffset = paths.Length > limit ? (int?)(offset + limit) : null };
+            var id = System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(path)!);
+            var name = System.IO.Path.GetFileName(path);
+            var revision = name[..^".summary.json".Length];
+            try
+            {
+                if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException("Linked test metadata is not supported.");
+                var summary = ReadJson<AgentTestSummary>(path);
+                if (summary.Id != id || summary.Revision != revision)
+                    throw new InvalidDataException("Stored test summary identity does not match its path.");
+                var baked = ReadTest(id, revision);
+                if (summary != TestSummary(baked))
+                    throw new InvalidDataException("Stored test summary does not match its definition.");
+                items.Add(summary);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or
+                                           InvalidDataException or JsonException)
+            {
+                var message = error.Message.Length <= 240 ? error.Message : error.Message[..240];
+                issues.Add(new(id, revision, message));
+            }
+        }
+        return new { items = items.ToArray(), issues = issues.ToArray(),
+            nextOffset = paths.Length > limit ? (int?)(offset + limit) : null };
     }
 
     public object DescribeTest(string id, string? revision, bool full)
@@ -143,7 +166,8 @@ internal sealed partial class AgentJobStore
         if (!File.Exists(path)) throw new AgentRequestException(404, "test_revision_not_found", "That test revision is not available.", "List tests and use an existing pinned ID/revision.");
         if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException("Linked test definitions are not supported.");
         var baked = ReadJson<AgentBakedTest>(path);
-        if (baked.Definition is null || baked.Definition.Id != id || baked.Revision != revision || HashJson(baked.Definition) != revision)
+        if (baked.Definition is null || baked.Definition.Id != id || baked.Revision != revision ||
+            !JsonIdentity.Matches(baked.Definition, revision))
             throw new InvalidDataException("Stored test definition identity does not match its revision.");
         return baked;
     }

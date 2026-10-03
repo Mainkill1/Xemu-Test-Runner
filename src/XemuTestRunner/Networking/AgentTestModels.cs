@@ -18,3 +18,4 @@ internal sealed record AgentTestDefinition(string Id, string SourceJobId, string
 internal sealed record AgentBakedTest(string Revision, AgentTestDefinition Definition, DateTimeOffset CreatedUtc);
 internal sealed record AgentTestSummary(string Id, string Revision, string Description, string SourceJobId,
     int StepCount, int FileCount, int BuildFileCount, string Self);
+internal sealed record AgentTestCatalogIssue(string Id, string Revision, string Error);
