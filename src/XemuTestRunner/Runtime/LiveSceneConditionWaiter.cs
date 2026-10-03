@@ -30,6 +30,7 @@ public static class LiveSceneConditionWaiter
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeoutMs);
         var lastDetail = "The first live scene capture did not finish.";
+        string? lastMismatchPreview = null;
 
         try
         {
@@ -49,15 +50,19 @@ public static class LiveSceneConditionWaiter
                     }
 
                     lastDetail = inspection.Detail;
+                    if (lastMismatchPreview is not null &&
+                        !Path.GetFullPath(lastMismatchPreview).Equals(
+                            Path.GetFullPath(preview), PathComparison))
+                    {
+                        DeletePreview(lastMismatchPreview, previewRoot);
+                    }
+                    lastMismatchPreview = preview;
+                    preview = null;
                 }
                 finally
                 {
-                    if (preview is not null && IsInside(previewRoot, preview))
-                    {
-                        try { File.Delete(preview); }
-                        catch (IOException) { }
-                        catch (UnauthorizedAccessException) { }
-                    }
+                    if (preview is not null)
+                        DeletePreview(preview, previewRoot);
                 }
 
                 await Task.Delay(pollIntervalMs, deadline.Token).ConfigureAwait(false);
@@ -66,10 +71,56 @@ public static class LiveSceneConditionWaiter
         catch (OperationCanceledException) when (
             deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
+            var retainedDetail = "No completed mismatching frame was available.";
+            if (lastMismatchPreview is not null && File.Exists(lastMismatchPreview))
+            {
+                var mismatchDestination = MismatchDestination(destination);
+                try
+                {
+                    await PublishAsync(lastMismatchPreview, mismatchDestination,
+                        cancellationToken).ConfigureAwait(false);
+                    retainedDetail = "Last mismatching frame: " +
+                        Path.GetRelativePath(resultDirectory, mismatchDestination)
+                            .Replace('\\', '/');
+                }
+                catch (Exception error) when (error is IOException or
+                                              UnauthorizedAccessException)
+                {
+                    retainedDetail = "Could not preserve the last mismatching " +
+                        $"frame: {error.Message}";
+                }
+            }
             throw new TimeoutException(
                 $"wait_for_scene timed out after {timeoutMs} ms for " +
-                $"'{condition.Scope}:{condition.Path}'. Last state: {lastDetail}");
+                $"'{condition.Scope}:{condition.Path}'. Last state: {lastDetail} " +
+                retainedDetail);
         }
+        finally
+        {
+            if (lastMismatchPreview is not null)
+                DeletePreview(lastMismatchPreview, previewRoot);
+        }
+    }
+
+    private static StringComparison PathComparison => OperatingSystem.IsWindows()
+        ? StringComparison.OrdinalIgnoreCase
+        : StringComparison.Ordinal;
+
+    private static string MismatchDestination(string destination)
+    {
+        var extension = Path.GetExtension(destination);
+        var name = Path.GetFileNameWithoutExtension(destination);
+        return Path.Combine(Path.GetDirectoryName(destination)!,
+            name + ".last-mismatch" + extension);
+    }
+
+    private static void DeletePreview(string preview, string previewRoot)
+    {
+        if (!IsInside(previewRoot, preview))
+            return;
+        try { File.Delete(preview); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     private static async Task PublishAsync(
@@ -107,9 +158,7 @@ public static class LiveSceneConditionWaiter
     private static bool IsInside(string root, string path)
     {
         var full = Path.GetFullPath(path);
-        var comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-        return full.StartsWith(root + Path.DirectorySeparatorChar, comparison);
+        return full.StartsWith(root + Path.DirectorySeparatorChar,
+            PathComparison);
     }
 }
