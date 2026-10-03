@@ -2,6 +2,8 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using XemuTestRunner.Config;
 using XemuTestRunner.Reliability;
 using static AgentFixture;
 
@@ -41,6 +43,29 @@ internal static class HashResultChecks
             var report = await host.Json("/api/v1/build-results/" + B);
             Require(report.GetProperty("comparison").GetProperty("baselinePinned").GetBoolean(), "Build results do not compare to the default baseline.");
             Require(File.Exists(Path.Combine(host.Paths.Results, ".build-results", "baseline.json")), "Baseline is not persisted locally.");
+        }));
+        checks.Add(("saved baseline revisions survive host newline changes", async () =>
+        {
+            await using var host = new AgentFixture();
+            await Archive(host, "known", "baseline", 100);
+            await host.Json("/api/v1/baseline", HttpMethod.Put, new { sha256 = A });
+            var path = Path.Combine(host.Paths.Results, ".build-results", "baseline.json");
+            var baseline = JsonNode.Parse(await File.ReadAllTextAsync(path))!.AsObject();
+            var identity = new JsonObject
+            {
+                ["sha"] = baseline["Sha256"]!.DeepClone(),
+                ["values"] = baseline["Runs"]!.DeepClone()
+            };
+            var serialized = identity.ToJsonString(ConfigLoader.JsonOptions);
+            var portable = serialized.Replace("\r\n", "\n", StringComparison.Ordinal);
+            var legacyBytes = Encoding.UTF8.GetBytes(portable.Replace("\n", "\r\n", StringComparison.Ordinal));
+            var legacyRevision = Convert.ToHexString(SHA256.HashData(legacyBytes)).ToLowerInvariant();
+            baseline["Revision"] = legacyRevision;
+            AtomicJson.Write(path, baseline);
+
+            var restored = await host.Json("/api/v1/baseline");
+            Require(restored.GetProperty("revision").GetString() == legacyRevision,
+                "Legacy saved baseline lost its immutable revision.");
         }));
         checks.Add(("ineligible runs cannot be hidden behind a fast successful repetition", async () =>
         {

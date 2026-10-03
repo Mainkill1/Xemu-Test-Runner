@@ -1,8 +1,11 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using XemuTestRunner.Config;
 using XemuTestRunner.Queue;
+using XemuTestRunner.Reliability;
 using static AgentFixture;
 
 internal static class TemplateChecks
@@ -14,12 +17,62 @@ internal static class TemplateChecks
             await using var host = new AgentFixture();
             var empty = await host.Json("/api/v1/tests");
             Require(empty.GetProperty("items").GetArrayLength() == 0, "New catalog is not empty.");
+            Require(empty.GetProperty("issues").GetArrayLength() == 0, "New catalog reported a phantom integrity issue.");
             var revision = await Bake(host);
             var list = await host.Json("/api/v1/tests");
             Require(list.GetProperty("items").GetArrayLength() == 1, "Baked definition not listed.");
             var item = list.GetProperty("items")[0];
             Require(item.GetProperty("revision").GetString() == revision, "Catalog did not pin the revision.");
             Require(!item.TryGetProperty("job", out _) && !item.TryGetProperty("files", out _), "Catalog repeated a large plan/manifest.");
+        }));
+        checks.Add(("saved test revisions survive host newline changes", async () =>
+        {
+            await using var host = new AgentFixture();
+            var revision = await Bake(host);
+            var home = Path.Combine(host.Paths.Pending, ".agent-tests", "smoke");
+            var currentPath = Path.Combine(home, revision + ".json");
+            var stored = JsonNode.Parse(await File.ReadAllTextAsync(currentPath))!.AsObject();
+            var definition = stored["Definition"] ?? throw new InvalidDataException("Fixture definition is missing.");
+            var legacyCheck = JsonSerializer.SerializeToNode(new ArtifactCheckDefinition
+            {
+                Name = "legacy-artifact",
+                Scope = "result",
+                Path = "legacy.txt"
+            }, ConfigLoader.JsonOptions)!.AsObject();
+            legacyCheck.Remove(nameof(ArtifactCheckDefinition.ExpectedImageDHash));
+            legacyCheck.Remove(nameof(ArtifactCheckDefinition.MaximumImageHammingDistance));
+            definition["Job"]!["Workload"]!["CorrectnessChecks"]!.AsArray().Add(legacyCheck);
+            var serialized = definition.ToJsonString(ConfigLoader.JsonOptions);
+            var portable = serialized.Replace("\r\n", "\n", StringComparison.Ordinal);
+            var portableRevision = Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes(portable))).ToLowerInvariant();
+            var legacyBytes = Encoding.UTF8.GetBytes(portable.Replace("\n", "\r\n", StringComparison.Ordinal));
+            var legacyRevision = Convert.ToHexString(SHA256.HashData(legacyBytes)).ToLowerInvariant();
+            Require(legacyRevision != portableRevision, "Fixture did not produce a distinct Windows newline revision.");
+            stored["Revision"] = legacyRevision;
+            AtomicJson.Write(Path.Combine(home, legacyRevision + ".json"), stored);
+
+            var restored = await host.Json($"/api/v1/tests/smoke/{legacyRevision}");
+            Require(restored.GetProperty("summary").GetProperty("revision").GetString() == legacyRevision,
+                "Legacy saved test lost its immutable revision.");
+        }));
+        checks.Add(("test catalog quarantines corrupt saved definitions", async () =>
+        {
+            await using var host = new AgentFixture();
+            var revision = await Bake(host);
+            var home = Path.Combine(host.Paths.Pending, ".agent-tests", "smoke");
+            var path = Path.Combine(home, revision + ".json");
+            var stored = JsonNode.Parse(await File.ReadAllTextAsync(path))!.AsObject();
+            stored["Definition"]!["Description"] = "tampered after revision assignment";
+            AtomicJson.Write(path, stored);
+
+            var catalog = await host.Json("/api/v1/tests");
+            Require(catalog.GetProperty("items").GetArrayLength() == 0,
+                "Catalog advertised a test whose immutable definition is corrupt.");
+            var issue = catalog.GetProperty("issues").EnumerateArray().Single();
+            Require(issue.GetProperty("id").GetString() == "smoke" &&
+                    issue.GetProperty("revision").GetString() == revision,
+                "Catalog warning did not identify the quarantined revision.");
         }));
         checks.Add(("pre-baked test expands a large plan from a small request", async () =>
         {

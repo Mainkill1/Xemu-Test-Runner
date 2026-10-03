@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 using XemuTestRunner.Config;
 using XemuTestRunner.Reliability;
@@ -101,7 +100,7 @@ internal sealed class BuildResultStore(string resultsRoot)
         if (!File.Exists(BaselinePath)) return null;
         var value = Read<BuildBaseline>(BaselinePath);
         if (value.Runs is null || value.Runs.Count == 0 || value.Runs.Any(run => run.Sha256 != value.Sha256 || !run.Eligible) ||
-            Hash(new { sha = value.Sha256, values = value.Runs }) != value.Revision)
+            !JsonIdentity.Matches(new { sha = value.Sha256, values = value.Runs }, value.Revision))
             throw new InvalidDataException("Saved baseline identity is invalid.");
         _ = Sha(value.Sha256);
         return value;
@@ -235,5 +234,5 @@ internal sealed class BuildResultStore(string resultsRoot)
         if (file.Length > 8 * 1024 * 1024) throw new InvalidDataException("Result metadata exceeds 8 MiB.");
         return JsonSerializer.Deserialize<T>(file, ConfigLoader.JsonOptions) ?? throw new InvalidDataException("Empty result metadata.");
     }
-    internal static string Hash(object value) => Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(value, ConfigLoader.JsonOptions))).ToLowerInvariant();
+    internal static string Hash(object value) => JsonIdentity.Hash(value);
 }

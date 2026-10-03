@@ -55,7 +55,7 @@ internal sealed partial class AgentJobStore
             if (File.Exists(path))
             {
                 var current = ReadXisoCampaign(request.Id);
-                if (current.RequestIdentity != identity) throw Conflict("xiso_campaign_conflict", "This campaign ID already represents a different request.", "Use a new ID for changed inputs. Repeating an identical request never adds more tests.");
+                if (!JsonIdentity.Matches(request, current.RequestIdentity)) throw Conflict("xiso_campaign_conflict", "This campaign ID already represents a different request.", "Use a new ID for changed inputs. Repeating an identical request never adds more tests.");
                 return ObserveXisoCampaign(current);
             }
             var suite = ReadXisoSuite(request.Suite);
@@ -325,7 +325,9 @@ internal sealed partial class AgentJobStore
         var path = XisoCampaignPath(id);
         if (!File.Exists(path)) throw new AgentRequestException(404, "xiso_campaign_not_found", "Unknown XISO campaign.", "Create a campaign without starting it, or list existing campaigns.");
         var value = ReadJson<XisoCampaign>(path);
-        if (value.Plan is null || value.Request is null || value.Plan.Id != id || HashJson(value.Plan) != value.Revision || HashJson(value.Request) != value.RequestIdentity)
+        if (value.Plan is null || value.Request is null || value.Plan.Id != id ||
+            !JsonIdentity.Matches(value.Plan, value.Revision) ||
+            !JsonIdentity.Matches(value.Request, value.RequestIdentity))
             throw new InvalidDataException("Stored campaign identity does not match its immutable plan.");
         CacheXisoValue(_xisoCampaignCache, id, value, 32); return value;
     }

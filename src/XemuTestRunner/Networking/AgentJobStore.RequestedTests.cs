@@ -41,7 +41,7 @@ internal sealed partial class AgentJobStore
             if (File.Exists(path))
             {
                 var current = ReadRequestedTest(request.Id);
-                if (current.Identity != identity || current.ApplicationIdentity != app.CreationHash)
+                if (!JsonIdentity.Matches(request, current.Identity) || current.ApplicationIdentity != app.CreationHash)
                     throw Conflict("test_request_conflict", "The ID belongs to a different test/application request.", "Choose a new ID for a different attempt.");
                 return current;
             }
@@ -58,7 +58,7 @@ internal sealed partial class AgentJobStore
         var path = RequestedPath(id);
         if (!File.Exists(path)) throw new AgentRequestException(404, "test_request_not_found", "Unknown test request.", "List /api/v1/test-runs.");
         var value = ReadJson<RequestedTest>(path);
-        if (value.Request is null || value.Request.Id != id || value.Identity != HashJson(value.Request))
+        if (value.Request is null || value.Request.Id != id || !JsonIdentity.Matches(value.Request, value.Identity))
             throw new InvalidDataException("Test request identity is invalid.");
         if (value.StartRequestedUtc is null || value.State == "cancelled") return value;
         var location = Locate(id);
