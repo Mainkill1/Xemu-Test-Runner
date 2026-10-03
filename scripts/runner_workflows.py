@@ -74,8 +74,12 @@ class Workflows:
 
     def submit(self, root: Path, job_id: str, reuse: str | None, chunk_bytes: int) -> dict:
         request = manifest(root, job_id)
-        kind = next((value for key, value in request["Job"].items()
-                     if key.lower() == "targetkind"), "xemu")
+        kinds = [value for key, value in request["Job"].items()
+                 if key.lower() == "targetkind"]
+        if len(kinds) > 1:
+            raise ClientError("plan_invalid", "TargetKind must be declared only once.",
+                              "Remove duplicate case-insensitive target kind keys.")
+        kind = kinds[0] if kinds else "xemu"
         if not isinstance(kind, str) or kind.lower() not in ("xemu", "process"):
             raise ClientError("plan_invalid", "TargetKind must be the string xemu or process.",
                               "Use an exact target kind without numeric aliases or surrounding spaces.")

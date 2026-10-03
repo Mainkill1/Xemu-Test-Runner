@@ -134,6 +134,19 @@ class ClientChecks(unittest.TestCase):
                 self.assertEqual(json.loads(result.stdout)["code"], "plan_invalid")
                 self.assertFalse(any(method != "GET" for method, _, _, _ in calls), calls)
 
+    def test_duplicate_target_keys_rejected_before_mutation(self):
+        for first, second in (("xemu", "process"), ("process", "xemu")):
+            with self.subTest(first=first), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                (root / "tool").write_bytes(b"fixture")
+                (root / "job.json").write_text(json.dumps({
+                    "Executable": "tool", "TargetKind": first, "targetkind": second}))
+                with fixture(baseline) as (origin, calls):
+                    result = self.run_client(origin, "submit", str(root), "--id", "component")
+                self.assertEqual(result.returncode, 1, result.stderr + result.stdout)
+                self.assertEqual(json.loads(result.stdout)["code"], "plan_invalid")
+                self.assertFalse(any(method != "GET" for method, _, _, _ in calls), calls)
+
     def test_server_error_preserves_code_and_recovery_hint(self):
         def respond(method, path, body, headers):
             if "agent" in path:

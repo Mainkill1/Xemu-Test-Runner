@@ -379,6 +379,7 @@ public sealed class RunnerEngine
 
             _state.SetPhase("preflight");
             job = JobDefinition.LoadPackage(package, resultManifest);
+            if (job.IsStandaloneProcess) _diagnostics.ClearCompleted();
             useXemuControl = _config.XemuControl.Enabled && !job.IsStandaloneProcess;
             planCompleted = job.Plan.Count == 0;
 

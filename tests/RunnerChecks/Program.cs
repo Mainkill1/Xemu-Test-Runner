@@ -1000,9 +1000,12 @@ try
         return Task.CompletedTask;
     });
 
-    await Check("diagnostic timeout archives failure and continues the queue", async () =>
+    foreach (var standaloneNext in new[] { false, true })
+    await Check(standaloneNext
+        ? "standalone process does not inherit previous xemu diagnostics"
+        : "diagnostic timeout archives failure and continues the queue", async () =>
     {
-        var fixture = Path.Combine(root, "diagnostic-timeout");
+        var fixture = Path.Combine(root, standaloneNext ? "diagnostic-process-next" : "diagnostic-timeout");
         Directory.CreateDirectory(fixture);
         var configPath = Path.Combine(fixture, "runner.json");
         var config = new RunnerConfig
@@ -1032,7 +1035,7 @@ try
         await File.WriteAllTextAsync(configPath, JsonSerializer.Serialize(config, ConfigLoader.JsonOptions));
         var (_, paths) = ConfigLoader.Load(configPath);
         var executable = Path.GetFileName(Environment.ProcessPath!);
-        foreach (var name in new[] { "timeout-a", "success-b" })
+        foreach (var name in new[] { "a-timeout", "b-success" })
         {
             var package = Path.Combine(paths.Pending, name);
             Directory.CreateDirectory(package);
@@ -1046,7 +1049,7 @@ try
                 TimeoutSeconds = 5,
                 Plan = [new JobStep { Type = "quit" }]
             };
-            if (name == "timeout-a")
+            if (name == "a-timeout")
             {
                 job.Diagnostics = [new DiagnosticRecipe
                 {
@@ -1056,6 +1059,12 @@ try
                     ToolArguments = ["--fake-diagnostic-delay"]
                 }];
                 job.Plan = [new JobStep { Type = "diagnostic", DiagnosticId = "bounded-tool" }];
+            }
+            if (name == "b-success" && standaloneNext)
+            {
+                job.TargetKind = JobTargetKind.Process;
+                job.Arguments = ["--fixture-process", "success"];
+                job.Plan = [];
             }
             await File.WriteAllTextAsync(Path.Combine(package, "job.json"),
                 JsonSerializer.Serialize(job, ConfigLoader.JsonOptions));
@@ -1074,9 +1083,15 @@ try
             .Select(path => JsonDocument.Parse(File.ReadAllText(path))).ToArray();
         try
         {
-            var failed = results.Single(result => result.RootElement.GetProperty("job").GetString() == "timeout-a");
+            var failed = results.Single(result => result.RootElement.GetProperty("job").GetString() == "a-timeout");
             Assert(failed.RootElement.GetProperty("status").GetString() == "plan_failed",
                 "A settled diagnostic timeout was classified as failed cleanup.");
+            Assert(failed.RootElement.GetProperty("diagnostics").GetArrayLength() == 1,
+                "Previous run lost its finalized diagnostic evidence.");
+            var success = results.Single(result => result.RootElement.GetProperty("job").GetString() == "b-success");
+            Assert(success.RootElement.GetProperty("status").GetString() == "completed" &&
+                success.RootElement.GetProperty("diagnostics").GetArrayLength() == 0,
+                "Next run inherited the preceding xemu diagnostic records.");
             var diagnostic = Directory.GetFiles(paths.Results, "result.json", SearchOption.AllDirectories)
                 .Single(path => path.Contains("bounded-tool"));
             using var recorded = JsonDocument.Parse(File.ReadAllText(diagnostic));
