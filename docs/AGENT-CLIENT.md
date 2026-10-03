@@ -48,3 +48,34 @@ The Python helper reads ordinary JSON, not the comments/trailing commas permitte
 ## Validation
 
 python -m unittest discover -s tests -p test_runner_api.py -v runs subprocess client commands against a recorded HTTP fixture on both Windows and Linux CI. The C# AgentChecks suite separately tests the real embedded listener. These contract checks do not substitute for an API-only real-xemu run on each test rig.
+
+## Standalone component tests
+
+A job may explicitly declare `TargetKind: "process"` for a standalone component
+executable with no QMP endpoint. The default remains an xemu target, and its
+serialized saved-test identity is unchanged. Use the existing `submit`, `bake`,
+`run`, `wait`, `result` and complete artifact collection workflow.
+
+Process targets launch with exactly the declared arguments. They support normal
+exit codes, wall-clock timeouts, cancellation, telemetry, immutable input hashes
+and artifact correctness/measurement contracts. They reject xemu control plans,
+paused starts, snapshots, controller input, RenderDoc, guest isolation/disk/XISO
+contracts and diagnostic recipes. They do not receive xemu shader/Mesa or guest
+state qualification. Record that distinction when reporting component results;
+a process result cannot qualify an emulator game workload.
+
+TargetKind accepts only the strings `xemu` and `process` (case insensitive).
+Numeric aliases and surrounding spaces are rejected before job creation.
+Xemu automatic bundles and HTTP diagnostic recipes are unavailable for process
+targets; ordinary native crash reporting remains available.
+
+The deployed runner must advertise `standaloneProcesses`. The maintained submit
+client checks that capability before creating a process job, so an older runner
+cannot silently ignore the target kind and inject QMP. Default xemu jobs retain
+the existing cache qualification. Process jobs can use `Operations.Mode:
+"benchmark"` to retain the normal transfer/intervention policy without requiring
+a nonexistent xemu configuration.
+
+For JSON emitted on stdout, declare `Workload.ReportedMetrics` with
+`Path: "stdout.log"`, a precise `JsonProperty`, units and direction. Declare
+separate correctness and evidence checks; exit code zero alone is not a pass.

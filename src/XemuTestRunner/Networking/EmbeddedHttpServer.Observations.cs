@@ -41,7 +41,7 @@ public sealed partial class EmbeddedHttpServer
                 instance = _observationEpoch, phase = snapshot.Phase,
                 blocked = snapshot.QueueIssue is not null,
                 bulkTransfersAllowed = snapshot.CurrentJob is null || snapshot.Operations.BulkTransfersAllowed,
-                capabilities = new[] { "jobDrafts", "resumableUploads", "jobSummaries", "resultSummaries", "boundedWait", "pinnedTests", "payloadReuse", "artifactPages", "logCursors", "crashReports", "diagnosticZip", "runStateLedger", "diskAssets", "completionWait", "xisoCampaigns" },
+                capabilities = new[] { "jobDrafts", "resumableUploads", "jobSummaries", "resultSummaries", "boundedWait", "pinnedTests", "payloadReuse", "artifactPages", "logCursors", "crashReports", "diagnosticZip", "runStateLedger", "diskAssets", "completionWait", "xisoCampaigns", "standaloneProcesses" },
                 jobs = "/api/v1/jobs", runs = "/api/v1/runs", tests = "/api/v1/tests", diskAssets = "/api/v1/disk-assets",
                 xisoSuites = "/api/v1/xiso-suites", xisoCampaigns = "/api/v1/xiso-campaigns", xisoHelp = "/api/v1/help?topic=xiso",
                 help = "/api/v1/help?topic=observations", testHelp = "/api/v1/help?topic=tests",

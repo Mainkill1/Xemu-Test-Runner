@@ -46,6 +46,8 @@ public sealed class DiagnosticHub
         JobDefinition job,
         CancellationToken runCancellationToken)
     {
+        if (job.IsStandaloneProcess)
+            throw new InvalidOperationException("Process targets do not support xemu diagnostic recipes.");
         lock (_gate)
         {
             _completed.Clear();
@@ -58,6 +60,16 @@ public sealed class DiagnosticHub
                 resultDirectory,
                 job,
                 runCancellationToken);
+        }
+    }
+
+    public void ClearCompleted()
+    {
+        lock (_gate)
+        {
+            if (_active is not null)
+                throw new InvalidOperationException("Cannot clear diagnostics while an xemu run is attached.");
+            _completed.Clear();
         }
     }
 
