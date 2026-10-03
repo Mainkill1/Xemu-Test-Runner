@@ -379,6 +379,70 @@ try
             Assert(captures > 0, "The timeout test did not inspect a completed mismatch.");
         }
     });
+    await Check("live scene wait preserves prior mismatch on capture failure", async () =>
+    {
+        foreach (var failure in new Exception[]
+                 { new TimeoutException("capture timeout"), new IOException("capture disconnected"),
+                   new OperationCanceledException("capture cancelled") })
+        {
+            var directory = Path.Combine(root, "live-scene-capture-failure", failure.GetType().Name);
+            var previewDirectory = Path.Combine(directory, ".preview");
+            Directory.CreateDirectory(previewDirectory);
+            var wrong = Path.Combine(previewDirectory, "wrong.png");
+            WriteRgbPng(wrong, 90, 80, (x, _) =>
+                x < 45 ? (byte.MaxValue, byte.MaxValue, byte.MaxValue) : ((byte)0, (byte)0, (byte)0));
+            var originalBytes = File.ReadAllBytes(wrong);
+            var condition = new ArtifactCheckDefinition
+            {
+                Scope = "result", Path = "screenshots/ready.png",
+                ExpectedImageDHash = "ffffffffffffffff", MaximumImageHammingDistance = 0
+            };
+            var captures = 0;
+            Exception? observed = null;
+            using var caller = new CancellationTokenSource();
+            try
+            {
+                await LiveSceneConditionWaiter.WaitAsync(condition, 60000, 25, directory,
+                    _ =>
+                    {
+                        if (++captures == 1) return Task.FromResult(wrong);
+                        if (failure is OperationCanceledException) caller.Cancel();
+                        return Task.FromException<string>(failure);
+                    }, caller.Token);
+            }
+            catch (Exception error) { observed = error; }
+            Assert(ReferenceEquals(observed, failure), "Capture failure was replaced or swallowed.");
+            Assert(captures == 2, "Capture failure triggered a retry.");
+            var retained = Path.Combine(directory, "screenshots", "ready.last-mismatch.png");
+            Assert(File.Exists(retained), "Capture failure deleted the prior mismatching frame.");
+            Assert(File.ReadAllBytes(retained).SequenceEqual(originalBytes), "Retained mismatch bytes changed.");
+            Assert(!File.Exists(Path.Combine(directory, "screenshots", "ready.png")),
+                "Capture failure published a successful checkpoint.");
+        }
+    });
+    await Check("live scene capture failure without a prior image creates no checkpoint", async () =>
+    {
+        var directory = Path.Combine(root, "live-scene-first-capture-failure");
+        Directory.CreateDirectory(directory);
+        var condition = new ArtifactCheckDefinition
+        {
+            Scope = "result", Path = "screenshots/ready.png",
+            ExpectedImageDHash = "ffffffffffffffff", MaximumImageHammingDistance = 0
+        };
+        var failure = new TimeoutException("first capture timeout");
+        Exception? observed = null;
+        var captures = 0;
+        try
+        {
+            await LiveSceneConditionWaiter.WaitAsync(condition, 60000, 25, directory,
+                _ => { captures++; return Task.FromException<string>(failure); }, CancellationToken.None);
+        }
+        catch (Exception error) { observed = error; }
+        Assert(ReferenceEquals(observed, failure) && captures == 1,
+            "First capture failure was replaced, swallowed or retried.");
+        Assert(!Directory.EnumerateFiles(directory, "*.png", SearchOption.AllDirectories).Any(),
+            "A failed first capture manufactured image evidence.");
+    });
     await Check("input benchmarks require a measurement-start scene checkpoint", async () =>
     {
         var package = Path.Combine(root, "benchmark-scene-contract");

@@ -68,9 +68,13 @@ distance when a check fails, so a diagnostic attempt can be visually reviewed
 before its value is pinned in a new immutable test revision. A visible-pixel
 check is not a scene check.
 
-Input-driven benchmark plans that start a measurement segment are rejected at
-definition load unless their correctness contract fingerprints
-`screenshots/recording-start.png` with a distance limit no greater than 16.
+Input-driven benchmark plans require `wait_for_scene` immediately before every
+`segment_start`, plus a matching result-path fingerprint correctness check.
+Both scene checks must use a distance limit no greater than 16. The live wait
+publishes its matching frame to the declared result path before measurement.
+If a later capture fails, the last completed mismatch is preserved as
+`<checkpoint-name>.last-mismatch.png`, while the original capture failure still
+fails the attempt. Failed captures are not retried or converted into matches.
 This prevents a menu, loading screen, or flyover from producing
 comparison-eligible measurements merely because it is visible. Use a tight
 region and tolerance established from separately reviewed good occurrences;
