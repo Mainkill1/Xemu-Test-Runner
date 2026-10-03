@@ -21,6 +21,55 @@ internal static class ProcessStateChecks
 
     public static void Register(List<(string, Func<Task>)> checks)
     {
+        checks.Add(("actual target launch blocks an unbound legacy keyboard before process start", async () =>
+        {
+            using var f = new Fixture();
+            var image = Environment.ProcessPath ??
+                throw new InvalidOperationException("No apphost path.");
+            Fixture.Require(!Path.GetFileNameWithoutExtension(image).Equals(
+                "dotnet", StringComparison.OrdinalIgnoreCase),
+                "This fixture requires its generated .NET apphost.");
+            foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory))
+                File.Copy(file, Path.Combine(f.Package, Path.GetFileName(file)), true);
+            var executable = Path.Combine(f.Package, Path.GetFileName(image));
+            if (!OperatingSystem.IsWindows())
+                File.SetUnixFileMode(executable,
+                    File.GetUnixFileMode(executable) | UnixFileMode.UserExecute);
+            var job = new JobDefinition
+            {
+                Id = "unbound-keyboard-child",
+                Executable = Path.GetFileName(image),
+                RequireInput = true,
+                RuntimeState = new()
+                {
+                    Isolation = new()
+                    {
+                        CacheMode = "cold",
+                        CacheShaders = false,
+                        RequirePrivateGuestState = false
+                    }
+                }
+            };
+            var options = new DiagnosticsOptions();
+            options.CrashReports.PreserveNativeExitStatus = false;
+            try
+            {
+                await using var _ = await TargetLaunch.StartAsync(
+                    options, job, executable, f.Package, ["--state-child"],
+                    new Dictionary<string, string>(), f.Result,
+                    CancellationToken.None);
+                throw new InvalidOperationException(
+                    "Target launched without a deterministic keyboard binding.");
+            }
+            catch (InvalidDataException error)
+            {
+                Fixture.Require(error.Message.Contains("Keyboard", StringComparison.Ordinal),
+                    "Target launch failed for an unrelated reason.");
+            }
+            Fixture.Require(!File.Exists(Path.Combine(f.Package, "cache", "child-cache.bin")),
+                "The target executed before keyboard binding validation.");
+        }));
+
         checks.Add(("actual target launch uses private config and finalizes state after process exit", async () =>
         {
             using var f = new Fixture();
@@ -30,10 +79,14 @@ internal static class ProcessStateChecks
                 File.Copy(file, Path.Combine(f.Package, Path.GetFileName(file)), true);
             var executable = Path.Combine(f.Package, Path.GetFileName(image));
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(executable, File.GetUnixFileMode(executable) | UnixFileMode.UserExecute);
+            await File.AppendAllTextAsync(f.Config,
+                "\n[input]\nauto_bind = false\n[input.virtual_ports]\n" +
+                "port1_connected = 1\n[input.bindings]\n" +
+                "port1 = 'keyboard'\nport1_driver = 'usb-xbox-gamepad'\n");
             var original = await File.ReadAllTextAsync(f.Config);
             var job = new JobDefinition
             {
-                Id = "real-state-child", Executable = Path.GetFileName(image),
+                Id = "real-state-child", Executable = Path.GetFileName(image), RequireInput = true,
                 RuntimeState = new() { Isolation = new() { CacheMode = "cold", CacheShaders = false, RequirePrivateGuestState = false } }
             };
             var options = new DiagnosticsOptions();

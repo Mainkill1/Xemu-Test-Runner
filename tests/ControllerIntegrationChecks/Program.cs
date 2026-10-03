@@ -123,6 +123,61 @@ await Check("sysfs joystick names use bounded reads despite misleading file leng
     return Task.CompletedTask;
 });
 
+await Check("legacy keyboard input requires an explicit deterministic xemu binding", async () =>
+{
+    var root = Path.Combine(Path.GetTempPath(), "keyboard-binding-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    var config = Path.Combine(root, "xemu.toml");
+    var valid = "[input]\nauto_bind = false\n[input.virtual_ports]\n" +
+        "port1_connected = 1\n[input.bindings]\n" +
+        "port1 = 'keyboard'\nport1_driver = 'usb-xbox-gamepad'\n";
+    try
+    {
+        await File.WriteAllTextAsync(config, valid);
+        KeyboardBindingPreflight.Verify(["-config_path", config], root);
+
+        foreach (var invalid in new[]
+        {
+            valid.Replace("auto_bind = false", "auto_bind = true"),
+            valid.Replace("port1_connected = 1\n", ""),
+            valid.Replace("port1_connected = 1", "port1_connected = 0"),
+            valid.Replace("port1 = 'keyboard'\n", ""),
+            valid.Replace("port1 = 'keyboard'", "port1 = 'auto'"),
+            valid.Replace("usb-xbox-gamepad", "usb-duke")
+        })
+        {
+            await File.WriteAllTextAsync(config, invalid);
+            try
+            {
+                KeyboardBindingPreflight.Verify(["-config_path", config], root);
+                throw new InvalidOperationException("A nondeterministic keyboard binding was accepted.");
+            }
+            catch (InvalidDataException) { }
+        }
+
+        await File.WriteAllTextAsync(config, valid);
+        foreach (var arguments in new IReadOnlyList<string>[]
+        {
+            Array.Empty<string>(),
+            new[] { "-config_path", config, "-config_path", config },
+            new[] { "-config_path" }
+        })
+        {
+            try
+            {
+                KeyboardBindingPreflight.Verify(arguments, root);
+                throw new InvalidOperationException("An ambiguous or missing config path was accepted.");
+            }
+            catch (InvalidDataException) { }
+        }
+    }
+    finally
+    {
+        File.Delete(config);
+        Directory.Delete(root, recursive: true);
+    }
+});
+
 await Check("native binding rejects keyboard and ambiguous port configuration", async () =>
 {
     var path = Path.Combine(Path.GetTempPath(), "controller-binding-" + Guid.NewGuid().ToString("N") + ".toml");

@@ -43,6 +43,13 @@ public sealed class TargetLaunch : IAsyncDisposable
                 await ControllerBindingPreflight.VerifySettledAsync(storage.Arguments, workingDirectory,
                     controllerDeviceSysname, cancellationToken).ConfigureAwait(false);
             }
+            else if (job.RequireInput)
+            {
+                if (storage.Report.EffectiveConfigPath is null)
+                    throw new InvalidDataException(
+                        "Keyboard input requires a run-owned xemu configuration.");
+                KeyboardBindingPreflight.Verify(storage.Arguments, workingDirectory);
+            }
             if (job.LaunchMode.Equals("renderdoc", StringComparison.OrdinalIgnoreCase))
             {
                 if (!diagnostics.Enabled) throw new InvalidOperationException("RenderDoc launch requires Diagnostics.Enabled.");
