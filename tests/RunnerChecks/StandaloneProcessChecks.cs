@@ -115,6 +115,7 @@ internal static class StandaloneProcessChecks
         Assert(!JsonSerializer.Serialize(new JobDefinition(), ConfigLoader.JsonOptions)
             .Contains("TargetKind", StringComparison.Ordinal),
             "Default xemu jobs changed their saved-definition fingerprint.");
+        ValidateSceneGateComposition(package);
         foreach (var extra in new[]
         {
             "\"TargetKind\":\"unknown\"", "\"TargetKind\":null", "\"TargetKind\":2", "\"TargetKind\":1",
@@ -131,6 +132,40 @@ internal static class StandaloneProcessChecks
             try { _ = JobDefinition.LoadPackage(package); }
             catch (Exception error) when (error is InvalidDataException or JsonException) { rejected = true; }
             Assert(rejected, "Unsupported standalone definition was accepted: " + extra);
+        }
+    }
+
+    private static void ValidateSceneGateComposition(string package)
+    {
+        var manifest = new JsonObject
+        {
+            ["Id"] = "definition", ["Executable"] = "tool",
+            ["TargetKind"] = "process",
+            ["Operations"] = new JsonObject { ["Mode"] = "benchmark" }
+        };
+        var path = Path.Combine(package, "job.json");
+        File.WriteAllText(path, manifest.ToJsonString());
+        Assert(JobDefinition.LoadPackage(package).TargetKind == JobTargetKind.Process,
+            "Standalone benchmark without guest input was rejected.");
+
+        manifest["RequireInput"] = true;
+        manifest["Plan"] = new JsonArray(
+            new JsonObject { ["Type"] = "segment_start", ["Name"] = "measurement" },
+            new JsonObject { ["Type"] = "segment_end", ["Name"] = "measurement" });
+        foreach (var explicitXemu in new[] { false, true })
+        {
+            if (explicitXemu) manifest["TargetKind"] = "xemu";
+            else manifest.Remove("TargetKind");
+            File.WriteAllText(path, manifest.ToJsonString());
+            bool rejectedForScene = false;
+            try { _ = JobDefinition.LoadPackage(package); }
+            catch (InvalidDataException error)
+            {
+                rejectedForScene = error.Message.Contains("measurement-start scene",
+                    StringComparison.OrdinalIgnoreCase);
+            }
+            Assert(rejectedForScene,
+                $"{(explicitXemu ? "Explicit" : "Default")} xemu input benchmark bypassed the scene gate.");
         }
     }
 
