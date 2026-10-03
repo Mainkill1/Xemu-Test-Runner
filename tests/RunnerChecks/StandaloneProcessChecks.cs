@@ -161,11 +161,35 @@ internal static class StandaloneProcessChecks
             try { _ = JobDefinition.LoadPackage(package); }
             catch (InvalidDataException error)
             {
-                rejectedForScene = error.Message.Contains("measurement-start scene",
+                rejectedForScene = error.Message.Contains("wait_for_scene",
                     StringComparison.OrdinalIgnoreCase);
             }
             Assert(rejectedForScene,
                 $"{(explicitXemu ? "Explicit" : "Default")} xemu input benchmark bypassed the scene gate.");
+        }
+
+        manifest["Workload"] = new JsonObject
+        {
+            ["CorrectnessChecks"] = new JsonArray(new JsonObject
+            {
+                ["Scope"] = "result", ["Path"] = "screenshots/scene.png",
+                ["ExpectedImageDHash"] = "0123456789abcdef",
+                ["MaximumImageHammingDistance"] = 8
+            })
+        };
+        ((JsonArray)manifest["Plan"]!).Insert(0, new JsonObject
+        {
+            ["Type"] = "wait_for_scene", ["TimeoutMs"] = 60000,
+            ["PollIntervalMs"] = 250,
+            ["Condition"] = manifest["Workload"]!["CorrectnessChecks"]![0]!.DeepClone()
+        });
+        foreach (var explicitXemu in new[] { false, true })
+        {
+            if (explicitXemu) manifest["TargetKind"] = "xemu";
+            else manifest.Remove("TargetKind");
+            File.WriteAllText(path, manifest.ToJsonString());
+            Assert(JobDefinition.LoadPackage(package).TargetKind == JobTargetKind.Xemu,
+                "A live-gated xemu benchmark was rejected by standalone composition.");
         }
     }
 
