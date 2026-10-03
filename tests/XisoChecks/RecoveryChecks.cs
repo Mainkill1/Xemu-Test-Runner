@@ -1,11 +1,59 @@
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using XemuTestRunner.Config;
+using XemuTestRunner.Networking;
+using XemuTestRunner.Reliability;
+using XemuTestRunner.Runtime;
 using static AgentFixture;
 
 internal static class RecoveryChecks
 {
     public static async Task Run(Func<string, Func<Task>, Task> check, Func<AgentFixture, Task<JsonElement>> setup)
     {
+        await check("legacy campaign identities remain readable without rewriting stored evidence", async () =>
+        {
+            await using var host = new AgentFixture();
+            await setup(host);
+            await host.Json("/api/v1/xiso-campaigns", HttpMethod.Post,
+                new { id = "source-plan", application = "application", tests = new[] { "cpu.direct" } });
+            var source = await host.Json("/api/v1/xiso-campaigns/source-plan?view=plan");
+            var plan = JsonSerializer.Deserialize<XisoCampaignPlan>(source.GetRawText(), ConfigLoader.JsonOptions)!
+                with { Id = "legacy", ConfigurationSource = null, ConfigurationPath = null };
+            plan = plan with { Attempts = plan.Attempts.Select(x => x with { ConfigurationSha256 = null }).ToArray() };
+            // Exact pre-configuration-source request shape, including its original null fields.
+            var request = new { Id = "legacy", Application = "application", Suite = (string?)null,
+                Categories = Array.Empty<string>(), Tests = new[] { "cpu.direct" }, Mode = (string?)null,
+                Settings = (XisoSettings?)null, ReferenceApplication = (string?)null };
+            var path = Path.Combine(host.Paths.Pending, ".xiso-campaigns", "legacy.json");
+            var stored = JsonSerializer.Serialize(new { Request = request, RequestIdentity = JsonIdentity.Hash(request),
+                Revision = JsonIdentity.Hash(plan), Plan = plan, CreatedUtc = DateTimeOffset.UtcNow,
+                StartRequestedUtc = (DateTimeOffset?)null, CancelRequested = false, Error = (string?)null }, ConfigLoader.JsonOptions);
+            await File.WriteAllTextAsync(path, stored);
+
+            var status = await host.Json("/api/v1/xiso-campaigns/legacy");
+            Require(!status.GetProperty("startRequested").GetBoolean() && status.GetProperty("selectedLeaves").GetInt32() == 1,
+                "A legacy campaign lost its frozen selection or gained authorization.");
+            await host.Json("/api/v1/xiso-campaigns", HttpMethod.Post,
+                new { id = "legacy", application = "application", tests = new[] { "cpu.direct" } });
+            await host.Json("/api/v1/xiso-campaigns", HttpMethod.Post,
+                new { id = "legacy", application = "application", tests = new[] { "cpu.direct" }, configurationSource = "suite" },
+                HttpStatusCode.Conflict);
+            await host.Json("/api/v1/xiso-campaigns", HttpMethod.Post,
+                new { id = "legacy", application = "application", tests = new[] { "shader_lifecycle.pipeline_train" } },
+                HttpStatusCode.Conflict);
+            Require(await File.ReadAllTextAsync(path) == stored, "Reading legacy history rewrote its identity or evidence.");
+
+            var damaged = JsonNode.Parse(stored)!.AsObject();
+            damaged["Request"]!["Id"] = "damaged";
+            var damagedPlan = plan with { Id = "damaged" };
+            damaged["Plan"] = JsonSerializer.SerializeToNode(damagedPlan, ConfigLoader.JsonOptions);
+            damaged["Revision"] = JsonIdentity.Hash(damagedPlan);
+            damaged["RequestIdentity"] = new string('0', 64);
+            await File.WriteAllTextAsync(path.Replace("legacy.json", "damaged.json"),
+                damaged.ToJsonString(ConfigLoader.JsonOptions));
+            await host.Json("/api/v1/xiso-campaigns/damaged", expected: HttpStatusCode.BadRequest);
+        });
         await check("corrupt campaign history is visible without blocking valid requested work", async () =>
         {
             await using var host = new AgentFixture();
