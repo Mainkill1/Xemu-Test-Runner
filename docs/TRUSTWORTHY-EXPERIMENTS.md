@@ -110,6 +110,18 @@ segment_start / segment_end create named measurement windows. The current segmen
 
 Use wait_for_artifact for deterministic host-visible readiness instead of arbitrary sleeps when the workload can produce marker files.
 
+Use `wait_for_scene` when a fresh-start input sequence can finish before a slow
+host has reached the intended measurement scene. The step captures transient
+live previews until its result-scoped image fingerprint matches, then publishes
+the matching image at `Condition.Path`. An input benchmark must place this step
+immediately before each `segment_start` and declare the same path as a workload
+correctness check. The maximum image Hamming distance may not exceed 16. A
+timeout fails the plan and reports the last observed mismatch; timing never
+starts from a loading screen or an unrelated menu.
+
+`wait_for_scene` observes only. It does not add gameplay input, infer progress
+from nominal FPS, or make a scene match less strict on a slower host.
+
 ## Preserved targets
 
 When PreserveTargetOnRunnerError is enabled, runner/control faults may leave xemu alive. The package stays owned in Testing and QMP/input remains available. POST /api/v1/xemu/quit requests a controlled shutdown. Once xemu exits, the runner finalizes the hold and archives the package.
@@ -132,6 +144,8 @@ It deliberately does not declare a winner or statistical significance. A later a
 
 - ControlledFactors are documentation plus evidence, not yet an automatic cross-run manifest-diff policy.
 - wait_for_artifact is host-visible file based; guest-native progress signaling still requires guest/test integration.
+- wait_for_scene is a visual readiness gate. It proves the declared image was
+  observed before measurement, not that the guest consumed every earlier input.
 - xemu controller automation remains keyboard/X11/SendInput based until emulator-side acknowledged controller control exists.
 - physical Xbox adapters are not implemented.
 - comparison aggregation is descriptive; paired experiment scheduling/interleaving remains future work.
