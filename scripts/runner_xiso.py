@@ -85,6 +85,8 @@ def build_parser():
     select.add_argument("--catalog-id", help="Optional exact catalog pin for numeric selectors; reject a changed suite before campaign creation.")
     select.add_argument("--mode", choices=("smoke", "sections", "full", "monolithic"))
     select.add_argument("--reference", help="Reference application; defaults to the full suite with per-chunk ABBA and BAAB orders.")
+    select.add_argument("--configuration-source", choices=("suite", "application"),
+                        help="Required when both inputs contain xemu config: keep the suite config or replace it from each application.")
     select.add_argument("--start", action="store_true", help="Explicitly authorize the campaign after creation succeeds.")
     settings_options(select)
     for name, help_text in (("start", "Explicitly start an existing campaign."),
@@ -193,9 +195,12 @@ def common_contract(plan: dict) -> dict:
     return {
         'isoSha256': plan['isoSha256'], 'catalogId': plan['catalogId'],
         'mode': plan['mode'], 'settings': plan['settings'],
+        'configurationSource': plan.get('configurationSource', 'legacy-suite'),
+        'configurationPath': plan.get('configurationPath'),
         'tests': plan['tests'], 'addedDependencies': plan['addedDependencies'],
         'chunks': [{'tests': chunk['tests'], 'categories': chunk['categories']} for chunk in plan['chunks']],
-        'attempts': [{'chunk': attempt['chunk'], 'label': attempt['label'], 'variant': attempt['variant']}
+        'attempts': [{'chunk': attempt['chunk'], 'label': attempt['label'], 'variant': attempt['variant'],
+                      'configurationSha256': attempt.get('configurationSha256')}
                      for attempt in plan['attempts']],
     }
 
@@ -288,7 +293,8 @@ def execute(args):
             body["catalogId"] = catalog["catalogId"]
         for field, value in (("suite", args.suite), ("categories", args.category), ("tests", args.test),
                              ("test_ids", test_ids), ("category_ids", category_ids),
-                             ("mode", args.mode), ("referenceApplication", args.reference), ("settings", settings(args))):
+                             ("mode", args.mode), ("referenceApplication", args.reference),
+                             ("configurationSource", args.configuration_source), ("settings", settings(args))):
             if value:
                 body[field] = value
         result = api.json("/api/v1/xiso-campaigns", "POST", body)

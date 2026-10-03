@@ -58,6 +58,14 @@ class XisoClientChecks(unittest.TestCase):
         self.assertEqual(body['suite'], 'pilot')
         self.assertEqual(sum(path.endswith('/start') for _, path, _, _ in calls), 1)
 
+    def test_application_configuration_source_is_explicit(self):
+        with fixture(responder()) as (origin, calls):
+            result = self.invoke(origin, 'select', 'build-a', '--id', 'example', '--category', 'cpu',
+                                 '--configuration-source', 'application')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        body = next(body for method, path, body, _ in calls if method == 'POST')
+        self.assertEqual(body['configurationSource'], 'application')
+
     def test_wait_follows_heartbeats_quietly_without_timer_option(self):
         with fixture(responder()) as (origin, calls):
             result = self.invoke(origin, 'wait', 'example')
@@ -109,9 +117,12 @@ class XisoClientChecks(unittest.TestCase):
                     return 200, {'capability': 'xisoCampaigns'}, {}
                 if urlsplit(path).path == '/api/v1/xiso-campaigns/example':
                     return 200, {'isoSha256': iso, 'catalogId': 'catalog', 'mode': 'full',
-                                 'settings': {'warmup_iterations': 0}, 'tests': ['cpu.direct'],
+                                 'settings': {'warmup_iterations': 0},
+                                 'configurationSource': 'suite', 'configurationPath': 'xemu.toml',
+                                 'tests': ['cpu.direct'],
                                  'addedDependencies': [], 'chunks': [{'tests': ['cpu.direct'], 'categories': ['cpu']}],
-                                 'attempts': [{'label': 'A1', 'variant': 'reference', 'chunk': 1}]}, {}
+                                 'attempts': [{'label': 'A1', 'variant': 'reference', 'chunk': 1,
+                                               'configurationSha256': 'c' * 64}]}, {}
                 return 404, {'code': 'unexpected', 'error': path}, {}
             return respond
         with fixture(plan('a' * 64)) as (first, _), fixture(plan('b' * 64)) as (second, _):
