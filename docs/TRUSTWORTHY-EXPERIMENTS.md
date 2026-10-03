@@ -110,15 +110,18 @@ segment_start / segment_end create named measurement windows. The current segmen
 
 Use wait_for_artifact for deterministic host-visible readiness instead of arbitrary sleeps when the workload can produce marker files.
 
-Use `wait_for_scene` when a fresh-start input sequence can finish before a slow
-host has reached the intended measurement scene. The step captures transient
-live previews until its result-scoped image fingerprint matches, then publishes
-the matching image at `Condition.Path`. An input benchmark must place this step
-immediately before each `segment_start` and declare the same path as a workload
-correctness check. The maximum image Hamming distance may not exceed 16. A
-timeout fails the plan, reports the last observed mismatch, and preserves that
-frame beside the requested result image with a `.last-mismatch` suffix. Timing
-never starts from a loading screen or an unrelated menu.
+An authored `wait_for_scene` step can gate measurement on a result-scoped image
+fingerprint. It captures transient live previews until the fingerprint matches,
+then publishes the matching image at `Condition.Path`. The maximum image
+Hamming distance may not exceed 16. A timeout fails the plan, reports the last
+observed mismatch, and preserves that frame beside the requested result image
+with a `.last-mismatch` suffix.
+
+This step is optional. Package validation must preserve the saved procedure's
+measurement boundary, including a `segment_start` immediately after its last
+input. Do not add a scene wait to an existing procedure to satisfy runner
+validation. Scene screenshots and authored post-run correctness checks remain
+evidence for reviewing whether the game reached the intended location.
 
 `wait_for_scene` observes only. It does not add gameplay input, infer progress
 from nominal FPS, or make a scene match less strict on a slower host.
