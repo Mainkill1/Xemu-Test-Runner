@@ -108,7 +108,10 @@ in required-file hashes. On Linux with Python 3.9 or newer, declare this recipe:
   "ToolExecutable": "/usr/bin/python3",
   "ToolArguments": ["{packageDir}/tools/linux_performance_context.py",
                     "--pid", "{pid}", "--samples", "30", "--interval-ms", "1000"],
-  "DurationMs": 40000
+  "DurationMs": 40000,
+  "PauseBefore": false,
+  "ResumeDuring": false,
+  "PauseAfter": false
 }
 ```
 
