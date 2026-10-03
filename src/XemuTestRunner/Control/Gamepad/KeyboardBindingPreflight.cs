@@ -52,15 +52,18 @@ public static class KeyboardBindingPreflight
         }
 
         var input = Table(model, "input", "[input]");
+        var ports = Table(input, "virtual_ports", "[input.virtual_ports]");
         var bindings = Table(input, "bindings", "[input.bindings]");
         if (!input.TryGetValue("auto_bind", out var autoBind) || autoBind is not false ||
+            !ports.TryGetValue("port1_connected", out var connected) ||
+            connected is not 1L ||
             !bindings.TryGetValue("port1", out var selected) ||
             selected is not string binding || binding != "keyboard" ||
             !bindings.TryGetValue("port1_driver", out var driver) ||
             driver is not string driverName || driverName != "usb-xbox-gamepad")
             throw new InvalidDataException(
-                "Keyboard input requires auto_bind=false and port 1 explicitly bound " +
-                "to keyboard with usb-xbox-gamepad.");
+                "Keyboard input requires auto_bind=false, port1_connected=1, and " +
+                "port 1 explicitly bound to keyboard with usb-xbox-gamepad.");
     }
 
     private static TomlTable Table(TomlTable parent, string key, string section) =>

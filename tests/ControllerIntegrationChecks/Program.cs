@@ -128,7 +128,8 @@ await Check("legacy keyboard input requires an explicit deterministic xemu bindi
     var root = Path.Combine(Path.GetTempPath(), "keyboard-binding-" + Guid.NewGuid().ToString("N"));
     Directory.CreateDirectory(root);
     var config = Path.Combine(root, "xemu.toml");
-    var valid = "[input]\nauto_bind = false\n[input.bindings]\n" +
+    var valid = "[input]\nauto_bind = false\n[input.virtual_ports]\n" +
+        "port1_connected = 1\n[input.bindings]\n" +
         "port1 = 'keyboard'\nport1_driver = 'usb-xbox-gamepad'\n";
     try
     {
@@ -138,6 +139,8 @@ await Check("legacy keyboard input requires an explicit deterministic xemu bindi
         foreach (var invalid in new[]
         {
             valid.Replace("auto_bind = false", "auto_bind = true"),
+            valid.Replace("port1_connected = 1\n", ""),
+            valid.Replace("port1_connected = 1", "port1_connected = 0"),
             valid.Replace("port1 = 'keyboard'\n", ""),
             valid.Replace("port1 = 'keyboard'", "port1 = 'auto'"),
             valid.Replace("usb-xbox-gamepad", "usb-duke")

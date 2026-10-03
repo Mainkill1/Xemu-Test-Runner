@@ -80,7 +80,8 @@ internal static class ProcessStateChecks
             var executable = Path.Combine(f.Package, Path.GetFileName(image));
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(executable, File.GetUnixFileMode(executable) | UnixFileMode.UserExecute);
             await File.AppendAllTextAsync(f.Config,
-                "\n[input]\nauto_bind = false\n[input.bindings]\n" +
+                "\n[input]\nauto_bind = false\n[input.virtual_ports]\n" +
+                "port1_connected = 1\n[input.bindings]\n" +
                 "port1 = 'keyboard'\nport1_driver = 'usb-xbox-gamepad'\n");
             var original = await File.ReadAllTextAsync(f.Config);
             var job = new JobDefinition

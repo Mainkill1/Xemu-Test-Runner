@@ -163,7 +163,8 @@ async Task<(JsonElement Result, string Directory, string Captures)> Run(string n
         if (OperatingSystem.IsLinux()) File.SetUnixFileMode(target, File.GetUnixFileMode(source));
     }
     await File.WriteAllTextAsync(Path.Combine(package, "xemu.toml"),
-        "[input]\nauto_bind = false\n[input.bindings]\n" +
+        "[input]\nauto_bind = false\n[input.virtual_ports]\n" +
+        "port1_connected = 1\n[input.bindings]\n" +
         "port1 = 'keyboard'\nport1_driver = 'usb-xbox-gamepad'\n" +
         "[perf]\ncache_shaders = true\n");
     var job = new JobDefinition { Id = name, Executable = Path.GetFileName(Environment.ProcessPath!), Arguments = ["--target"],
