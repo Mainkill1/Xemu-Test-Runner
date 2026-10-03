@@ -15,7 +15,8 @@ internal sealed record XisoCampaignApiRequest(
     string? CatalogId = null,
     string? Mode = null,
     XisoSettings? Settings = null,
-    string? ReferenceApplication = null);
+    string? ReferenceApplication = null,
+    string? ConfigurationSource = null);
 
 internal sealed partial class AgentJobStore
 {
@@ -52,7 +53,8 @@ internal sealed partial class AgentJobStore
             tests,
             request.Mode,
             request.Settings,
-            request.ReferenceApplication));
+            request.ReferenceApplication,
+            request.ConfigurationSource));
     }
 
     public object XisoSelectorCategories(string id)

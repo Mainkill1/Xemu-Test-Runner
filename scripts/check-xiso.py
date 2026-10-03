@@ -80,6 +80,8 @@ class XisoViewerChecks(unittest.TestCase):
     def create(self):
         self.page.locator('#application').fill('candidate')
         self.page.locator('#campaign').fill('browser-campaign')
+        if not self.page.locator('#configuration').input_value():
+            self.page.locator('#configuration').select_option('suite')
         self.page.locator('#create').click()
         self.page.wait_for_function("document.getElementById('result').textContent.includes('uploaded')")
         return next(body for method, path, body in self.calls if method == 'POST' and path == '/api/v1/xiso-campaigns')
@@ -89,7 +91,7 @@ class XisoViewerChecks(unittest.TestCase):
         body = self.create()
         self.assertEqual(body, {'id': 'browser-campaign', 'application': 'candidate',
                                'suite': 'pilot', 'catalogId': 'sha256:' + 'b' * 64,
-                               'category_ids': [2]})
+                               'configurationSource': 'suite', 'category_ids': [2]})
         self.assertFalse(any(path.endswith('/start') for _, path, _ in self.calls))
 
     def test_individual_selection_submits_global_numeric_test_id(self):
@@ -122,6 +124,11 @@ class XisoViewerChecks(unittest.TestCase):
         self.page.locator('#multiplier').fill('4')
         body = self.create()
         self.assertEqual(body['settings'], {'measurement_iterations_multiplier': 4})
+
+    def test_application_configuration_choice_is_submitted(self):
+        self.page.locator('#configuration').select_option('application')
+        body = self.create()
+        self.assertEqual(body['configurationSource'], 'application')
 
 
 if __name__ == '__main__':

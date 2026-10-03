@@ -95,10 +95,11 @@ internal static class ReportChecks
         var labels = new[] { "A1", "B1", "B2", "A2", "B3", "A3", "A4", "B4" };
         var attempts = labels.Select((label, index) => new XisoAttempt("attempt-" + index,
             label.StartsWith('A') ? "reference" : "candidate", "identity", 1, label,
-            label.StartsWith('A') ? "reference" : "candidate")).ToArray();
+            label.StartsWith('A') ? "reference" : "candidate", "config-sha")).ToArray();
         return new XisoCampaignPlan("campaign", "suite", "revision", new string('a', 64),
             "sha256:" + new string('b', 64), "candidate", "full", new XisoSettings().Resolve(),
-            ["cpu.direct"], [], [new XisoChunk(1, "test", "revision", "plan", ["cpu.direct"], ["cpu"], new())], attempts);
+            ["cpu.direct"], [], [new XisoChunk(1, "test", "revision", "plan", ["cpu.direct"], ["cpu"], new())],
+            attempts, "suite", "xemu.toml");
     }
 
     private static BuildRunRecord Record(XisoAttempt attempt, double value) => new(

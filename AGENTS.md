@@ -12,6 +12,8 @@ Use `runner_xiso.py` with runner_transport.py from the same checkout. The operat
 
 Most fields are optional. Do not create a large JSON document or guess defaults: missing settings inherit the registered suite and the frozen `plan CAMPAIGN` shows effective values. The small request is `{id,application,categories}`. Selection never starts without --start; `start CAMPAIGN` is separate. A reference application with no selectors defaults to the complete catalog and freezes per-chunk ABBA then BAAB scheduling on the tester, not in an agent script. Before starting Windows and Steam Deck campaigns, use `runner_xiso.py check-pair` to compare their portable frozen plans. Missing selected-leaf oracles block paired creation; run an unpaired full diagnostic and qualify a new immutable reference instead of silently dropping leaves.
 
+When the application also declares `-config_path`, select `--configuration-source suite` or `--configuration-source application`. The first keeps the suite's settings; the second replaces the configuration from each application and pins its SHA-256 per attempt. Omission is blocked because an application label must not imply settings that the campaign silently ignored.
+
 Categories are cpu, commands, shaders, textures, geometry, surfaces and scenarios. Future unmapped tests are visible under other. The latest packaged shader-readiness target has 159 leaves plus five structural groups; the earlier pilot has 160 leaves. Counts come from the exact pinned catalog. Shader-lifecycle cases execute in separate processes. Required memory-pressure checkpoints are expanded together and disclosed in the plan.
 
 ## PGR2 parked performance course

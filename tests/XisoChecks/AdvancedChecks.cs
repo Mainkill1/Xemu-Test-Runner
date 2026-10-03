@@ -93,6 +93,49 @@ internal static class AdvancedChecks
             await host.Json("/api/v1/xiso-campaigns/handoff/start", HttpMethod.Post, new { }, HttpStatusCode.Accepted);
             host.State.SetPhase("idle"); await Queued(host, "xc-handoff-001");
         });
+        await check("campaign requires and honors an explicit xemu configuration source", async () =>
+        {
+            await using var host = new AgentFixture(); await setup(host);
+            var applicationConfig = "[audio.vp]\nresampler='linear'\n"u8.ToArray();
+            var executable = "fixture"u8.ToArray();
+            var files = new[] {
+                new { path = "xemu.bin", length = (long)executable.Length, sha256 = DigestBytes(executable), executable = true },
+                new { path = "xemu.toml", length = (long)applicationConfig.Length, sha256 = DigestBytes(applicationConfig), executable = false }
+            };
+            await host.Json("/api/v1/jobs", HttpMethod.Post, new {
+                id = "configured-application",
+                job = new { id = "configured-application", executable = "xemu.bin", arguments = new[] { "-config_path", "xemu.toml" } },
+                files
+            });
+            foreach (var (path, bytes) in new[] { ("xemu.bin", executable), ("xemu.toml", applicationConfig) })
+            {
+                using var body = new ByteArrayContent(bytes);
+                using var response = await host.Client.PutAsync("/api/v1/jobs/configured-application/files/" + path, body);
+                Require(response.StatusCode == HttpStatusCode.Created, await response.Content.ReadAsStringAsync());
+            }
+
+            await host.Json("/api/v1/xiso-campaigns", HttpMethod.Post, new {
+                id = "ambiguous-config", application = "configured-application", tests = new[] { "cpu.direct" }
+            }, HttpStatusCode.Conflict);
+
+            _ = await host.Json("/api/v1/xiso-campaigns", HttpMethod.Post, new {
+                id = "suite-config", application = "configured-application", configurationSource = "suite", tests = new[] { "cpu.direct" }
+            });
+            var suitePlan = await host.Json("/api/v1/xiso-campaigns/suite-config?view=plan");
+            Require(suitePlan.GetProperty("configurationSource").GetString() == "suite", "Suite configuration choice was not frozen.");
+
+            _ = await host.Json("/api/v1/xiso-campaigns", HttpMethod.Post, new {
+                id = "application-config", application = "configured-application", configurationSource = "application", tests = new[] { "cpu.direct" }
+            });
+            var appPlan = await host.Json("/api/v1/xiso-campaigns/application-config?view=plan");
+            Require(appPlan.GetProperty("configurationSource").GetString() == "application", "Application configuration choice was not frozen.");
+            Require(appPlan.GetProperty("attempts")[0].GetProperty("configurationSha256").GetString() == DigestBytes(applicationConfig),
+                "Application configuration hash was not pinned in the campaign plan.");
+            await host.Json("/api/v1/xiso-campaigns/application-config/start", HttpMethod.Post, new { }, HttpStatusCode.Accepted);
+            host.State.SetPhase("idle"); await Queued(host, "xc-application-config-001");
+            Require(File.ReadAllBytes(Path.Combine(host.Paths.Pending, "agent-xc-application-config-001", "xemu.toml")).SequenceEqual(applicationConfig),
+                "The XISO child did not receive the explicitly selected application configuration.");
+        });
         await RecoveryChecks.Run(check, setup);
     }
     private static async Task<RuntimeStateDefinition> Definition(AgentFixture host, string id)
