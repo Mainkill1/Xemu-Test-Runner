@@ -7,21 +7,26 @@ Dead or Alive Xtreme Beach Volleyball (USA).
 
 | Procedure | Input | Measurement |
 |---|---|---|
-| Conker v2 | Full Xbox startup; wait 15 s + 15 s, A for 100 ms, wait 20 s, A for 100 ms, wait 15 s for bar transition | 30 seconds in the bar menu |
+| Conker v1 candidate | Full Xbox startup; wait 15 s + 15 s, then A for 100 ms | Unqualified; do not use for performance comparison yet |
 | PGR2 | Existing `pgr2-parked-v1` inputs and portable save | 30 seconds parked; no gameplay input |
 | DOAXBV | Wait 90 seconds, A for 100 ms; wait 5 seconds, A for 100 ms | 30 seconds after the final input |
 
 Qualification must confirm each intended scene on both devices and both builds.
 A non-black screenshot alone does not prove that the menu input succeeded.
-The original Conker v1 candidate remains as a failed proposal: its two
-15-second wall-clock waits and one A press did not skip the movie on either rig.
-The revised `conker-menu-fresh-v2.json` uses two A presses and a transition wait;
-it reached **Xbox Live & Co** at both measurement screenshots on both builds
-and hosts. These are nominal wall-clock allowances, not a detected Xbox boot
-boundary. The user clarified that the requested 15-second delay starts at
-the Rare/Conker intro, then authorized qualification of the working skip
-sequence. Version 2 is that qualified fixed-delay route; it does not detect
-the intro or guarantee an input exactly 15 guest seconds afterward. The menu animates; this does not promise identical simulation time.
+The Conker v1 file preserves the requested single-A candidate. It is not an
+accepted benchmark yet. Earlier attempts retained a keyboard binding while the
+guest controller port could be disconnected in saved xemu state. A fresh start
+made the same input work, so those failures do not establish that the button or
+delay was wrong. The later two-A v2 route was also invalid: its generic
+non-black screenshot checks accepted an animated Xbox Live & Co splash as the
+target menu. That route has been removed instead of preserving a false
+qualification.
+
+A replacement Conker revision must use one A press, explicitly require guest
+port 1 to be connected, and pin the intended measurement-start scene with the
+benchmark fingerprint contract. Qualify that exact immutable revision on both
+hosts before using it in ABBA/BAAB performance work. Fixed waits remain nominal
+wall-clock allowances, not a detected Xbox boot or Rare-intro boundary.
 
 Use one immutable saved-test revision per host/game, and the same procedure for
 both application hashes. Run `A B B A`, then `B A A B`; retain failed attempts.
@@ -71,15 +76,14 @@ those changes and must not be substituted for this campaign.
   reached the menu by the end screenshot but was still transitioning at the
   start screenshot. An earlier Deck attempt displayed a guest disc error.
   Retain that failure; this retry does not establish its root cause.
-- Conker v2 reached the bar menu on Windows and Deck with both builds. Its
-  source preserves the changed route explicitly; v1 stays unqualified. A
-  separate Deck fork preparation failed before launch at the free-space floor,
-  then the identical procedure qualified after inactive staging was archived.
-  Preserve that failed request; do not pool movie measurements with the menu.
+- The prior Conker schedule is rejected. The recordings showed an animated
+  Xbox Live & Co splash, while saved controller-port state was not proven.
+  Preserve those attempts as failed diagnostics and do not pool them with a
+  future menu benchmark.
 
-PGR2 and DOAXBV preserve the requested inputs. Conker v2 preserves the
-separately authorized, qualified skip route as a reproducible test source.
-Their presence is not proof of consumed guest input, identical simulation time,
-a benchmark pass, or a performance result. Numeric correctness checks and scene
-qualification are separate. The runner has no qualified external frame provider
-for these procedures; their waits remain time-based.
+PGR2 and DOAXBV preserve the requested inputs. Conker v1 preserves only the
+single-button candidate and must not be registered as a qualified performance
+test. Procedure presence is not proof of consumed guest input, identical
+simulation time, a benchmark pass, or a performance result. Numeric correctness
+checks and scene qualification are separate. The runner has no qualified
+external frame provider for these procedures; their waits remain time-based.
