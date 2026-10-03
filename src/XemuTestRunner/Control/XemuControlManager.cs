@@ -784,6 +784,23 @@ public sealed class XemuControlManager : IDisposable
             catch (Exception ex) when (ex is TimeoutException or IOException or OperationCanceledException)
             {
             }
+
+            // Some compositor helpers publish the requested image, then leave
+            // their wrapper process alive while the portal session closes. A
+            // complete PNG is the result of this command; after terminating
+            // the stale wrapper, accept that immutable output instead of
+            // failing an otherwise complete benchmark plan.
+            using var outputDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            outputDeadline.CancelAfter(TimeSpan.FromSeconds(2));
+            try
+            {
+                await WaitForCompletePngAsync(path, outputDeadline.Token).ConfigureAwait(false);
+                return;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+            }
+
             throw new TimeoutException($"Screenshot command exceeded {_options.ScreenshotTimeoutMs} ms.");
         }
 
