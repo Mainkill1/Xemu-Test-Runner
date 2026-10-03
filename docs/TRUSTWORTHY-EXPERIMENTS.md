@@ -116,8 +116,9 @@ live previews until its result-scoped image fingerprint matches, then publishes
 the matching image at `Condition.Path`. An input benchmark must place this step
 immediately before each `segment_start` and declare the same path as a workload
 correctness check. The maximum image Hamming distance may not exceed 16. A
-timeout fails the plan and reports the last observed mismatch; timing never
-starts from a loading screen or an unrelated menu.
+timeout fails the plan, reports the last observed mismatch, and preserves that
+frame beside the requested result image with a `.last-mismatch` suffix. Timing
+never starts from a loading screen or an unrelated menu.
 
 `wait_for_scene` observes only. It does not add gameplay input, infer progress
 from nominal FPS, or make a scene match less strict on a slower host.
