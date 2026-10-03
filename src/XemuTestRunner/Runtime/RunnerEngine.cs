@@ -771,6 +771,20 @@ public sealed class RunnerEngine
                                 resultDirectory,
                                 runtimeState,
                                 token).ConfigureAwait(false);
+                        },
+                        sceneWaiter: async (
+                            condition,
+                            timeoutMs,
+                            pollIntervalMs,
+                            token) =>
+                        {
+                            await LiveSceneConditionWaiter.WaitAsync(
+                                condition,
+                                timeoutMs,
+                                pollIntervalMs,
+                                resultDirectory,
+                                _control.CapturePreviewAsync,
+                                token).ConfigureAwait(false);
                         });
                 }
 
