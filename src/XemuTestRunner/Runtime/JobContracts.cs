@@ -63,6 +63,8 @@ public sealed class ArtifactCheckDefinition
     public double? MinimumNonBlackPixelRatio { get; set; }
     public int NonBlackPixelThreshold { get; set; }
     public ImageRegionDefinition? ImageRegion { get; set; }
+    public string? ExpectedImageDHash { get; set; }
+    public int? MaximumImageHammingDistance { get; set; }
     public string? ExpectedSha256 { get; set; }
     public string? ContainsText { get; set; }
     public string? EqualsText { get; set; }

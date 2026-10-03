@@ -224,10 +224,31 @@ public sealed class JobDefinition
                 throw new InvalidDataException(
                     "Workload artifact NonBlackPixelThreshold must be between 0 and 255.");
 
-            if ((artifact.NonBlackPixelThreshold != 0 || artifact.ImageRegion is not null) &&
+            if (artifact.NonBlackPixelThreshold != 0 &&
                 artifact.MinimumNonBlackPixelRatio is null)
                 throw new InvalidDataException(
-                    "Workload artifact image thresholds and regions require MinimumNonBlackPixelRatio.");
+                    "Workload artifact NonBlackPixelThreshold requires MinimumNonBlackPixelRatio.");
+
+            if ((artifact.ExpectedImageDHash is null) !=
+                (artifact.MaximumImageHammingDistance is null))
+                throw new InvalidDataException(
+                    "Workload artifact image fingerprints require ExpectedImageDHash and MaximumImageHammingDistance together.");
+
+            if (artifact.ExpectedImageDHash is { } imageHash &&
+                (imageHash.Length != 16 || !imageHash.All(Uri.IsHexDigit)))
+                throw new InvalidDataException(
+                    "Workload artifact ExpectedImageDHash must be 16 hexadecimal characters.");
+
+            if (artifact.MaximumImageHammingDistance is int distance &&
+                distance is < 0 or > 64)
+                throw new InvalidDataException(
+                    "Workload artifact MaximumImageHammingDistance must be between 0 and 64.");
+
+            if (artifact.ImageRegion is not null &&
+                artifact.MinimumNonBlackPixelRatio is null &&
+                artifact.ExpectedImageDHash is null)
+                throw new InvalidDataException(
+                    "Workload artifact ImageRegion requires a visible-pixel or image-fingerprint check.");
 
             if (artifact.ImageRegion is { } region &&
                 (!double.IsFinite(region.X) || !double.IsFinite(region.Y) ||
@@ -243,6 +264,23 @@ public sealed class JobDefinition
                  !artifact.ExpectedSha256.All(Uri.IsHexDigit)))
                 throw new InvalidDataException(
                     $"Artifact '{artifact.Path}' ExpectedSha256 must be 64 hexadecimal characters.");
+        }
+
+        if (job.Operations.IsBenchmark && job.RequireInput &&
+            job.Plan.Any(step =>
+                step.Type.Equals("segment_start", StringComparison.OrdinalIgnoreCase)))
+        {
+            var hasSceneCheckpoint = job.Workload.CorrectnessChecks.Any(check =>
+                check.Scope.Equals("result", StringComparison.OrdinalIgnoreCase) &&
+                check.Path.Replace('\\', '/').Equals(
+                    "screenshots/recording-start.png", StringComparison.OrdinalIgnoreCase) &&
+                check.ExpectedImageDHash is not null &&
+                check.MaximumImageHammingDistance is >= 0 and <= 16);
+            if (!hasSceneCheckpoint)
+                throw new InvalidDataException(
+                    "Input benchmarks with a measurement segment require a measurement-start scene " +
+                    "fingerprint correctness check for screenshots/recording-start.png " +
+                    "with MaximumImageHammingDistance no greater than 16.");
         }
 
         foreach (var metric in job.Workload.ReportedMetrics)

@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Globalization;
 using XemuTestRunner.Queue;
 
 namespace XemuTestRunner.Runtime;
@@ -102,6 +103,27 @@ internal static class ArtifactInspector
                         $"{target} has {actualRatio:P3} non-black pixels above RGB threshold " +
                         $"{requirement.NonBlackPixelThreshold}; expected at least {minimumRatio:P3}.");
                 }
+            }
+
+            if (requirement.ExpectedImageDHash is { } expectedImageHash)
+            {
+                if (length > MaximumImageBytes)
+                    return new(false, "PNG exceeds the 64 MiB image evaluation limit.");
+                file.Position = 0;
+                var actualImageHash = await PngInspector.CalculateDifferenceHashAsync(
+                    file, requirement.ImageRegion, cancellationToken).ConfigureAwait(false);
+                if (!ulong.TryParse(expectedImageHash, NumberStyles.HexNumber,
+                        CultureInfo.InvariantCulture, out var expected) ||
+                    !ulong.TryParse(actualImageHash, NumberStyles.HexNumber,
+                        CultureInfo.InvariantCulture, out var actual) ||
+                    requirement.MaximumImageHammingDistance is not int maximum ||
+                    maximum is < 0 or > 64)
+                    return new(false, "PNG scene fingerprint contract is malformed.");
+                var distance = System.Numerics.BitOperations.PopCount(expected ^ actual);
+                if (distance > maximum)
+                    return new(false,
+                        $"PNG scene fingerprint distance is {distance}; expected at most {maximum}. " +
+                        $"Expected {expectedImageHash.ToLowerInvariant()}; actual {actualImageHash}.");
             }
 
             return new(true, $"{requirement.Scope}:{requirement.Path} satisfied the declared requirement.");
