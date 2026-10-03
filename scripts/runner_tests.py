@@ -46,6 +46,7 @@ def _register_test_commands(subparsers) -> None:
     upload = _command(subparsers, "upload", "Upload one application; does not start tests unless --start is given.")
     upload.add_argument("directory", type=Path, help="Application directory, including its build dependencies.")
     upload.add_argument("--exe", required=True, help="Executable path relative to that directory.")
+    upload.add_argument("--config", help="Optional xemu configuration path relative to that directory.")
     upload.add_argument("--id", required=True, help="Stable application upload ID; reuse after a lost response.")
     upload.add_argument("--tests", nargs="+", default=[], help="Saved NAME or NAME@FULL_REVISION selections.")
     upload.add_argument("--start", action="store_true", help="Explicitly queue the selected tests after upload.")
@@ -174,10 +175,14 @@ def select_tests(api: RunnerApi, application: str, prefix: str,
     return requests
 
 
-def upload_application(api: RunnerApi, root: Path, executable: str, identity: str) -> str:
+def upload_application(api: RunnerApi, root: Path, executable: str, identity: str,
+                       config: str | None = None) -> str:
     """Declare and upload build files; never submit the application container."""
     executable = executable.replace("\\", "/").removeprefix("./")
     inside(root, executable)
+    if config is not None:
+        config = config.replace("\\", "/").removeprefix("./")
+        inside(root, config)
     files = []
     for directory, children, names in os.walk(root, followlinks=False):
         children[:] = sorted(name for name in children if not name.startswith("."))
@@ -192,10 +197,15 @@ def upload_application(api: RunnerApi, root: Path, executable: str, identity: st
     executable_file = next((file for file in files if file["Path"] == executable), None)
     if executable_file is None:
         raise ClientError("executable_missing", "--exe is not a regular application file.")
+    if config is not None and not any(file["Path"] == config for file in files):
+        raise ClientError("config_missing", "--config is not a regular application file.")
+    job = {"id": identity, "executable": executable,
+           "expectedExecutableSha256": executable_file["Sha256"], "plan": []}
+    if config is not None:
+        job["arguments"] = ["-config_path", "{packageDir}/" + config]
     api.json("/api/v1/jobs", "POST", {
         "id": identity,
-        "job": {"id": identity, "executable": executable,
-                "expectedExecutableSha256": executable_file["Sha256"], "plan": []},
+        "job": job,
         "files": files,
     })
     for file in files:
@@ -233,7 +243,7 @@ def _prepare_requested_tests(api: RunnerApi, args: argparse.Namespace, capabilit
     executable_sha = None
     application_id = args.application if args.command == "select" else args.id
     if args.command == "upload":
-        executable_sha = upload_application(api, args.directory.resolve(), args.exe, application_id)
+        executable_sha = upload_application(api, args.directory.resolve(), args.exe, application_id, args.config)
     identity_fields = {}
     if "applicationIdentity" in capabilities:
         # One small server declaration read, before starts. Never download a
