@@ -71,29 +71,18 @@ public static class LiveSceneConditionWaiter
         catch (OperationCanceledException) when (
             deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            var retainedDetail = "No completed mismatching frame was available.";
-            if (lastMismatchPreview is not null && File.Exists(lastMismatchPreview))
-            {
-                var mismatchDestination = MismatchDestination(destination);
-                try
-                {
-                    await PublishAsync(lastMismatchPreview, mismatchDestination,
-                        cancellationToken).ConfigureAwait(false);
-                    retainedDetail = "Last mismatching frame: " +
-                        Path.GetRelativePath(resultDirectory, mismatchDestination)
-                            .Replace('\\', '/');
-                }
-                catch (Exception error) when (error is IOException or
-                                              UnauthorizedAccessException)
-                {
-                    retainedDetail = "Could not preserve the last mismatching " +
-                        $"frame: {error.Message}";
-                }
-            }
+            var retainedDetail = await PreserveMismatchAsync(
+                lastMismatchPreview, destination, resultDirectory).ConfigureAwait(false);
             throw new TimeoutException(
                 $"wait_for_scene timed out after {timeoutMs} ms for " +
                 $"'{condition.Scope}:{condition.Path}'. Last state: {lastDetail} " +
                 retainedDetail);
+        }
+        catch (Exception error)
+        {
+            error.Data["SceneMismatchEvidence"] = await PreserveMismatchAsync(
+                lastMismatchPreview, destination, resultDirectory).ConfigureAwait(false);
+            throw;
         }
         finally
         {
@@ -105,6 +94,26 @@ public static class LiveSceneConditionWaiter
     private static StringComparison PathComparison => OperatingSystem.IsWindows()
         ? StringComparison.OrdinalIgnoreCase
         : StringComparison.Ordinal;
+
+    private static async Task<string> PreserveMismatchAsync(
+        string? preview, string destination, string resultDirectory)
+    {
+        if (preview is null || !File.Exists(preview))
+            return "No completed mismatching frame was available.";
+        var mismatchDestination = MismatchDestination(destination);
+        try
+        {
+            // Preserve completed evidence even when the capture was cancelled.
+            await PublishAsync(preview, mismatchDestination,
+                CancellationToken.None).ConfigureAwait(false);
+            return "Last mismatching frame: " +
+                Path.GetRelativePath(resultDirectory, mismatchDestination).Replace('\\', '/');
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            return "Could not preserve the last mismatching frame: " + error.Message;
+        }
+    }
 
     private static string MismatchDestination(string destination)
     {
