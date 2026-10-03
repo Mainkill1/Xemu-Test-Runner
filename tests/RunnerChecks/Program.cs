@@ -300,6 +300,77 @@ try
                rejected.Detail.Contains("fingerprint", StringComparison.OrdinalIgnoreCase),
             "A different scene passed the declared image fingerprint.");
     });
+    await Check("live scene wait captures until the declared scene and preserves the match", async () =>
+    {
+        var directory = Path.Combine(root, "live-scene-match");
+        var previewDirectory = Path.Combine(directory, ".preview");
+        Directory.CreateDirectory(previewDirectory);
+        var wrong = Path.Combine(previewDirectory, "wrong.png");
+        var expected = Path.Combine(previewDirectory, "expected.png");
+        WriteRgbPng(wrong, 90, 80, (x, _) =>
+            x < 45 ? (byte.MaxValue, byte.MaxValue, byte.MaxValue) : ((byte)0, (byte)0, (byte)0));
+        WriteRgbPng(expected, 90, 80, (x, y) =>
+            x < 45 == y < 40 ? (byte.MaxValue, (byte)20, (byte)10) : ((byte)5, (byte)10, (byte)200));
+
+        string fingerprint;
+        await using (var stream = File.OpenRead(expected))
+            fingerprint = await PngInspector.CalculateDifferenceHashAsync(
+                stream, null, CancellationToken.None);
+        var condition = new ArtifactCheckDefinition
+        {
+            Name = "measurement-ready",
+            Scope = "result",
+            Path = "screenshots/measurement-ready.png",
+            ExpectedImageDHash = fingerprint,
+            MaximumImageHammingDistance = 0
+        };
+        var captures = new Queue<string>([wrong, expected]);
+        await LiveSceneConditionWaiter.WaitAsync(
+            condition, 1000, 25, directory,
+            _ => Task.FromResult(captures.Dequeue()), CancellationToken.None);
+
+        var preserved = Path.Combine(directory, "screenshots", "measurement-ready.png");
+        Assert(File.Exists(preserved), "The matching live scene was not preserved as result evidence.");
+        var inspection = await ArtifactInspector.CheckAsync(
+            condition, preserved, CancellationToken.None);
+        Assert(inspection.Passed, inspection.Detail);
+        Assert(captures.Count == 0, "The live scene wait did not inspect both candidates.");
+    });
+    await Check("live scene wait reports the last mismatch on timeout", async () =>
+    {
+        var directory = Path.Combine(root, "live-scene-timeout");
+        var previewDirectory = Path.Combine(directory, ".preview");
+        Directory.CreateDirectory(previewDirectory);
+        var wrong = Path.Combine(previewDirectory, "wrong.png");
+        WriteRgbPng(wrong, 90, 80, (x, _) =>
+            x < 45 ? (byte.MaxValue, byte.MaxValue, byte.MaxValue) : ((byte)0, (byte)0, (byte)0));
+        var condition = new ArtifactCheckDefinition
+        {
+            Name = "measurement-ready",
+            Scope = "result",
+            Path = "screenshots/measurement-ready.png",
+            ExpectedImageDHash = "0123456789abcdef",
+            MaximumImageHammingDistance = 0
+        };
+
+        try
+        {
+            await LiveSceneConditionWaiter.WaitAsync(
+                condition, 80, 25, directory,
+                _ =>
+                {
+                    WriteRgbPng(wrong, 90, 80, (x, _) =>
+                        x < 45 ? (byte.MaxValue, byte.MaxValue, byte.MaxValue) : ((byte)0, (byte)0, (byte)0));
+                    return Task.FromResult(wrong);
+                }, CancellationToken.None);
+            throw new Exception("A live scene that never matched returned success.");
+        }
+        catch (TimeoutException error)
+        {
+            Assert(error.Message.Contains("fingerprint distance", StringComparison.OrdinalIgnoreCase),
+                "The live scene timeout omitted the last mismatch detail.");
+        }
+    });
     await Check("input benchmarks require a measurement-start scene checkpoint", async () =>
     {
         var package = Path.Combine(root, "benchmark-scene-contract");
@@ -325,7 +396,7 @@ try
         }
         catch (InvalidDataException error)
         {
-            Assert(error.Message.Contains("measurement-start scene", StringComparison.OrdinalIgnoreCase),
+            Assert(error.Message.Contains("wait_for_scene", StringComparison.OrdinalIgnoreCase),
                 "The missing scene checkpoint produced an unrelated validation error.");
         }
 
@@ -335,21 +406,47 @@ try
             Scope = "result",
             Path = "screenshots/recording-start.png",
             ExpectedImageDHash = "0123456789abcdef",
-            MaximumImageHammingDistance = 64
+            MaximumImageHammingDistance = 8
         });
         AtomicJson.Write(Path.Combine(package, "job.json"), job);
         try
         {
             _ = JobDefinition.LoadPackage(package);
-            throw new Exception("A measurement scene checkpoint that accepts every hash was accepted.");
+            throw new Exception("A post-run scene check without a live wait was accepted.");
+        }
+        catch (InvalidDataException error)
+        {
+            Assert(error.Message.Contains("wait_for_scene", StringComparison.OrdinalIgnoreCase),
+                "The missing live scene wait produced an unrelated validation error.");
+        }
+
+        job.Plan.Insert(0, new JobStep
+        {
+            Type = "wait_for_scene",
+            TimeoutMs = 60000,
+            PollIntervalMs = 250,
+            Condition = new ArtifactCheckDefinition
+            {
+                Name = "measurement-start-scene",
+                Scope = "result",
+                Path = "screenshots/recording-start.png",
+                ExpectedImageDHash = "0123456789abcdef",
+                MaximumImageHammingDistance = 64
+            }
+        });
+        AtomicJson.Write(Path.Combine(package, "job.json"), job);
+        try
+        {
+            _ = JobDefinition.LoadPackage(package);
+            throw new Exception("A live scene wait that accepts every hash was accepted.");
         }
         catch (InvalidDataException error)
         {
             Assert(error.Message.Contains("no greater than 16", StringComparison.OrdinalIgnoreCase),
-                "The lax scene checkpoint produced an unrelated validation error.");
+                "The lax live scene checkpoint produced an unrelated validation error.");
         }
 
-        job.Workload.CorrectnessChecks[0].MaximumImageHammingDistance = 8;
+        job.Plan[0].Condition!.MaximumImageHammingDistance = 8;
         AtomicJson.Write(Path.Combine(package, "job.json"), job);
         _ = JobDefinition.LoadPackage(package);
     });

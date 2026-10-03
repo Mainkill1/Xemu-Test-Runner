@@ -496,7 +496,8 @@ public sealed class XemuControlManager : IDisposable
         Func<string, CancellationToken, Task>? diagnosticRunner = null,
         Action<string>? segmentStart = null,
         Action<string>? segmentEnd = null,
-        Func<ArtifactCheckDefinition, int, int, CancellationToken, Task>? artifactWaiter = null)
+        Func<ArtifactCheckDefinition, int, int, CancellationToken, Task>? artifactWaiter = null,
+        Func<ArtifactCheckDefinition, int, int, CancellationToken, Task>? sceneWaiter = null)
     {
         if (plan.Count == 0)
             return;
@@ -611,6 +612,17 @@ public sealed class XemuControlManager : IDisposable
                         throw new InvalidOperationException(
                             "Plan contains wait_for_artifact but no condition waiter is attached.");
                     await artifactWaiter(
+                        step.Condition,
+                        step.TimeoutMs,
+                        step.PollIntervalMs,
+                        cancellationToken).ConfigureAwait(false);
+                    break;
+
+                case "wait_for_scene":
+                    if (sceneWaiter is null || step.Condition is null)
+                        throw new InvalidOperationException(
+                            "Plan contains wait_for_scene but no live scene waiter is attached.");
+                    await sceneWaiter(
                         step.Condition,
                         step.TimeoutMs,
                         step.PollIntervalMs,

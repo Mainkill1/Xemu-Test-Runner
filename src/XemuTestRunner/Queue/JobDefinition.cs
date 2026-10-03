@@ -270,17 +270,34 @@ public sealed class JobDefinition
             job.Plan.Any(step =>
                 step.Type.Equals("segment_start", StringComparison.OrdinalIgnoreCase)))
         {
-            var hasSceneCheckpoint = job.Workload.CorrectnessChecks.Any(check =>
+            static bool IsBoundedSceneCheck(ArtifactCheckDefinition check) =>
                 check.Scope.Equals("result", StringComparison.OrdinalIgnoreCase) &&
-                check.Path.Replace('\\', '/').Equals(
-                    "screenshots/recording-start.png", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(check.Path) &&
                 check.ExpectedImageDHash is not null &&
-                check.MaximumImageHammingDistance is >= 0 and <= 16);
-            if (!hasSceneCheckpoint)
+                check.MaximumImageHammingDistance is >= 0 and <= 16;
+            var hasLiveCheckpoint = true;
+            for (var index = 0; index < job.Plan.Count; index++)
+            {
+                if (!job.Plan[index].Type.Equals("segment_start", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (index == 0 ||
+                    !job.Plan[index - 1].Type.Equals("wait_for_scene", StringComparison.OrdinalIgnoreCase) ||
+                    job.Plan[index - 1].Condition is not { } liveCondition ||
+                    !IsBoundedSceneCheck(liveCondition) ||
+                    !job.Workload.CorrectnessChecks.Any(check =>
+                        IsBoundedSceneCheck(check) &&
+                        check.Path.Replace('\\', '/').Equals(
+                            liveCondition.Path.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase)))
+                {
+                    hasLiveCheckpoint = false;
+                    break;
+                }
+            }
+            if (!hasLiveCheckpoint)
                 throw new InvalidDataException(
-                    "Input benchmarks with a measurement segment require a measurement-start scene " +
-                    "fingerprint correctness check for screenshots/recording-start.png " +
-                    "with MaximumImageHammingDistance no greater than 16.");
+                    "Input benchmarks require wait_for_scene immediately before every segment_start, " +
+                    "plus a matching result correctness check. Both scene fingerprints must use " +
+                    "MaximumImageHammingDistance no greater than 16.");
         }
 
         foreach (var metric in job.Workload.ReportedMetrics)
@@ -437,6 +454,24 @@ public sealed class JobStep
                 if (PollIntervalMs is < 25 or > 5000)
                     throw new InvalidDataException(
                         "wait_for_artifact PollIntervalMs must be between 25 and 5000.");
+                break;
+            case "wait_for_scene":
+                if (Condition is null || string.IsNullOrWhiteSpace(Condition.Path))
+                    throw new InvalidDataException("wait_for_scene requires Condition.Path.");
+                if (!Condition.Scope.Equals("result", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("wait_for_scene requires a result-scoped Condition.");
+                if (Condition.ExpectedImageDHash is null ||
+                    Condition.ExpectedImageDHash.Length != 16 ||
+                    !Condition.ExpectedImageDHash.All(Uri.IsHexDigit) ||
+                    Condition.MaximumImageHammingDistance is not >= 0 and <= 16)
+                    throw new InvalidDataException(
+                        "wait_for_scene requires a 16-digit ExpectedImageDHash and " +
+                        "MaximumImageHammingDistance no greater than 16.");
+                if (TimeoutMs <= 0)
+                    throw new InvalidDataException("wait_for_scene TimeoutMs must be greater than zero.");
+                if (PollIntervalMs is < 25 or > 5000)
+                    throw new InvalidDataException(
+                        "wait_for_scene PollIntervalMs must be between 25 and 5000.");
                 break;
             default: throw new InvalidDataException("Unsupported plan step: " + Type);
         }
