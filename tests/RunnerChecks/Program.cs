@@ -379,84 +379,94 @@ try
             Assert(captures > 0, "The timeout test did not inspect a completed mismatch.");
         }
     });
-    await Check("input benchmarks require a measurement-start scene checkpoint", async () =>
+    await Check("input benchmarks preserve an immediate authored measurement boundary", async () =>
     {
-        var package = Path.Combine(root, "benchmark-scene-contract");
+        var package = Path.Combine(root, "benchmark-authored-boundary");
         Directory.CreateDirectory(package);
         await File.WriteAllTextAsync(Path.Combine(package, "xemu"), "fixture");
         var job = new JobDefinition
         {
-            Id = "benchmark-scene-contract",
+            Id = "benchmark-authored-boundary",
             Executable = "xemu",
             RequireInput = true,
             Operations = new OperationPolicyDefinition { Mode = "benchmark" },
             Plan =
             [
+                new JobStep { Type = "button", Button = "A", DurationMs = 100 },
+                new JobStep { Type = "segment_start", Name = "stationary-start" },
+                new JobStep { Type = "screenshot", Name = "recording-start" },
+                new JobStep { Type = "wait", DelayMs = 30000 },
+                new JobStep { Type = "segment_end", Name = "stationary-start" }
+            ]
+        };
+        var authoredPlan = JsonSerializer.Serialize(job.Plan);
+        AtomicJson.Write(Path.Combine(package, "job.json"), job);
+        var loaded = JobDefinition.LoadPackage(package);
+        Assert(JsonSerializer.Serialize(loaded.Plan) == authoredPlan,
+            "Package validation changed the authored plan or measurement boundary.");
+
+        // A saved procedure may validate its screenshots after measurement.
+        // Loading it must not require a new live wait or a new fingerprint.
+        job.Workload.CorrectnessChecks.Add(new ArtifactCheckDefinition
+        {
+            Name = "measurement-start-visible",
+            Scope = "result",
+            Path = "screenshots/recording-start.png",
+            MinimumNonBlackPixelRatio = 0.05
+        });
+        AtomicJson.Write(Path.Combine(package, "job.json"), job);
+        loaded = JobDefinition.LoadPackage(package);
+        Assert(JsonSerializer.Serialize(loaded.Plan) == authoredPlan,
+            "Post-run correctness checks changed the authored plan.");
+        Assert(loaded.Workload.CorrectnessChecks.Count == 1 &&
+            loaded.Workload.CorrectnessChecks[0].ExpectedImageDHash is null,
+            "Package validation rewrote the saved correctness contract.");
+    });
+    await Check("authored scene waits retain their bounded validation", async () =>
+    {
+        var package = Path.Combine(root, "benchmark-optional-scene-wait");
+        Directory.CreateDirectory(package);
+        await File.WriteAllTextAsync(Path.Combine(package, "xemu"), "fixture");
+        var job = new JobDefinition
+        {
+            Id = "benchmark-optional-scene-wait",
+            Executable = "xemu",
+            RequireInput = true,
+            Operations = new OperationPolicyDefinition { Mode = "benchmark" },
+            Plan =
+            [
+                new JobStep
+                {
+                    Type = "wait_for_scene",
+                    TimeoutMs = 60000,
+                    PollIntervalMs = 250,
+                    Condition = new ArtifactCheckDefinition
+                    {
+                        Scope = "result",
+                        Path = "screenshots/measurement-ready.png",
+                        ExpectedImageDHash = "0123456789abcdef",
+                        MaximumImageHammingDistance = 8
+                    }
+                },
                 new JobStep { Type = "segment_start", Name = "stationary-start" },
                 new JobStep { Type = "segment_end", Name = "stationary-start" }
             ]
         };
         AtomicJson.Write(Path.Combine(package, "job.json"), job);
-        try
-        {
-            _ = JobDefinition.LoadPackage(package);
-            throw new Exception("An input benchmark without a scene checkpoint was accepted.");
-        }
-        catch (InvalidDataException error)
-        {
-            Assert(error.Message.Contains("wait_for_scene", StringComparison.OrdinalIgnoreCase),
-                "The missing scene checkpoint produced an unrelated validation error.");
-        }
+        _ = JobDefinition.LoadPackage(package);
 
-        job.Workload.CorrectnessChecks.Add(new ArtifactCheckDefinition
-        {
-            Name = "measurement-start-scene",
-            Scope = "result",
-            Path = "screenshots/recording-start.png",
-            ExpectedImageDHash = "0123456789abcdef",
-            MaximumImageHammingDistance = 8
-        });
+        job.Plan[0].Condition!.MaximumImageHammingDistance = 64;
         AtomicJson.Write(Path.Combine(package, "job.json"), job);
         try
         {
             _ = JobDefinition.LoadPackage(package);
-            throw new Exception("A post-run scene check without a live wait was accepted.");
-        }
-        catch (InvalidDataException error)
-        {
-            Assert(error.Message.Contains("wait_for_scene", StringComparison.OrdinalIgnoreCase),
-                "The missing live scene wait produced an unrelated validation error.");
-        }
-
-        job.Plan.Insert(0, new JobStep
-        {
-            Type = "wait_for_scene",
-            TimeoutMs = 60000,
-            PollIntervalMs = 250,
-            Condition = new ArtifactCheckDefinition
-            {
-                Name = "measurement-start-scene",
-                Scope = "result",
-                Path = "screenshots/recording-start.png",
-                ExpectedImageDHash = "0123456789abcdef",
-                MaximumImageHammingDistance = 64
-            }
-        });
-        AtomicJson.Write(Path.Combine(package, "job.json"), job);
-        try
-        {
-            _ = JobDefinition.LoadPackage(package);
-            throw new Exception("A live scene wait that accepts every hash was accepted.");
+            throw new Exception("An authored scene wait that accepts every hash was accepted.");
         }
         catch (InvalidDataException error)
         {
             Assert(error.Message.Contains("no greater than 16", StringComparison.OrdinalIgnoreCase),
-                "The lax live scene checkpoint produced an unrelated validation error.");
+                "The lax authored scene wait produced an unrelated validation error.");
         }
-
-        job.Plan[0].Condition!.MaximumImageHammingDistance = 8;
-        AtomicJson.Write(Path.Combine(package, "job.json"), job);
-        _ = JobDefinition.LoadPackage(package);
     });
     await Check("workspace lease excludes a second owner and can be reacquired", () =>
     {
