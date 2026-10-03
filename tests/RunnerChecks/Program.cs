@@ -59,6 +59,12 @@ if (args.Length == 2 && args[0] == "--fake-screenshot-delayed")
         ?? throw new IOException("Failed to start delayed screenshot fixture.");
     return 0;
 }
+if (args.Length == 2 && args[0] == "--fake-screenshot-complete-hang")
+{
+    FakeXemuHost.WritePng(args[1]);
+    await Task.Delay(TimeSpan.FromSeconds(30));
+    return 0;
+}
 
 var failures = 0;
 async Task Check(string name, Func<Task> test)
@@ -84,6 +90,25 @@ try
     foreach (var mode in new[] { "success", "failure", "timeout" })
         await Check("standalone process " + mode,
             () => StandaloneProcessChecks.RunAsync(root, mode));
+    await Check("external screenshot accepts complete PNG from hung provider", async () =>
+    {
+        var directory = Path.Combine(root, "screenshot-complete-hang");
+        Directory.CreateDirectory(directory);
+        using var control = new XemuControlManager(new XemuControlOptions
+        {
+            InputProvider = "unavailable",
+            ScreenshotProvider = "external",
+            ScreenshotExecutable = Environment.ProcessPath!,
+            ScreenshotArguments = ["--fake-screenshot-complete-hang", "{path}"],
+            ScreenshotTimeoutMs = 200
+        });
+        using var current = Process.GetCurrentProcess();
+        control.Begin(current, directory, 0);
+
+        var path = await control.CaptureScreenshotAsync("complete-before-timeout", CancellationToken.None);
+
+        Assert(File.Exists(path), "Complete PNG was discarded after the provider failed to exit.");
+    });
 
     await Check("QMP readiness retries a timed-out handshake", async () =>
     {
