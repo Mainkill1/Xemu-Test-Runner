@@ -4,7 +4,7 @@ Operate the existing tester over HTTP. No SSH/remote process launch, queue-direc
 
 Use scripts/runner_tests.py with runner_transport.py, runner_test_results.py and runner_wait.py beside it on the build/agent machine. Set XEMU_RUNNER_URL to the tester's LAN HTTP origin, then run `runner_tests.py connect` from that same machine. Do not SSH to the tester just to run the client against 127.0.0.1; the client rejects that pattern when it detects an SSH session. Report direct-HTTP reachability failures instead of silently substituting remote shell execution.
 
-`upload DIR --exe EXE --id ID --tests ...` uploads an application and selects saved tests only. Add --start to authorize execution, or call start with the returned request IDs later. `select APPLICATION --id PREFIX --tests ...` reuses an application and also defaults to no start. A changed input or intentional rerun needs a new identity; identical IDs recover interrupted requests.
+`upload DIR --exe EXE --id ID --tests ...` uploads an application and selects saved tests only. Add `--config xemu.toml` when XISO must use the application's packaged configuration. Add --start to authorize execution, or call start with the returned request IDs later. `select APPLICATION --id PREFIX --tests ...` reuses an application and also defaults to no start. A changed input or intentional rerun needs a new identity; identical IDs recover interrupted requests.
 
 ## XISO categories and campaigns
 

@@ -1,6 +1,6 @@
 # XISO campaigns: choose work, not infrastructure
 
-Run `scripts/runner_xiso.py` on the agent/build machine with `runner_transport.py` beside it. Set `XEMU_RUNNER_URL` to the tester LAN HTTP origin. Applications use the existing `runner_tests.py upload` workflow; upload once and reference that application ID in campaigns.
+Run `scripts/runner_xiso.py` on the agent/build machine with `runner_transport.py` beside it. Set `XEMU_RUNNER_URL` to the tester LAN HTTP origin. Applications use the existing `runner_tests.py upload` workflow; upload once and reference that application ID in campaigns. Use `runner_tests.py upload ... --config xemu.toml` when a campaign must select the application's packaged configuration.
 
 ```sh
 python scripts/runner_xiso.py categories shader-pilot
@@ -100,6 +100,7 @@ A saved base template provides the machine-specific xemu configuration, private 
 When both the suite and uploaded application contain an xemu configuration, campaign creation requires an explicit configuration source. Use `--configuration-source suite` to keep the suite's pinned settings. Use `--configuration-source application` for a settings experiment such as an A/B resampler comparison. The frozen plan records the selected source, package-relative path, and configuration SHA-256 for every attempt. The runner refuses an omitted or mismatched choice instead of silently running the suite configuration under an application label.
 
 ```sh
+python scripts/runner_tests.py upload ./linear-build --exe xemu --config xemu.toml --id build-linear
 python scripts/runner_xiso.py select build-linear --id audio-linear --suite shader-pilot --mode full --configuration-source application
 ```
 

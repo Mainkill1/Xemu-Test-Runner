@@ -50,6 +50,27 @@ class RequestedClientChecks(unittest.TestCase):
         self.assertFalse(any("/start" in path or "/submit" in path for _, path, _, _ in calls))
         self.assertEqual(sum(method == "PUT" for method, _, _, _ in calls), 1)
 
+    def test_upload_declares_selected_application_configuration(self):
+        with tempfile.TemporaryDirectory() as folder, fixture(respond) as (origin, calls):
+            (Path(folder) / "candidate.exe").write_bytes(b"fixture")
+            (Path(folder) / "xemu.toml").write_text("[audio]\nuse_linear_resampler = true\n")
+            result = self.invoke(origin, "upload", folder, "--exe", "candidate.exe",
+                                 "--config", "xemu.toml", "--id", "configured")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        creation = next(body for method, path, body, _ in calls
+                        if method == "POST" and path == "/api/v1/jobs")
+        self.assertEqual(creation["job"]["arguments"], ["-config_path", "{packageDir}/xemu.toml"])
+        self.assertEqual(sum(method == "PUT" for method, _, _, _ in calls), 2)
+
+    def test_upload_rejects_missing_application_configuration_before_creation(self):
+        with tempfile.TemporaryDirectory() as folder, fixture(respond) as (origin, calls):
+            (Path(folder) / "candidate.exe").write_bytes(b"fixture")
+            result = self.invoke(origin, "upload", folder, "--exe", "candidate.exe",
+                                 "--config", "missing.toml", "--id", "configured")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout)["code"], "config_missing")
+        self.assertFalse(any(method != "GET" for method, _, _, _ in calls))
+
     def test_start_flag_explicitly_queues_multiple_tests_after_one_upload(self):
         with tempfile.TemporaryDirectory() as folder, fixture(respond) as (origin, calls):
             (Path(folder) / "candidate.exe").write_bytes(b"fixture")
