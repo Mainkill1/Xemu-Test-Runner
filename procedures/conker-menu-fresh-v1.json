@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "conker-menu-fresh-v1",
   "title": "Conker: Live & Reloaded",
-  "description": "Unqualified single-A candidate: full Xbox startup with a nominal 15-second wall-clock allowance, then 15 seconds and A. A fresh start made input work after earlier runs retained unproven guest-port state. Do not use for performance comparison until explicit controller presence and the intended measurement-start scene are qualified.",
+  "description": "Unqualified single-A candidate: full Xbox startup with a nominal 15-second wall-clock allowance, then 15 seconds and A. The failed Windows qualification omitted explicit guest port-1 presence; a fresh start with a connected port made input work. Do not use for performance comparison until the corrected immutable test and intended measurement-start scene are qualified on both hosts.",
   "planPrefix": [
     {
       "type": "wait",

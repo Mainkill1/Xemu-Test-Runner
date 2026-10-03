@@ -14,10 +14,17 @@ Dead or Alive Xtreme Beach Volleyball (USA).
 Qualification must confirm each intended scene on both devices and both builds.
 A non-black screenshot alone does not prove that the menu input succeeded.
 The Conker v1 file preserves the requested single-A candidate. It is not an
-accepted benchmark yet. Earlier attempts retained a keyboard binding while the
-guest controller port could be disconnected in saved xemu state. A fresh start
-made the same input work, so those failures do not establish that the button or
-delay was wrong. The later two-A v2 route was also invalid: its generic
+accepted benchmark yet. The failed Windows test's frozen `xemu.toml` bound the
+keyboard to the Xbox controller driver but omitted
+`[input.virtual_ports] port1_connected = 1`. The host event route could therefore
+be available while the guest controller port was disconnected. Current runner
+main rejects that configuration before launch. xemu's XID VM state does not
+serialize the host input report or held button values, so the available evidence
+does not support a saved held-input explanation. A fresh start with the port
+connected made the same input work, so the earlier failure does not establish
+that the button or delay was wrong. The Deck native-controller configuration did
+explicitly connect port 1 and still requires a fresh single-A qualification. The
+later two-A v2 route was also invalid: its generic
 non-black screenshot checks accepted an animated Xbox Live & Co splash as the
 target menu. That route has been removed instead of preserving a false
 qualification.
@@ -77,9 +84,10 @@ those changes and must not be substituted for this campaign.
   start screenshot. An earlier Deck attempt displayed a guest disc error.
   Retain that failure; this retry does not establish its root cause.
 - The prior Conker schedule is rejected. The recordings showed an animated
-  Xbox Live & Co splash, while saved controller-port state was not proven.
-  Preserve those attempts as failed diagnostics and do not pool them with a
-  future menu benchmark.
+  Xbox Live & Co splash. The Windows frozen configuration did not explicitly
+  connect guest port 1; the Deck failure remains unqualified. Preserve those
+  attempts as failed diagnostics and do not pool them with a future menu
+  benchmark.
 
 PGR2 and DOAXBV preserve the requested inputs. Conker v1 preserves only the
 single-button candidate and must not be registered as a qualified performance
