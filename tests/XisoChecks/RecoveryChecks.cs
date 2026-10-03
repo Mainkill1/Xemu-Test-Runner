@@ -57,5 +57,39 @@ internal static class RecoveryChecks
             Require(plan.GetProperty("attempts").GetArrayLength() == plan.GetProperty("chunks").GetArrayLength() * 8,
                 "A full paired campaign did not schedule both orders per chunk.");
         });
+        await check("campaign stops materializing attempts after a setup failure", async () =>
+        {
+            await using var host = new AgentFixture(configurePreflight: options =>
+                options.MinimumFreeSpaceBytes = long.MaxValue);
+            await setup(host);
+            await host.Json("/api/v1/xiso-campaigns", HttpMethod.Post,
+                new { id = "setup-failure", application = "application", categories = new[] { "shaders" } });
+            await host.Json("/api/v1/xiso-campaigns/setup-failure/start", HttpMethod.Post,
+                new { }, HttpStatusCode.Accepted);
+            host.State.SetPhase("idle");
+
+            var deadline = DateTime.UtcNow.AddSeconds(12);
+            JsonElement status = default;
+            while (DateTime.UtcNow < deadline)
+            {
+                status = await host.Json("/api/v1/xiso-campaigns/setup-failure");
+                if (status.GetProperty("terminal").GetBoolean()) break;
+                await Task.Delay(100);
+            }
+
+            Require(status.GetProperty("terminal").GetBoolean(),
+                "A setup failure did not terminate the campaign.");
+            Require(status.GetProperty("finished").GetInt32() == 1 &&
+                    status.GetProperty("failed").GetInt32() == 1,
+                "The failed setup attempt was not retained exactly once.");
+            Require(status.GetProperty("remaining").GetInt32() == 1,
+                "The later attempt was materialized after setup had already failed.");
+            Require(File.Exists(Path.Combine(host.Paths.Pending, ".requested-tests",
+                        "xc-setup-failure-001.json")),
+                "The first failed attempt was not retained for diagnosis.");
+            Require(!File.Exists(Path.Combine(host.Paths.Pending, ".requested-tests",
+                        "xc-setup-failure-002.json")),
+                "The runner fanned out another package after setup failure.");
+        });
     }
 }
