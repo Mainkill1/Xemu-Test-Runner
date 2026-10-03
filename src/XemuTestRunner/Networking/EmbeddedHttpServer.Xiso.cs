@@ -14,7 +14,7 @@ public sealed partial class EmbeddedHttpServer
             await WriteAgentJsonAsync(stream, new {
                 capability = "xisoCampaigns", targets = "/api/v1/xiso-targets", suites = "/api/v1/xiso-suites",
                 campaigns = "/api/v1/xiso-campaigns", viewer = "/xiso",
-                rule = "Register a matched suite once. Select categories/stable IDs or compact test_ids/category_ids arrays from that suite's catalog. Numeric requests must include the matching catalogId. Omitted settings use frozen suite defaults. Creation never starts tests; explicitly start, then wait without an agent timer.",
+                rule = "Register a matched suite once. Select categories/stable IDs or compact test_ids/category_ids arrays from that suite's catalog. Numeric requests must include the matching catalogId. When suite and application both provide xemu configuration, explicitly choose configurationSource=suite or application. Omitted settings use frozen suite defaults. Creation never starts tests; explicitly start, then wait without an agent timer.",
                 seed = "A clean xiso-seed with a preallocated xemu_perf_tests/xemu_perf_tests_config.json is required."
             }, cancellationToken: ct).ConfigureAwait(false);
             return false;

@@ -97,6 +97,12 @@ The older ENG523 release is not substituted. Registration verifies actual ISO by
 
 A saved base template provides the machine-specific xemu configuration, private HDD/EEPROM, firmware, partition geometry, execution limits and pinned reference. It must use managed configuration and normal disc boot, not `-snapshot`, saved-VM restore or an initially paused guest. Execution limits belong to that saved template; observers do not estimate them.
 
+When both the suite and uploaded application contain an xemu configuration, campaign creation requires an explicit configuration source. Use `--configuration-source suite` to keep the suite's pinned settings. Use `--configuration-source application` for a settings experiment such as an A/B resampler comparison. The frozen plan records the selected source, package-relative path, and configuration SHA-256 for every attempt. The runner refuses an omitted or mismatched choice instead of silently running the suite configuration under an application label.
+
+```sh
+python scripts/runner_xiso.py select build-linear --id audio-linear --suite shader-pilot --mode full --configuration-source application
+```
+
 ```sh
 python scripts/runner_xiso.py register xiso-base --revision FULL_TEMPLATE_REVISION --id shader-pilot --target shader-pilot-51bc23d
 ```

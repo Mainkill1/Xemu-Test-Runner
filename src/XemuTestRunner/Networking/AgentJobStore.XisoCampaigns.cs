@@ -10,14 +10,18 @@ namespace XemuTestRunner.Networking;
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 internal sealed record XisoCampaignRequest(string Id, string Application, string? Suite = null,
     string[]? Categories = null, string[]? Tests = null, string? Mode = null,
-    XisoSettings? Settings = null, string? ReferenceApplication = null);
+    XisoSettings? Settings = null, string? ReferenceApplication = null,
+    string? ConfigurationSource = null);
 internal sealed record XisoChunk(int Index, string TestId, string Revision, string PlanId,
     string[] Tests, string[] Categories, RuntimeStateDefinition RuntimeState);
 internal sealed record XisoAttempt(string Id, string Application, string ApplicationIdentity,
-    int Chunk, string Label, string Variant);
+    int Chunk, string Label, string Variant,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ConfigurationSha256 = null);
 internal sealed record XisoCampaignPlan(string Id, string Suite, string SuiteRevision,
     string IsoSha256, string CatalogId, string Qualification, string Mode, XisoSettings Settings,
-    string[] Tests, string[] AddedDependencies, XisoChunk[] Chunks, XisoAttempt[] Attempts);
+    string[] Tests, string[] AddedDependencies, XisoChunk[] Chunks, XisoAttempt[] Attempts,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ConfigurationSource = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ConfigurationPath = null);
 internal sealed record XisoCampaign(XisoCampaignRequest Request, string RequestIdentity,
     string Revision, XisoCampaignPlan Plan, DateTimeOffset CreatedUtc,
     DateTimeOffset? StartRequestedUtc = null, bool CancelRequested = false, string? Error = null);
@@ -73,45 +77,64 @@ internal sealed partial class AgentJobStore
             var application = ReadDocument(request.Application);
             RequireStableSource(Locate(request.Application).State);
             ValidateApplicationPayload(suite.Data.Template, application.Request);
+            var suiteConfiguration = XisoConfigurationFile(suite.Data.Template.Job, suite.Data.Template.Files)
+                ?? throw new InvalidDataException("The registered XISO suite lost its managed -config_path input.");
+            var applicationConfiguration = XisoConfigurationFile(application.Request.Job, application.Request.Files);
+            var configurationSource = ResolveXisoConfigurationSource(request.ConfigurationSource,
+                suiteConfiguration, applicationConfiguration);
             string? referenceIdentity = null;
+            AgentFile? referenceConfiguration = null;
             if (request.ReferenceApplication is not null)
             {
                 var reference = ReadDocument(request.ReferenceApplication);
                 RequireStableSource(Locate(request.ReferenceApplication).State);
                 ValidateApplicationPayload(suite.Data.Template, reference.Request);
                 referenceIdentity = reference.CreationHash;
+                referenceConfiguration = XisoConfigurationFile(reference.Request.Job, reference.Request.Files);
+                if (configurationSource == "application" &&
+                    (referenceConfiguration is null || referenceConfiguration.Path != suiteConfiguration.Path))
+                    throw BadRequest("xiso_application_configuration_missing",
+                        "The reference application does not provide the suite configuration slot: " + suiteConfiguration.Path,
+                        "Upload both applications with the same package-relative xemu configuration path.");
             }
             if (selection.Chunks.Length * (referenceIdentity is null ? 1 : 8) > 256)
                 throw new InvalidDataException("Campaign exceeds 256 attempts; narrow its selected categories.");
-            var chunks = selection.Chunks.Select((leaves, index) => BakeXisoChunk(suite, leaves, settings, index + 1)).ToArray();
+            var chunks = selection.Chunks.Select((leaves, index) => BakeXisoChunk(suite, leaves, settings,
+                index + 1, configurationSource, suiteConfiguration.Path)).ToArray();
             var attempts = new List<XisoAttempt>();
             foreach (var chunk in chunks)
             {
-                if (request.ReferenceApplication is null) Add(request.Application, application.CreationHash, chunk.Index, "B1", "candidate");
+                if (request.ReferenceApplication is null) Add(request.Application, application.CreationHash,
+                    ConfigurationHash(applicationConfiguration), chunk.Index, "B1", "candidate");
                 else
                 {
-                    Add(request.ReferenceApplication, referenceIdentity!, chunk.Index, "A1", "reference");
-                    Add(request.Application, application.CreationHash, chunk.Index, "B1", "candidate");
-                    Add(request.Application, application.CreationHash, chunk.Index, "B2", "candidate");
-                    Add(request.ReferenceApplication, referenceIdentity!, chunk.Index, "A2", "reference");
-                    Add(request.Application, application.CreationHash, chunk.Index, "B3", "candidate");
-                    Add(request.ReferenceApplication, referenceIdentity!, chunk.Index, "A3", "reference");
-                    Add(request.ReferenceApplication, referenceIdentity!, chunk.Index, "A4", "reference");
-                    Add(request.Application, application.CreationHash, chunk.Index, "B4", "candidate");
+                    Add(request.ReferenceApplication, referenceIdentity!, ConfigurationHash(referenceConfiguration), chunk.Index, "A1", "reference");
+                    Add(request.Application, application.CreationHash, ConfigurationHash(applicationConfiguration), chunk.Index, "B1", "candidate");
+                    Add(request.Application, application.CreationHash, ConfigurationHash(applicationConfiguration), chunk.Index, "B2", "candidate");
+                    Add(request.ReferenceApplication, referenceIdentity!, ConfigurationHash(referenceConfiguration), chunk.Index, "A2", "reference");
+                    Add(request.Application, application.CreationHash, ConfigurationHash(applicationConfiguration), chunk.Index, "B3", "candidate");
+                    Add(request.ReferenceApplication, referenceIdentity!, ConfigurationHash(referenceConfiguration), chunk.Index, "A3", "reference");
+                    Add(request.ReferenceApplication, referenceIdentity!, ConfigurationHash(referenceConfiguration), chunk.Index, "A4", "reference");
+                    Add(request.Application, application.CreationHash, ConfigurationHash(applicationConfiguration), chunk.Index, "B4", "candidate");
                 }
             }
             var plan = new XisoCampaignPlan(request.Id, suite.Data.Id, suite.Revision, suite.Data.IsoSha256,
                 suite.Data.Catalog.Id, suite.Data.Qualification, selection.Mode, settings,
-                selection.Leaves.Select(x => x.Id).ToArray(), selection.AddedDependencies, chunks, attempts.ToArray());
+                selection.Leaves.Select(x => x.Id).ToArray(), selection.AddedDependencies, chunks, attempts.ToArray(),
+                configurationSource, suiteConfiguration.Path);
             var value = new XisoCampaign(request, identity, HashJson(plan), plan, DateTimeOffset.UtcNow);
             SaveXisoCampaign(value);
             return ObserveXisoCampaign(value);
-            void Add(string id, string hash, int chunk, string label, string variant) =>
-                attempts.Add(new("xc-" + request.Id + "-" + (attempts.Count + 1).ToString("D3"), id, hash, chunk, label, variant));
+            string ConfigurationHash(AgentFile? file) => configurationSource == "suite" ?
+                suiteConfiguration.Sha256 : file!.Sha256;
+            void Add(string id, string hash, string configurationHash, int chunk, string label, string variant) =>
+                attempts.Add(new("xc-" + request.Id + "-" + (attempts.Count + 1).ToString("D3"), id, hash,
+                    chunk, label, variant, configurationHash));
         }
     }
 
-    private XisoChunk BakeXisoChunk(XisoSuite suite, XisoLeaf[] leaves, XisoSettings settings, int index)
+    private XisoChunk BakeXisoChunk(XisoSuite suite, XisoLeaf[] leaves, XisoSettings settings, int index,
+        string configurationSource, string configurationPath)
     {
         var source = suite.Data.Template;
         var job = JsonSerializer.Deserialize<JobDefinition>(JsonSerializer.Serialize(source.Job, ConfigLoader.JsonOptions), ConfigLoader.JsonOptions)!;
@@ -123,7 +146,11 @@ internal sealed partial class AgentJobStore
         var id = "xiso-" + execution.PlanId[7..39];
         job.Id = id; job.RuntimeState.Xiso = execution; extraction.Xiso = execution;
         job.StartPaused = false; job.SnapshotName = null; job.Workload.RequirePlanCompletion = true;
-        var definition = source with { Id = id, Job = job, Description = "XISO " + suite.Data.Id + " chunk " + index };
+        var buildFiles = source.BuildFiles.Where(path => path != configurationPath).ToList();
+        if (configurationSource == "application") buildFiles.Add(configurationPath);
+        var definition = source with { Id = id, Job = job,
+            Description = "XISO " + suite.Data.Id + " chunk " + index,
+            BuildFiles = buildFiles.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray() };
         var revision = HashJson(definition);
         var baked = new AgentBakedTest(revision, definition, DateTimeOffset.UtcNow);
         lock (_testLibraryGate)
@@ -134,6 +161,48 @@ internal sealed partial class AgentJobStore
             AtomicJson.Write(System.IO.Path.Combine(home, revision + ".summary.json"), TestSummary(baked));
         }
         return new(index, id, revision, execution.PlanId, ids, leaves.Select(x => x.Category).Distinct().ToArray(), job.RuntimeState);
+    }
+
+    private static string ResolveXisoConfigurationSource(string? requested, AgentFile? suite, AgentFile? application)
+    {
+        if (requested is not (null or "suite" or "application")) throw BadRequest("xiso_configuration_source_invalid",
+            "ConfigurationSource must be suite or application.", "Choose the authoritative xemu configuration explicitly.");
+        if (suite is null)
+        {
+            if (requested is not null) throw BadRequest("xiso_configuration_unavailable",
+                "The suite template has no declared -config_path input.", "Remove ConfigurationSource or register a managed suite template.");
+            return "suite";
+        }
+        if (requested == "suite") return "suite";
+        if (application is null)
+        {
+            if (requested == "application") throw BadRequest("xiso_application_configuration_missing",
+                "The application has no declared -config_path input.", "Upload an application configuration or select ConfigurationSource=suite.");
+            return "suite";
+        }
+        if (requested is null) throw Conflict("xiso_configuration_source_required",
+            "Both the suite and application provide xemu configuration bytes.",
+            "Select ConfigurationSource=suite to keep the suite configuration or ConfigurationSource=application to test the application's settings.");
+        if (application.Path != suite.Path) throw BadRequest("xiso_application_configuration_path_mismatch",
+            "The application configuration path does not match the suite slot: " + suite.Path,
+            "Use the same package-relative -config_path in the suite and application.");
+        return "application";
+    }
+
+    private static AgentFile? XisoConfigurationFile(JobDefinition job, IReadOnlyList<AgentFile> files)
+    {
+        var indexes = job.Arguments.Select((value, index) => (value, index))
+            .Where(item => item.value == "-config_path").Select(item => item.index).ToArray();
+        if (indexes.Length == 0) return null;
+        if (indexes.Length != 1 || indexes[0] + 1 >= job.Arguments.Count)
+            throw new InvalidDataException("Use exactly one complete -config_path argument.");
+        var path = job.Arguments[indexes[0] + 1].Replace('\\', '/');
+        if (path.StartsWith("{packageDir}/", StringComparison.Ordinal)) path = path[13..];
+        while (path.StartsWith("./", StringComparison.Ordinal)) path = path[2..];
+        ValidateRelative(path);
+        var matches = files.Where(file => file.Path == path).ToArray();
+        if (matches.Length != 1) throw new InvalidDataException("The -config_path argument must resolve to one declared package file.");
+        return matches[0];
     }
 
     public object StartXisoCampaign(string id)
