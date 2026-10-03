@@ -96,6 +96,62 @@ Runs another installed executable with literal argument items. Supported placeho
 
 The working directory may be `diagnostic`, `result`, or a package-relative directory. stdout/stderr/command evidence are retained. This is the intended adapter for VTune/Nsight/custom analysis tools before they warrant native C# support.
 
+### Linux performance context (opt-in external tool)
+
+Package `tools/linux_performance_context.py` with the application and include it
+in required-file hashes. On Linux with Python 3.9 or newer, declare this recipe:
+
+```json
+{
+  "Id": "linux-context",
+  "Type": "external",
+  "ToolExecutable": "/usr/bin/python3",
+  "ToolArguments": ["{packageDir}/tools/linux_performance_context.py",
+                    "--pid", "{pid}", "--samples", "30", "--interval-ms", "1000"],
+  "DurationMs": 40000,
+  "PauseBefore": false,
+  "ResumeDuring": false,
+  "PauseAfter": false
+}
+```
+
+Invoke it through the existing HTTP diagnostic endpoint, or a declared
+`diagnostic` plan step. Its `external.stdout.txt` is JSON Lines with header,
+samples and finish. Default sampling is 30 readings, one second apart; CLI
+bounds are 1–300 readings and 100–1000 ms intervals. Sampling adds collection
+time to that interval. `captureDurationNs` discloses each collection cost.
+It reads procfs/sysfs only, without root, shell evaluation or policy changes.
+No new runner service/API or implicit sampling is introduced.
+
+Records include per-thread identity/start ticks, user/system ticks, most recently
+executed logical CPU, allowed CPUs and context switches; CPU policy driver,
+governor and reported frequency limits/readings; DRM busy/DPM readings and hwmon
+temperature/power/frequency inputs. The first sample includes process mappings
+for ASLR/layout investigation; subsequent samples omit the repeated map text.
+ASLR policy is recorded separately. No process memory or environment is read.
+
+Missing/denied readings and malformed parsed proc fields remain null/absent
+with explicit errors rather than zero. Sysfs readings remain raw strings;
+no parser silently turns unexpected text into a numeric value. Process identity is bound to PID plus start ticks and checked before
+and after each snapshot: reuse discards mixed context; exit/permission loss
+terminates collection. Thread exit or reuse discards that record without dropping other threads;
+thread identity is checked around its stat/status reads. A finish status of `process_unavailable` is partial context, not
+a promise that the requested sample count completed. An empty initial capture
+or PID reuse returns nonzero. Host counters are read sequentially, not as one
+atomic snapshot.
+
+Units follow the [CPUFreq documentation](https://www.kernel.org/doc/html/latest/admin-guide/pm/cpufreq.html),
+[proc stat fields](https://www.man7.org/linux/man-pages/man5/proc_pid_stat.5.html)
+and [amdgpu hwmon documentation](https://docs.kernel.org/gpu/amdgpu/thermal.html).
+`scaling_cur_freq` is a driver-reported value and may represent a requested
+frequency rather than measured hardware frequency. `lastProcessor` does not
+count migrations; thread times remain ticks with the host tick rate in the
+header. Do not infer throttling or causation from one correlated reading.
+
+This is **diagnostic intervention** recorded by the existing adapter. Keep
+instrumented attempts separate from clean A/A and ABBA/BAAB timing evidence.
+A captured context is not a cache waiver, performance gain or correctness gate.
+
 ## HTTP
 
 ```text
