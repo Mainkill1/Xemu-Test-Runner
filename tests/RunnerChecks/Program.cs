@@ -353,14 +353,14 @@ try
             MaximumImageHammingDistance = 0
         };
 
+        var captures = 0;
         try
         {
             await LiveSceneConditionWaiter.WaitAsync(
-                condition, 80, 25, directory,
+                condition, 1000, 25, directory,
                 _ =>
                 {
-                    WriteRgbPng(wrong, 90, 80, (x, _) =>
-                        x < 45 ? (byte.MaxValue, byte.MaxValue, byte.MaxValue) : ((byte)0, (byte)0, (byte)0));
+                    captures++;
                     return Task.FromResult(wrong);
                 }, CancellationToken.None);
             throw new Exception("A live scene that never matched returned success.");
@@ -376,6 +376,7 @@ try
             Assert(error.Message.Contains("measurement-ready.last-mismatch.png",
                     StringComparison.OrdinalIgnoreCase),
                 "The live scene timeout did not identify the preserved mismatch.");
+            Assert(captures > 0, "The timeout test did not inspect a completed mismatch.");
         }
     });
     await Check("input benchmarks require a measurement-start scene checkpoint", async () =>
