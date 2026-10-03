@@ -117,6 +117,25 @@ class LinuxContextChecks(unittest.TestCase):
         self.assertNotIn('maps', got)
         self.assertNotIn('threads', got)
 
+    def test_reused_thread_does_not_mix_affinity_with_old_thread_counters(self):
+        self.process()
+        target = self.write('proc/123/task/124/stat', stat_line(pid=124, start=999))
+        self.write('proc/123/task/124/status', 'Cpus_allowed_list: 2\nvoluntary_ctxt_switches: 5\nnonvoluntary_ctxt_switches: 7\n')
+        original = Path.read_text
+        reads = 0
+        def changing_read(path, *args, **kwargs):
+            nonlocal reads
+            text = original(path, *args, **kwargs)
+            if path == target:
+                reads += 1
+                if reads == 1:
+                    target.write_text(stat_line(pid=124, start=1000))
+            return text
+        with mock.patch.object(Path, 'read_text', changing_read):
+            got = load_tool().capture(123, 777, self.proc, self.sys)
+        self.assertEqual([t['tid'] for t in got['threads']], [123])
+        self.assertTrue(any('124' in e and 'identity changed' in e for e in got['errors']))
+
     def test_disappearing_thread_is_reported_without_losing_other_threads(self):
         self.process()
         (self.proc / '123/task/124').mkdir()

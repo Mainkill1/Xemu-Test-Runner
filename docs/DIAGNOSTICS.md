@@ -130,11 +130,12 @@ temperature/power/frequency inputs. The first sample includes process mappings
 for ASLR/layout investigation; subsequent samples omit the repeated map text.
 ASLR policy is recorded separately. No process memory or environment is read.
 
-Missing/denied/malformed readings remain null/absent with explicit errors rather
-than zero. Process identity is bound to PID plus start ticks and checked before
+Missing/denied readings and malformed parsed proc fields remain null/absent
+with explicit errors rather than zero. Sysfs readings remain raw strings;
+no parser silently turns unexpected text into a numeric value. Process identity is bound to PID plus start ticks and checked before
 and after each snapshot: reuse discards mixed context; exit/permission loss
-terminates collection. Thread exit reports the missing record without dropping
-other threads. A finish status of `process_unavailable` is partial context, not
+terminates collection. Thread exit or reuse discards that record without dropping other threads;
+thread identity is checked around its stat/status reads. A finish status of `process_unavailable` is partial context, not
 a promise that the requested sample count completed. An empty initial capture
 or PID reuse returns nonzero. Host counters are read sequentially, not as one
 atomic snapshot.

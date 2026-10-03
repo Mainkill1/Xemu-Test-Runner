@@ -78,6 +78,12 @@ def capture(pid, expected_start, proc=Path('/proc'), sysfs=Path('/sys'), include
             except (KeyError, ValueError):
                 thread[destination] = None
                 errors.append(f'{task}/status: unavailable {source}')
+        final_thread = process_stat(task / 'stat', errors)
+        if final_thread is None:
+            continue
+        if (final_thread['pid'], final_thread['startTicks']) != (stat['pid'], stat['startTicks']):
+            errors.append(f'{task}: thread identity changed during capture')
+            continue
         threads.append(thread)
     result['threads'] = threads
     policies = {}
