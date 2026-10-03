@@ -21,7 +21,8 @@ internal sealed class AgentFixture : IAsyncDisposable
     public RunnerState State { get; } = new();
     public HttpClient Client { get; }
 
-    public AgentFixture(Action<HttpOptions>? configureHttp = null)
+    public AgentFixture(Action<HttpOptions>? configureHttp = null,
+        Action<PreflightOptions>? configurePreflight = null)
     {
         Paths = new RunnerPaths(Path.Combine(Root, "runner.json"), Root,
             Path.Combine(Root, "Pending"), Path.Combine(Root, "Testing"),
@@ -36,10 +37,12 @@ internal sealed class AgentFixture : IAsyncDisposable
         probe.Stop();
         var http = new HttpOptions { BindAddress = "127.0.0.1", Port = port };
         configureHttp?.Invoke(http);
+        var preflight = new PreflightOptions { MinimumFreeSpaceBytes = 0 };
+        configurePreflight?.Invoke(preflight);
         var server = new EmbeddedHttpServer(http, new UiOptions(), Paths, State,
             new JobQueue(new RunnerConfig(), Paths), _control, () => _stop.Cancel())
         {
-            Reliability = new ReliabilityOptions { Preflight = new PreflightOptions { MinimumFreeSpaceBytes = 0 } }
+            Reliability = new ReliabilityOptions { Preflight = preflight }
         };
         State.SetPhase("idle");
         _server = server.RunAsync(_stop.Token);

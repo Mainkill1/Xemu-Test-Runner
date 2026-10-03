@@ -179,6 +179,14 @@ internal sealed partial class AgentJobStore
                 foreach (var attempt in campaign.Plan.Attempts)
                 {
                     var current = ObserveXisoAttempt(attempt);
+                    if (current.State == "failed")
+                    {
+                        var detail = current.Error ?? "The attempt failed before execution.";
+                        SaveXisoCampaign(campaign with {
+                            Error = ClipXisoError($"Attempt {current.Id} failed before execution: {detail}")
+                        });
+                        return;
+                    }
                     if (current.Terminal) continue;
                     unfinished = true;
                     if (current.State is not ("uncreated" or "uploaded")) return;
