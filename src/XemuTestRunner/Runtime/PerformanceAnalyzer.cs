@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using XemuTestRunner.Config;
@@ -163,7 +162,7 @@ public static class PerformanceAnalyzer
             Metric("guest/interval_p99_ms", frames.IntervalsMs.P99, "ms", "lower");
             Metric("guest/interval_samples", frames.IntervalsMs.Count, "samples", "neutral");
         }
-        var profileHash = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(definition, ConfigLoader.JsonOptions))).ToLowerInvariant();
+        var profileHash = JsonIdentity.Hash(definition);
         var report = new PerformanceReport(1, profileHash, definition, monitoring, flips, frames, receipts, errors);
         AtomicJson.Write(Path.Combine(resultDirectory, "performance.json"), report);
         return new(report, checks, measurements);

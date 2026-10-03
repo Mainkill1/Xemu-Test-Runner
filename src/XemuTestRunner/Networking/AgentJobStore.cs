@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 using XemuTestRunner.Config;
 using XemuTestRunner.Queue;
@@ -321,8 +320,7 @@ internal sealed partial class AgentJobStore
     private static bool IsId(string? id) => id is { Length: >= 1 and <= 64 } &&
         id[0] != '-' && id.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '-');
     private static string Quote(string value) => "\"" + value + "\"";
-    private static string HashJson(object value) => Convert.ToHexString(SHA256.HashData(
-        JsonSerializer.SerializeToUtf8Bytes(value, ConfigLoader.JsonOptions))).ToLowerInvariant();
+    private static string HashJson(object value) => JsonIdentity.Hash(value);
 
     private static T ReadJson<T>(string path)
     {

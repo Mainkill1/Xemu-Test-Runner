@@ -17,7 +17,7 @@ The response returns `id`, `revision`, counts and a detail URL, never the expand
 
 Default `buildFiles` contains only the package's executable. For builds with replaceable DLLs/assets, explicitly declare their package-relative paths in the bake request. Paths must already be in the source manifest. Runtime-state seeds cannot be replacement slots. Adding dependencies or changing fixed workload/config/assertions requires a new baked definition.
 
-`GET /api/v1/tests?limit=10&offset=0` lists compact definitions and `nextOffset`. `GET /api/v1/tests/{id}/{revision}` returns the summary and build slot paths. `?view=definition` opts into the full stored definition; it is subject to bulk-transfer policy. Discovery advertises `pinnedTests` and `payloadReuse`; focused help is at `/api/v1/help?topic=tests`.
+`GET /api/v1/tests?limit=10&offset=0` lists compact definitions and `nextOffset`. Definitions that fail their immutable identity check are omitted from `items` and reported in the bounded `issues` array, so automation cannot select a corrupt catalog entry. `GET /api/v1/tests/{id}/{revision}` returns the summary and build slot paths. `?view=definition` opts into the full stored definition; it is subject to bulk-transfer policy. Discovery advertises `pinnedTests` and `payloadReuse`; focused help is at `/api/v1/help?topic=tests`.
 
 ## Create an attempt without sending its plan
 

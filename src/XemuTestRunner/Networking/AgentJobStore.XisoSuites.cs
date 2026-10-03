@@ -131,7 +131,7 @@ internal sealed partial class AgentJobStore
                 if (File.Exists(path))
                 {
                     var current = ReadXisoSuite(request.Id);
-                    if (current.Revision != revision) throw Conflict("xiso_suite_conflict", "This suite name already pins different media, defaults or template.", "Register a new name; existing campaigns keep their original suite.");
+                    if (!JsonIdentity.Matches(data, current.Revision)) throw Conflict("xiso_suite_conflict", "This suite name already pins different media, defaults or template.", "Register a new name; existing campaigns keep their original suite.");
                     return XisoSuiteView(current);
                 }
                 var value = new XisoSuite(revision, data, DateTimeOffset.UtcNow);
@@ -232,7 +232,7 @@ internal sealed partial class AgentJobStore
         var path = XisoSuitePath(id);
         if (!File.Exists(path)) throw new AgentRequestException(404, "xiso_suite_not_found", "Unknown XISO suite.", "Register a pinned base template first.");
         var value = ReadJson<XisoSuite>(path);
-        if (value.Data.Id != id || HashJson(value.Data) != value.Revision) throw new InvalidDataException("Stored XISO suite identity mismatch.");
+        if (value.Data.Id != id || !JsonIdentity.Matches(value.Data, value.Revision)) throw new InvalidDataException("Stored XISO suite identity mismatch.");
         return value;
     }
     private static object XisoSuiteView(XisoSuite suite) => new {
