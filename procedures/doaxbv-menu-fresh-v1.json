@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "doaxbv-menu-fresh-v1",
+  "title": "Dead or Alive Xtreme Beach Volleyball",
+  "description": "Fresh boot; 90 seconds before first A, 5 seconds before second A. Confirm the resulting menu on both rigs before balanced measurement.",
+  "planPrefix": [
+    {
+      "type": "wait",
+      "delayMs": 90000
+    },
+    {
+      "type": "button",
+      "button": "A",
+      "durationMs": 100
+    },
+    {
+      "type": "wait",
+      "delayMs": 5000
+    },
+    {
+      "type": "button",
+      "button": "A",
+      "durationMs": 100
+    },
+    {
+      "type": "segment_start",
+      "name": "stationary-start"
+    }
+  ],
+  "measurementMs": 30000,
+  "minimumFrameSamples": 160
+}
