@@ -154,8 +154,20 @@ public sealed class XemuControlManager : IDisposable
     public async Task RefreshPauseStateAsync(CancellationToken cancellationToken)
     {
         var status = await QueryStatusAsync(cancellationToken).ConfigureAwait(false);
-        var paused = status.TryGetProperty("status", out var value) &&
-            value.GetString()?.Equals("paused", StringComparison.OrdinalIgnoreCase) == true;
+        if (status.ValueKind != JsonValueKind.Object ||
+            !status.TryGetProperty("status", out var stateValue) || stateValue.ValueKind != JsonValueKind.String ||
+            string.IsNullOrEmpty(stateValue.GetString()) ||
+            !status.TryGetProperty("running", out var runningValue) ||
+            runningValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+            throw new InvalidDataException("QMP query-status must provide a nonempty status string and a running boolean.");
+
+        var state = stateValue.GetString()!;
+        var running = runningValue.GetBoolean();
+        var pausedState = state.Equals("paused", StringComparison.OrdinalIgnoreCase) ||
+            state.Equals("prelaunch", StringComparison.OrdinalIgnoreCase);
+        if ((pausedState && running) || (state.Equals("running", StringComparison.OrdinalIgnoreCase) && !running))
+            throw new InvalidDataException("QMP query-status returned contradictory status and running fields.");
+        var paused = pausedState && !running;
 
         lock (_gate)
         {

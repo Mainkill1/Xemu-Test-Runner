@@ -1,0 +1,11 @@
+# StartPaused prelaunch state
+
+A Windows diagnostic job launched xemu with the runner's `StartPaused` setting. The owned QMP endpoint reported `status: prelaunch, running: false`, but the runner recognized only the `paused` state. Initialization therefore reported that xemu had not remained paused, before attaching managed diagnostics or executing the job plan.
+
+Pause-state refresh now accepts nonrunning `prelaunch` and `paused`. It requires a nonempty status string and a boolean `running` field, and rejects the explicit contradictions `prelaunch/true`, `paused/true`, and `running/false`. Validation happens before cached state or resume waiters change. Other valid states retain their existing classification. Managed resume still sends QMP `cont`; no launch flags or ownership checks change.
+
+The new checks exercise the real control manager and QMP client against a local protocol fixture. They cover initial states, malformed and contradictory replies while a delay is paused, managed resume, and a running refresh that releases the delay. The existing process integration fixture now returns `prelaunch/false` for `-S`, then follows the plan through resume, wait, pause, resume and quit. Before the fix, the focused checks passed 13 of 27; afterward they pass all 27. The full RunnerChecks suite also passes with no failures and the Release build has no warnings.
+
+The original native failure is preserved separately as run `20261014-232002940-6dd1b2f44cad4e32a7d3e9eac5850b35`. These host checks do not establish a successful native retry, debugger capture or performance qualification. A native retry must use a new job ID and retain its own result.
+
+For the Windows lab deployment, stop the idle runner through the existing operator procedure, retain the old executable/package and its SHA-256, and replace only the reviewed Release runner files. Preserve the current configuration, USER desktop scheduled task, its unlimited execution-time setting and the launch arguments. Restart the same task and verify the reported source revision, desktop identity and idle status before submitting probe v2 through HTTP. If startup or the probe fails, preserve that result, stop the idle replacement and restore the retained package; do not change the configuration or bypass managed pause handling.

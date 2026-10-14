@@ -1,6 +1,7 @@
 var checks = new List<(string Name, Func<Task> Run)>();
 OperationObservationChecks.Register(checks);
 FakeQmpShutdownChecks.Register(checks);
+QmpPauseStateChecks.Register(checks);
 var failures = 0;
 foreach (var (name, run) in checks)
 {

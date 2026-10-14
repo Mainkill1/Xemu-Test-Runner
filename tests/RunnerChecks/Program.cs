@@ -1500,7 +1500,7 @@ static async Task ServeReadinessAfterTimeoutAsync(TcpListener listener, Cancella
             await writer.WriteLineAsync(JsonSerializer.Serialize(new
             {
                 id,
-                @return = new { status = "paused" }
+                @return = new { status = "paused", running = false }
             }));
         }
     }
