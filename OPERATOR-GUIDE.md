@@ -4,6 +4,11 @@ A foreground C#/.NET 10 and Spectre.Console.Cli application for Windows/Linux xe
 
 **Validation status:** a warning-free release build, both self-contained target publishes, and browser fixtures pass; the regression/process suite passes on Linux, native Windows, and Steam Deck. Real xemu QMP/telemetry/remote-HTTP runs pass on Windows and Steam Deck, and native `perf` capture passes on Steam Deck. See [validation](docs/VALIDATION.md) for exact coverage, measured monitoring overhead, and remaining limits.
 
+Use the [game testing workflow](docs/GAME-TESTING-WORKFLOW.md) when preparing
+title profiles or collecting performance results. It defines candidate-specific
+HDD/key provenance, scene readiness, release measurement policy, attached job
+templates, and the record preflight.
+
 ## Build and start
 
 ```sh

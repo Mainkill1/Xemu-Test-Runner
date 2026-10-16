@@ -1,0 +1,76 @@
+{
+  "id": "candidate-game-seed-authoring-v1",
+  "files": [],
+  "job": {
+    "id": "candidate-game-seed-authoring-v1",
+    "targetOs": "linux",
+    "executable": "xemu",
+    "expectedExecutableSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "arguments": ["-config_path", "{packageDir}/xemu.toml", "-m", "64", "-no-shutdown"],
+    "workingDirectory": ".",
+    "launchMode": "direct",
+    "timeoutSeconds": 1200,
+    "startPaused": false,
+    "requireInput": true,
+    "requiredFiles": ["xemu", "xemu.toml", "flash.bin", "state/eeprom.bin"],
+    "inputs": [
+      {"path": "xemu", "hash": true, "expectedSha256": "0000000000000000000000000000000000000000000000000000000000000000", "role": "emulator"},
+      {"path": "flash.bin", "hash": true, "expectedSha256": "0000000000000000000000000000000000000000000000000000000000000000", "role": "candidate"},
+      {"path": "state/eeprom.bin", "hash": true, "expectedSha256": "0000000000000000000000000000000000000000000000000000000000000000", "role": "key-domain"}
+    ],
+    "tags": ["state-authoring", "release-xemu", "not-a-benchmark"],
+    "operations": {
+      "mode": "diagnostic",
+      "allowDiagnostics": false,
+      "allowManualInput": true,
+      "allowPauseResume": true,
+      "allowPreview": true,
+      "allowBulkTransfers": false
+    },
+    "controllerInput": {
+      "backend": "native-os-gamepad",
+      "controllerIndex": 0,
+      "mappingProfile": "runner-xbox-port1-v1"
+    },
+    "plan": [
+      {"type": "require_input"},
+      {"type": "wait", "delayMs": 30000},
+      {"type": "button", "button": "A", "durationMs": 100},
+      {"type": "wait", "delayMs": 10000},
+      {"type": "screenshot", "name": "authoring-checkpoint-01"},
+      {"type": "button", "button": "A", "durationMs": 100},
+      {"type": "wait", "delayMs": 10000},
+      {"type": "screenshot", "name": "authoring-checkpoint-02"},
+      {"type": "wait", "delayMs": 60000},
+      {"type": "screenshot", "name": "authoring-final"},
+      {"type": "quit"}
+    ],
+    "runtimeState": {
+      "enabled": true,
+      "files": [
+        {"source": "state/eeprom.bin", "destination": "eeprom.bin", "expectedSha256": "0000000000000000000000000000000000000000000000000000000000000000"}
+      ],
+      "diskAssets": [
+        {"assetId": "clean-fatx-seed-v1", "expectedSha256": "0000000000000000000000000000000000000000000000000000000000000000", "destination": "hdd.qcow2", "retention": "keep"}
+      ],
+      "keepOnSuccess": true,
+      "keepOnFailure": true,
+      "isolation": {
+        "cacheMode": "cold",
+        "cacheShaders": false,
+        "driverCache": "mesa",
+        "allowUncontrolledDriverCache": false,
+        "requirePrivateGuestState": true,
+        "maximumBytes": 536870912,
+        "maximumFiles": 8192,
+        "deadlineSeconds": 30,
+        "readOnlyAssets": [
+          {"field": "bootrom_path", "assetId": "candidate-bootrom-v1", "expectedSha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+          {"field": "dvd_path", "assetId": "game-readonly-v1", "expectedSha256": "0000000000000000000000000000000000000000000000000000000000000000"}
+        ]
+      }
+    },
+    "workload": {"requirePlanCompletion": true},
+    "experiment": {}
+  }
+}

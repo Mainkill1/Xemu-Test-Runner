@@ -374,6 +374,7 @@ Start with `GET /api/v1/health` for liveness and `GET /api/v1/agent?view=summary
 | Small status replies and selected evidence | [Observations](docs/AGENT-OBSERVATIONS.md), [evidence](docs/AGENT-EVIDENCE.md) |
 | Crash collection and ZIP retention | [Crash reports](docs/CRASH-REPORTS.md) |
 | Correctness contracts and Linux capture limits | [Experiment contracts](docs/TRUSTWORTHY-EXPERIMENTS.md), [Steam Deck](docs/STEAM_DECK.md) |
+| Author and qualify repeatable game tests | [Game testing workflow](docs/GAME-TESTING-WORKFLOW.md) |
 | Advanced client and initial package authoring | [Lower-level client](docs/AGENT-CLIENT.md), [test library](docs/AGENT-TEST-LIBRARY.md) |
 
 The lower-level `runner_api.py run`, `submit`, `retry` and `submit-draft` commands **authorize execution**. They are not substitutes for upload-only `runner_tests.py upload`.
