@@ -1,0 +1,105 @@
+{
+  "id": "candidate-game-release-run-01",
+  "files": [],
+  "job": {
+    "id": "candidate-game-release-run-01",
+    "targetOs": "linux",
+    "executable": "xemu",
+    "expectedExecutableSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "arguments": ["-config_path", "{packageDir}/xemu.toml", "-m", "64", "-serial", "file:{resultDir}/serial.log", "-no-shutdown"],
+    "workingDirectory": ".",
+    "launchMode": "direct",
+    "timeoutSeconds": 600,
+    "startPaused": false,
+    "requireInput": true,
+    "requiredFiles": ["xemu", "xemu.toml", "flash.bin", "state/eeprom.bin"],
+    "inputs": [
+      {"path": "xemu", "hash": true, "expectedSha256": "0000000000000000000000000000000000000000000000000000000000000000", "role": "emulator"},
+      {"path": "flash.bin", "hash": true, "expectedSha256": "0000000000000000000000000000000000000000000000000000000000000000", "role": "candidate"},
+      {"path": "state/eeprom.bin", "hash": true, "expectedSha256": "0000000000000000000000000000000000000000000000000000000000000000", "role": "key-domain"}
+    ],
+    "tags": ["game-release-performance", "64MB", "VULKAN"],
+    "operations": {
+      "mode": "benchmark",
+      "allowDiagnostics": false,
+      "allowManualInput": false,
+      "allowPauseResume": false,
+      "allowPreview": false,
+      "allowBulkTransfers": false
+    },
+    "controllerInput": {
+      "backend": "native-os-gamepad",
+      "controllerIndex": 0,
+      "mappingProfile": "runner-xbox-port1-v1"
+    },
+    "plan": [
+      {"type": "require_input"},
+      {"type": "button", "button": "A", "durationMs": 100},
+      {"type": "wait", "delayMs": 10000},
+      {
+        "type": "wait_for_scene",
+        "condition": {
+          "name": "measurement-scene",
+          "scope": "result",
+          "path": "screenshots/measurement-start.png",
+          "expectedImageDHash": "0123456789abcdef",
+          "maximumImageHammingDistance": 8
+        },
+        "timeoutMs": 120000,
+        "pollIntervalMs": 1000
+      },
+      {"type": "segment_start", "name": "game-window"},
+      {"type": "wait", "delayMs": 60000},
+      {"type": "screenshot", "name": "measurement-end"},
+      {"type": "segment_end", "name": "game-window"},
+      {"type": "quit"}
+    ],
+    "runtimeState": {
+      "enabled": true,
+      "files": [
+        {"source": "state/eeprom.bin", "destination": "eeprom.bin", "expectedSha256": "0000000000000000000000000000000000000000000000000000000000000000"}
+      ],
+      "diskAssets": [
+        {"assetId": "candidate-game-profile-v1", "expectedSha256": "0000000000000000000000000000000000000000000000000000000000000000", "destination": "hdd.qcow2", "retention": "deleteAfterEvidence"}
+      ],
+      "keepOnSuccess": false,
+      "keepOnFailure": true,
+      "isolation": {
+        "cacheMode": "cold",
+        "cacheShaders": false,
+        "driverCache": "mesa",
+        "allowUncontrolledDriverCache": false,
+        "requirePrivateGuestState": true,
+        "maximumBytes": 536870912,
+        "maximumFiles": 8192,
+        "deadlineSeconds": 30,
+        "readOnlyAssets": [
+          {"field": "bootrom_path", "assetId": "candidate-bootrom-v1", "expectedSha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+          {"field": "dvd_path", "assetId": "game-readonly-v1", "expectedSha256": "0000000000000000000000000000000000000000000000000000000000000000"}
+        ]
+      }
+    },
+    "workload": {
+      "correctnessChecks": [
+        {"name": "measurement-scene", "scope": "result", "path": "screenshots/measurement-start.png", "mustExist": true, "expectedImageDHash": "0123456789abcdef", "maximumImageHammingDistance": 8},
+        {"name": "measurement-end-visible", "scope": "result", "path": "screenshots/measurement-end.png", "mustExist": true, "minimumBytes": 1000, "minimumNonBlackPixelRatio": 0.02, "nonBlackPixelThreshold": 96}
+      ],
+      "evidenceRequirements": [
+        {"name": "segments", "scope": "result", "path": "segments.jsonl", "mustExist": true, "minimumBytes": 20}
+      ],
+      "minimumMetricSamples": 55,
+      "requirePlanCompletion": true,
+      "analysis": {
+        "segment": "game-window",
+        "metricsPath": "metrics.csv",
+        "guestFlipsPath": "guest-flips.log",
+        "guestFramesPath": "guest-frames.log",
+        "flipTailSamples": 5,
+        "frameTailSeconds": 55,
+        "minimumCpuSamples": 55,
+        "minimumFrameSamples": 10
+      }
+    },
+    "experiment": {}
+  }
+}

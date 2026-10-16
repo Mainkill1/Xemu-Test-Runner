@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "purpose": "release-acceptance",
+  "title": "Example game",
+  "host": {
+    "runnerUrl": "http://TEST-HOST:9368",
+    "platform": "linux",
+    "renderer": "vulkan",
+    "memoryMiB": 64
+  },
+  "identity": {
+    "bios": {"sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    "xemu": {"sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    "bootrom": {"assetId": "candidate-bootrom-v1", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    "eeprom": {"sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    "dvd": {"assetId": "game-readonly-v1", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    "hdd": {
+      "assetId": "candidate-game-profile-v1",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "origin": "authored-on-candidate",
+      "originJobId": "candidate-game-seed-authoring-v1",
+      "biosSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "eepromSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "requiresCandidateKeys": true
+    }
+  },
+  "route": {
+    "inputTransport": "native-os-gamepad",
+    "guestConsumptionProof": "wait_for_scene",
+    "scene": {
+      "path": "screenshots/measurement-start.png",
+      "expectedImageDHash": "0123456789abcdef",
+      "maximumImageHammingDistance": 8
+    }
+  },
+  "measurement": {
+    "build": "release",
+    "instrumented": false,
+    "segment": "game-window",
+    "seconds": 60,
+    "repeats": 2
+  }
+}

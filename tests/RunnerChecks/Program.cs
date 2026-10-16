@@ -68,6 +68,26 @@ var root = Path.Combine(Path.GetTempPath(), "xemu-runner-checks-" + Guid.NewGuid
 Directory.CreateDirectory(root);
 try
 {
+    await Check("attached game-test job templates match the runner schema", async () =>
+    {
+        var repository = FindRepositoryRoot();
+        foreach (var template in new[]
+        {
+            "release-game-measurement.request.example.json",
+            "profile-seed-authoring.request.example.json"
+        })
+        {
+            var source = Path.Combine(
+                repository, "docs", "game-testing", template);
+            using var document = JsonDocument.Parse(
+                await File.ReadAllTextAsync(source));
+            var jobJson = document.RootElement.GetProperty("job").GetRawText();
+            var package = Path.Combine(root, "documented-template-" + template);
+            Directory.CreateDirectory(package);
+            await File.WriteAllTextAsync(Path.Combine(package, "job.json"), jobJson);
+            _ = JobDefinition.LoadPackage(package);
+        }
+    });
     await Check("external screenshot accepts complete PNG from hung provider", async () =>
     {
         var directory = Path.Combine(root, "screenshot-complete-hang");
@@ -1564,4 +1584,18 @@ static async Task<JsonDocument> WaitForActiveRunAsync(HttpClient client, TimeSpa
         await Task.Delay(25, deadline.Token);
     }
     throw new TimeoutException("HTTP endpoint did not expose an active run.", last);
+}
+
+static string FindRepositoryRoot()
+{
+    for (var current = new DirectoryInfo(AppContext.BaseDirectory);
+         current is not null;
+         current = current.Parent)
+    {
+        if (File.Exists(Path.Combine(current.FullName, "Directory.Build.props")) &&
+            Directory.Exists(Path.Combine(current.FullName, "docs", "game-testing")))
+            return current.FullName;
+    }
+    throw new DirectoryNotFoundException(
+        "Could not locate the repository root containing the game-test attachments.");
 }
