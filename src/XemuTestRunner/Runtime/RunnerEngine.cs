@@ -334,6 +334,7 @@ public sealed class RunnerEngine
 
         TargetLaunch? launch = null;
         Process? process = null;
+        Process? targetProcess = null;
         using var tasksCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         using var logsCts = new CancellationTokenSource();
         using var activity = new RunActivity(resultDirectory);
@@ -659,10 +660,27 @@ public sealed class RunnerEngine
                 attempt.Phase = HasExited(process) ? "exited" : "running";
                 AttemptJournal.Write(package, attempt);
 
+                targetProcess = job.TargetProcess is null
+                    ? process
+                    : await OwnedTargetProcess.ResolveAsync(
+                        job.TargetProcess,
+                        package,
+                        resultDirectory,
+                        ct).ConfigureAwait(false);
+                AtomicJson.Write(Path.Combine(resultDirectory, "target-process.json"), new
+                {
+                    schemaVersion = 1,
+                    supervisorProcessId = process.Id,
+                    targetProcessId = targetProcess.Id,
+                    evidencePath = job.TargetProcess?.EvidencePath,
+                    executable = job.TargetProcess?.Executable ?? job.Executable,
+                    independentlyAttested = job.TargetProcess is not null
+                });
+
                 _state.BeginJob(
                     job.Id,
                     runId,
-                    process.Id,
+                    targetProcess.Id,
                     job.Operations);
                 _activity.Attach(runId, activity);
 
@@ -693,7 +711,7 @@ public sealed class RunnerEngine
                     gpuProviders =
                         telemetry.GpuProviders.ToArray();
                     telemetry.StartRecording(
-                        process,
+                        targetProcess,
                         Path.Combine(
                             resultDirectory,
                             "metrics.csv"));
@@ -706,7 +724,7 @@ public sealed class RunnerEngine
                 {
                     try
                     {
-                        _control.Begin(process, resultDirectory, qmpPort, controllerSession);
+                        _control.Begin(targetProcess, resultDirectory, qmpPort, controllerSession);
                         await _control.WaitUntilReadyAsync(ct).ConfigureAwait(false);
                         await _control.RefreshPauseStateAsync(ct).ConfigureAwait(false);
                         if (job.StartPaused && !_control.Snapshot().Paused)
@@ -730,7 +748,7 @@ public sealed class RunnerEngine
 
                 _diagnostics.Attach(
                     runId,
-                    process,
+                    targetProcess,
                     launch.RenderDoc,
                     resultDirectory,
                     job,
@@ -1148,6 +1166,8 @@ public sealed class RunnerEngine
                     await stderrFile.DisposeAsync().ConfigureAwait(false);
                 if (launch is not null)
                     await launch.DisposeAsync().ConfigureAwait(false);
+                if (targetProcess is not null && !ReferenceEquals(targetProcess, process))
+                    targetProcess.Dispose();
             }
         }
 
