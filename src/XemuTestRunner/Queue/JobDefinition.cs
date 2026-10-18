@@ -23,6 +23,8 @@ public sealed class JobDefinition
     public string? SnapshotName { get; set; }
     public bool StartPaused { get; set; }
     public bool RequireInput { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public TargetProcessDefinition? TargetProcess { get; set; }
     public List<DiagnosticRecipe> Diagnostics { get; set; } = [];
     public RuntimeStateDefinition RuntimeState { get; set; } = new();
     public List<InputIdentityDefinition> Inputs { get; set; } = [];
@@ -73,6 +75,13 @@ public sealed class JobDefinition
             throw new InvalidDataException("ExpectedExecutableSha256 must be 64 hexadecimal characters.");
         if (job.LaunchMode.Trim().ToLowerInvariant() is not ("direct" or "renderdoc"))
             throw new InvalidDataException("LaunchMode must be direct or renderdoc.");
+        if (job.TargetProcess is not null)
+        {
+            job.TargetProcess.Validate();
+            if (!job.LaunchMode.Equals("direct", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("TargetProcess currently requires direct launch mode.");
+            _ = ResolveInsidePackage(packageDirectory, job.TargetProcess.Executable);
+        }
         if (job.ControllerInput is not null)
         {
             job.ControllerInput.Validate();
@@ -359,6 +368,35 @@ public sealed class JobDefinition
         if (!full.StartsWith(root + Path.DirectorySeparatorChar, comparison) && !string.Equals(full, root, comparison))
             throw new InvalidDataException("Path escapes the job package: " + relativePath);
         return full;
+    }
+}
+
+public sealed class TargetProcessDefinition
+{
+    public string EvidencePath { get; set; } = "";
+    public string ProcessIdField { get; set; } = "xemu_pid";
+    public string ProcessStartTicksField { get; set; } = "xemu_start_ticks";
+    public string ExecutablePathField { get; set; } = "xemu_exe";
+    public string Executable { get; set; } = "";
+    public int TimeoutMs { get; set; } = 15000;
+
+    public void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(EvidencePath) || Path.IsPathRooted(EvidencePath))
+            throw new InvalidDataException("TargetProcess EvidencePath must be a relative result path.");
+        if (string.IsNullOrWhiteSpace(Executable))
+            throw new InvalidDataException("TargetProcess Executable is required.");
+        if (TimeoutMs is < 100 or > 60000)
+            throw new InvalidDataException("TargetProcess TimeoutMs must be between 100 and 60000.");
+        foreach (var field in new[] { ProcessIdField, ProcessStartTicksField, ExecutablePathField })
+        {
+            if (string.IsNullOrWhiteSpace(field) ||
+                field.Any(ch => !(char.IsAsciiLetterOrDigit(ch) || ch == '_')))
+                throw new InvalidDataException("TargetProcess field names may contain only ASCII letters, digits, and underscores.");
+        }
+        if (new[] { ProcessIdField, ProcessStartTicksField, ExecutablePathField }
+            .Distinct(StringComparer.Ordinal).Count() != 3)
+            throw new InvalidDataException("TargetProcess field names must be distinct.");
     }
 }
 

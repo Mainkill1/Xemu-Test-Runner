@@ -30,7 +30,7 @@ internal static class FakeXemuHost
             ?? throw new InvalidDataException("The fake xemu requires the runner-owned -qmp argument.");
         var endpoint = ParseEndpoint(qmp);
         var runtimeMs = int.Parse(ValueAfter(args, "--fake-runtime-ms") ?? "1000");
-        var paused = args.Contains("-S", StringComparer.Ordinal);
+        var state = args.Contains("-S", StringComparer.Ordinal) ? "prelaunch" : "running";
 
         using var lifetime = new CancellationTokenSource(runtimeMs);
         var listener = new TcpListener(endpoint.Address, endpoint.Port);
@@ -45,8 +45,8 @@ internal static class FakeXemuHost
                 var client = await listener.AcceptTcpClientAsync(lifetime.Token).ConfigureAwait(false);
                 clients.Add(HandleClientAsync(
                     client,
-                    () => paused,
-                    value => paused = value,
+                    () => state,
+                    value => state = value ? "paused" : "running",
                     () => lifetime.CancelAfter(50),
                     lifetime.Token));
             }
@@ -65,14 +65,14 @@ internal static class FakeXemuHost
 
     private static async Task HandleClientAsync(
         TcpClient client,
-        Func<bool> paused,
+        Func<string> state,
         Action<bool> setPaused,
         Action requestQuit,
         CancellationToken cancellationToken)
     {
         try
         {
-            await HandleClientCoreAsync(client, paused, setPaused, requestQuit, cancellationToken).ConfigureAwait(false);
+            await HandleClientCoreAsync(client, state, setPaused, requestQuit, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -84,7 +84,7 @@ internal static class FakeXemuHost
 
     private static async Task HandleClientCoreAsync(
         TcpClient client,
-        Func<bool> paused,
+        Func<string> state,
         Action<bool> setPaused,
         Action requestQuit,
         CancellationToken cancellationToken)
@@ -134,7 +134,7 @@ internal static class FakeXemuHost
                 object response = command switch
                 {
                     "qmp_capabilities" => new { },
-                    "query-status" => new { status = paused() ? "paused" : "running" },
+                    "query-status" => QueryStatus(),
                     "stop" => SetPause(true),
                     "cont" => SetPause(false),
                     _ => new { }
@@ -143,6 +143,12 @@ internal static class FakeXemuHost
                     JsonSerializer.Serialize(new { @return = response, id }).AsMemory(),
                     cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        object QueryStatus()
+        {
+            var currentState = state();
+            return new { status = currentState, running = currentState == "running" };
         }
 
         object SetPause(bool value)

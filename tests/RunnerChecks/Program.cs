@@ -178,6 +178,103 @@ try
         return Task.CompletedTask;
     });
 
+    await Check("owned target process evidence resolves the exact packaged child", async () =>
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var package = Path.Combine(root, "owned-target-package");
+        var result = Path.Combine(root, "owned-target-result");
+        Directory.CreateDirectory(package);
+        Directory.CreateDirectory(result);
+        var childPath = Path.Combine(package, "xemu");
+        File.Copy("/bin/sleep", childPath);
+        File.SetUnixFileMode(childPath, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        using var child = Process.Start(new ProcessStartInfo(childPath, "30")
+        {
+            UseShellExecute = false
+        }) ?? throw new IOException("Failed to start owned-target fixture.");
+        try
+        {
+            await File.WriteAllLinesAsync(
+                Path.Combine(result, "owned-target.txt"),
+                [
+                    $"xemu_pid={child.Id}",
+                    $"xemu_start_ticks={child.StartTime.ToUniversalTime().Ticks}",
+                    $"xemu_exe={childPath}"
+                ]);
+            var job = new JobDefinition
+            {
+                TargetProcess = new TargetProcessDefinition
+                {
+                    EvidencePath = "owned-target.txt",
+                    Executable = "xemu"
+                }
+            };
+
+            using var resolved = await OwnedTargetProcess.ResolveAsync(
+                job.TargetProcess, package, result, CancellationToken.None);
+
+            Assert(resolved.Id == child.Id, "Resolver selected a process other than the attested child.");
+        }
+        finally
+        {
+            try { child.Kill(); } catch (InvalidOperationException) { }
+            await child.WaitForExitAsync();
+        }
+    });
+
+    await Check("owned target process evidence rejects a mismatched start identity", async () =>
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var package = Path.Combine(root, "owned-target-mismatch-package");
+        var result = Path.Combine(root, "owned-target-mismatch-result");
+        Directory.CreateDirectory(package);
+        Directory.CreateDirectory(result);
+        var childPath = Path.Combine(package, "xemu");
+        File.Copy("/bin/sleep", childPath);
+        File.SetUnixFileMode(childPath, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        using var child = Process.Start(new ProcessStartInfo(childPath, "30")
+        {
+            UseShellExecute = false
+        }) ?? throw new IOException("Failed to start owned-target mismatch fixture.");
+        try
+        {
+            await File.WriteAllLinesAsync(
+                Path.Combine(result, "owned-target.txt"),
+                [
+                    $"xemu_pid={child.Id}",
+                    $"xemu_start_ticks={child.StartTime.ToUniversalTime().Ticks + 1}",
+                    $"xemu_exe={childPath}"
+                ]);
+            var definition = new TargetProcessDefinition
+            {
+                EvidencePath = "owned-target.txt",
+                Executable = "xemu",
+                TimeoutMs = 150
+            };
+
+            try
+            {
+                using var resolved = await OwnedTargetProcess.ResolveAsync(
+                    definition, package, result, CancellationToken.None);
+                throw new Exception("Mismatched process start identity was accepted.");
+            }
+            catch (InvalidDataException ex)
+            {
+                Assert(ex.Message.Contains("start", StringComparison.OrdinalIgnoreCase),
+                    "Mismatch did not identify the failed process-start attestation.");
+            }
+        }
+        finally
+        {
+            try { child.Kill(); } catch (InvalidOperationException) { }
+            await child.WaitForExitAsync();
+        }
+    });
+
     await Check("preflight validates exact executable hash", async () =>
     {
         var package = Path.Combine(root, "package"); Directory.CreateDirectory(package);
@@ -1500,7 +1597,7 @@ static async Task ServeReadinessAfterTimeoutAsync(TcpListener listener, Cancella
             await writer.WriteLineAsync(JsonSerializer.Serialize(new
             {
                 id,
-                @return = new { status = "paused" }
+                @return = new { status = "paused", running = false }
             }));
         }
     }
