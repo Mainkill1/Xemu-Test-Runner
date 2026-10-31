@@ -36,6 +36,36 @@ internal static class PerformanceAnalysisChecks
 
     public static void Register(List<(string Name, Func<Task> Run)> checks)
     {
+        checks.Add(("measurement markers retain native clock anchors for source alignment", async () =>
+        {
+            if (!OperatingSystem.IsWindows() &&
+                !(OperatingSystem.IsLinux() && Environment.Is64BitProcess)) return;
+            await using var host = new AgentFixture();
+            var root = Path.Combine(host.Paths.Results, "clock-markers");
+            Directory.CreateDirectory(root);
+            var before = System.Diagnostics.Stopwatch.GetTimestamp();
+            using (var timeline = new MeasurementTimeline(root))
+            {
+                timeline.Start("game");
+                timeline.End("game");
+            }
+            var elapsedUs = System.Diagnostics.Stopwatch.GetElapsedTime(before).TotalMicroseconds;
+            var markers = (await File.ReadAllLinesAsync(Path.Combine(root, "segments.jsonl")))
+                .Select(line => JsonSerializer.Deserialize<JsonElement>(line)).ToArray();
+            Require(markers.Length == 2, "The complete segment must retain both boundary markers.");
+            var domain = OperatingSystem.IsWindows() ? "windows-qpc" : "linux-clock-monotonic";
+            foreach (var marker in markers)
+            {
+                Require(marker.TryGetProperty("ClockDomain", out var clock) && clock.GetString() == domain,
+                    "A native source-clock domain is missing from the measurement marker.");
+                Require(marker.TryGetProperty("HostTimestampUs", out var timestamp) && timestamp.GetInt64() >= 0,
+                    "A nonnegative absolute host timestamp is missing from the measurement marker.");
+            }
+            var start = markers[0].GetProperty("HostTimestampUs").GetInt64();
+            var end = markers[1].GetProperty("HostTimestampUs").GetInt64();
+            Require(end >= start && end - start <= elapsedUs + 1,
+                "Native marker timestamps must be ordered microseconds within the observed operation.");
+        }));
         checks.Add(("saved analysis computes segment statistics weighted cadence and interpolated frame tails", async () =>
         {
             await using var host = new AgentFixture();
