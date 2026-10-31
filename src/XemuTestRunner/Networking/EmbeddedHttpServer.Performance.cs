@@ -43,7 +43,7 @@ public sealed partial class EmbeddedHttpServer
         if (!Directory.Exists(Path.GetDirectoryName(reportPath)))
             throw new AgentRequestException(404, "run_not_found", "No evidence directory has this run ID.", "Use an existing run ID, not a request ID.");
         var report = File.Exists(reportPath) ? ReadPerformanceDocument<PerformanceReport>(reportPath, 65536) : null;
-        if (report is not null && (report.SchemaVersion != 1 || report.Sources is null || report.Errors is null))
+        if (report is not null && (report.SchemaVersion is not (1 or 2) || report.Sources is null || report.Errors is null))
             throw new InvalidDataException("Saved performance report is invalid.");
         var outcome = _assessmentReader.Read(_paths.Results, id).Outcome;
         var identity = new RecordedEmulatorIdentity(null, null, "executable_identity_missing");
@@ -111,6 +111,15 @@ public sealed partial class EmbeddedHttpServer
             var d = frames.IntervalsMs;
             text.AppendLine($"| Frame mean / p50 / p95 / p99 | {N(d.Mean)} / {N(d.Median)} / {N(d.P95)} / {N(d.P99)} ms | {d.Count} samples; last {report.Profile.FrameTailSeconds} s |");
             text.AppendLine($"Frame source timestamps: {frames.FirstSampleUs}..{frames.LastSampleUs} us; zero intervals excluded: {frames.ZeroIntervals}.");
+        }
+        if (report.AlignedWindow is { } window)
+        {
+            var seconds = (window.EndUs - window.StartUs) / 1000000.0;
+            text.AppendLine($"Native source clock: {window.ClockDomain}; fixed host window {window.StartUs}..{window.EndUs} us.");
+            text.AppendLine($"Fixed-window guest events: {window.FrameEvents} / {N(seconds)} s = {N(window.FrameEvents / seconds)} fps; these are guest events, not host-presented frames.");
+            text.AppendLine($"Right-censored end gap: {N((window.EndUs - window.LastEventAtOrBeforeEndUs) / 1000.0)} ms; first event after window: {window.FirstEventAfterEndUs} us. This gap is not a completed frame latency.");
+            if (report.Flips is { WindowStartUs: { } flipStart, WindowEndUs: { } flipEnd })
+                text.AppendLine($"Complete flip-group source window: {flipStart}..{flipEnd} us.");
         }
         foreach (var error in report.Errors) text.AppendLine("Unavailable: " + error.Replace('\r', ' ').Replace('\n', ' '));
         text.AppendLine("Descriptive recorded metrics, not proof of correctness or statistical significance. Raw files remain separate evidence.");
