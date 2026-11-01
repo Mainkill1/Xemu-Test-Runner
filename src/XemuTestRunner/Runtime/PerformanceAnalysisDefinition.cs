@@ -6,6 +6,7 @@ namespace XemuTestRunner.Runtime;
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class PerformanceAnalysisDefinition
 {
+    internal const long QemuFlipIntervalSeconds = 5;
     public string Segment { get; set; } = "";
     public string MetricsPath { get; set; } = "metrics.csv";
     public string? GuestFlipsPath { get; set; }
@@ -14,6 +15,8 @@ public sealed class PerformanceAnalysisDefinition
     public int FrameTailSeconds { get; set; } = 30;
     public int MinimumCpuSamples { get; set; } = 1;
     public int MinimumFrameSamples { get; set; } = 1;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TimingMode { get; set; }
 
     public void Validate()
     {
@@ -22,10 +25,18 @@ public sealed class PerformanceAnalysisDefinition
         ValidatePath(MetricsPath);
         if (GuestFlipsPath is not null) ValidatePath(GuestFlipsPath);
         if (GuestFramesPath is not null) ValidatePath(GuestFramesPath);
+        if (TimingMode is not null && TimingMode != "qemu-realtime-segment-v1")
+            throw new InvalidDataException("Analysis.TimingMode must be qemu-realtime-segment-v1 or absent for descriptive analysis.");
+        if (TimingMode is not null && GuestFramesPath is null)
+            throw new InvalidDataException("Aligned QEMU analysis requires the frame source that binds its native clock and flip origin.");
         if (FlipTailSamples is < 1 or > 10000 || FrameTailSeconds is < 1 or > 3600 ||
             MinimumCpuSamples is < 1 or > 250000 || MinimumFrameSamples is < 1 or > 250000)
             throw new InvalidDataException("Analysis windows/sample requirements exceed their supported bounds.");
-        var paths = new[] { MetricsPath, GuestFlipsPath, GuestFramesPath }.Where(path => path is not null).ToArray();
+        if (TimingMode is not null && GuestFlipsPath is not null &&
+            FrameTailSeconds <= (FlipTailSamples + 1L) * QemuFlipIntervalSeconds)
+            throw new InvalidDataException("Aligned flip groups require a window longer than (FlipTailSamples + 1) * 5 seconds for nominal phase margin; use e.g. 30s/4 groups or 55s/5 groups. Actual source coverage is still required.");
+        var paths = new[] { MetricsPath, GuestFlipsPath, GuestFramesPath, TimingMode is null ? null : "segments.jsonl" }
+            .Where(path => path is not null).ToArray();
         if (paths.Distinct(StringComparer.OrdinalIgnoreCase).Count() != paths.Length)
             throw new InvalidDataException("Analysis sources must be distinct.");
     }

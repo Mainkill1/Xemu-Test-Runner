@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace XemuTestRunner.Runtime;
 
@@ -7,7 +8,9 @@ public sealed record MeasurementSegmentEvent(
     DateTimeOffset TimestampUtc,
     double ElapsedMs,
     string Action,
-    string Name);
+    string Name,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ClockDomain = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? HostTimestampUs = null);
 
 public sealed class MeasurementTimeline : IDisposable
 {
@@ -98,11 +101,14 @@ public sealed class MeasurementTimeline : IDisposable
 
     private void Write(string action, string name)
     {
+        var anchor = PerformanceClock.Capture();
         var evt = new MeasurementSegmentEvent(
             DateTimeOffset.UtcNow,
             Stopwatch.GetElapsedTime(_started).TotalMilliseconds,
             action,
-            name);
+            name,
+            anchor?.Domain,
+            anchor?.TimestampUs);
 
         _writer.WriteLine(JsonSerializer.Serialize(evt));
     }

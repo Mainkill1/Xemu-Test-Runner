@@ -11,6 +11,7 @@ else
     PerformanceIdentityChecks.Register(checks);
     EmulatorIdentityChecks.Register(checks);
     PerformanceAnalysisChecks.Register(checks);
+    AlignedPerformanceChecks.Register(checks);
     QueueHandoffChecks.Register(checks);
     CompletionWaitChecks.Register(checks);
     DiskAssetSchemaChecks.Register(checks);

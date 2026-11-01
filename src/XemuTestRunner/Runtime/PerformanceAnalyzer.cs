@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using XemuTestRunner.Config;
 using XemuTestRunner.Reliability;
@@ -9,12 +10,15 @@ namespace XemuTestRunner.Runtime;
 public sealed record SampleDistribution(int Count, double Mean, double Median, double Min, double Max, double P95, double P99);
 public sealed record MonitoringAnalysis(string Segment, int Rows, int MissingCpuSamples, int MissingDutySamples,
     SampleDistribution Cpu, SampleDistribution CollectorDuty, long Overruns);
-public sealed record FlipAnalysis(int Samples, long Frames, long ElapsedUs, double CadenceFps);
+public sealed record FlipAnalysis(int Samples, long Frames, long ElapsedUs, double CadenceFps,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? WindowStartUs = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? WindowEndUs = null);
 public sealed record FrameAnalysis(long WindowStartUs, long WindowEndUs, long FirstSampleUs, long LastSampleUs,
     int ZeroIntervals, SampleDistribution IntervalsMs);
 public sealed record PerformanceReport(int SchemaVersion, string ProfileSha256, PerformanceAnalysisDefinition Profile,
     MonitoringAnalysis? Monitoring, FlipAnalysis? Flips, FrameAnalysis? Frames,
-    IReadOnlyList<PerformanceSourceReceipt> Sources, IReadOnlyList<string> Errors)
+    IReadOnlyList<PerformanceSourceReceipt> Sources, IReadOnlyList<string> Errors,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] AlignedFrameWindow? AlignedWindow = null)
 {
     public bool Complete => Errors.Count == 0;
 }
@@ -24,9 +28,9 @@ public sealed record PerformanceEvaluation(PerformanceReport Report, IReadOnlyLi
 /// <summary>Post-exit analysis of already-collected artifacts; never a live sampler or an API-side raw scan.</summary>
 public static class PerformanceAnalyzer
 {
-    private const int MaximumSamples = 250000;
-    private static readonly Regex FlipLine = new(@"\Aelapsed_us=(\d+) frames=(\d+) fps=([0-9.]+)\z", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
-    private static readonly Regex FrameLine = new(@"\Atimestamp_us=(\d+) frame=(\d+) delta_us=(\d+)\z", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+    internal const int MaximumSamples = 250000;
+    internal static readonly Regex FlipLine = new(@"\Aelapsed_us=(\d+) frames=(\d+) fps=([0-9.]+)\z", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
+    internal static readonly Regex FrameLine = new(@"\Atimestamp_us=(\d+) frame=(\d+) delta_us=(\d+)\z", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 
     public static PerformanceEvaluation Evaluate(PerformanceAnalysisDefinition definition, string resultDirectory, CancellationToken ct)
     {
@@ -38,11 +42,12 @@ public static class PerformanceAnalyzer
         MonitoringAnalysis? monitoring = null;
         FlipAnalysis? flips = null;
         FrameAnalysis? frames = null;
+        AlignedFrameWindow? alignedWindow = null;
 
         void Source(string name, Action analyze)
         {
             try { ct.ThrowIfCancellationRequested(); analyze(); checks.Add(new("analysis:" + name, true, "evidence", "Complete bounded source analysis; see performance.json for windows and SHA-256.")); }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or FormatException or OverflowException or ArgumentException)
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or FormatException or OverflowException or ArgumentException or JsonException)
             {
                 var message = name + ": " + error.Message;
                 if (message.Length > 240) message = message[..240];
@@ -82,7 +87,14 @@ public static class PerformanceAnalyzer
             if (cpu.Count < definition.MinimumCpuSamples || duty.Count == 0) throw new InvalidDataException("Selected segment has insufficient CPU/duty samples.");
             monitoring = new(definition.Segment, selected, missingCpu, missingDuty, Distribution(cpu), Distribution(duty), overruns);
         });
-        if (definition.GuestFlipsPath is { } flipsPath) Source("flips", () =>
+        if (definition.TimingMode is not null) Source("aligned", () =>
+        {
+            var aligned = AlignedPerformanceAnalyzer.Analyze(definition, resultDirectory, receipts, ct);
+            flips = aligned.Flips;
+            frames = aligned.Frames;
+            alignedWindow = aligned.Window;
+        });
+        if (definition.TimingMode is null && definition.GuestFlipsPath is { } flipsPath) Source("flips", () =>
         {
             using var source = new PerformanceSource(resultDirectory, flipsPath, ct);
             var tail = new Queue<(long Elapsed, long Frames)>(); var ignored = 0;
@@ -108,7 +120,7 @@ public static class PerformanceAnalyzer
             if (!double.IsFinite(cadence)) throw new InvalidDataException("Cadence is outside numeric range.");
             flips = new(tail.Count, totalFrames, totalTime, cadence);
         });
-        if (definition.GuestFramesPath is { } framesPath) Source("frames", () =>
+        if (definition.TimingMode is null && definition.GuestFramesPath is { } framesPath) Source("frames", () =>
         {
             using var source = new PerformanceSource(resultDirectory, framesPath, ct);
             var tail = new Queue<(long Timestamp, long Delta)>();
@@ -162,8 +174,17 @@ public static class PerformanceAnalyzer
             Metric("guest/interval_p99_ms", frames.IntervalsMs.P99, "ms", "lower");
             Metric("guest/interval_samples", frames.IntervalsMs.Count, "samples", "neutral");
         }
+        if (alignedWindow is { } window)
+        {
+            var elapsedSeconds = (window.EndUs - window.StartUs) / 1000000.0;
+            Metric("guest/window_frame_events", window.FrameEvents, "frames", "neutral");
+            Metric("guest/window_elapsed_s", elapsedSeconds, "s", "neutral");
+            Metric("guest/window_cadence_fps", window.FrameEvents / elapsedSeconds, "fps", "higher");
+            Metric("guest/window_end_gap_ms", (window.EndUs - window.LastEventAtOrBeforeEndUs) / 1000.0, "ms", "lower");
+        }
         var profileHash = JsonIdentity.Hash(definition);
-        var report = new PerformanceReport(1, profileHash, definition, monitoring, flips, frames, receipts, errors);
+        var report = new PerformanceReport(definition.TimingMode is null ? 1 : 2,
+            profileHash, definition, monitoring, flips, frames, receipts, errors, alignedWindow);
         AtomicJson.Write(Path.Combine(resultDirectory, "performance.json"), report);
         return new(report, checks, measurements);
     }
@@ -180,13 +201,13 @@ public static class PerformanceAnalyzer
             throw new InvalidDataException("Metric must be a finite nonnegative number within its analysis range.");
         return value;
     }
-    private static long Integer(string text)
+    internal static long Integer(string text)
     {
         if (!long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var value) || value < 0 || value > 9007199254740991L)
             throw new InvalidDataException("Timing/counter value exceeds exact supported integer range.");
         return value;
     }
-    private static SampleDistribution Distribution(List<double> values)
+    internal static SampleDistribution Distribution(List<double> values)
     {
         if (values.Count == 0) throw new InvalidDataException("No samples.");
         values.Sort();
