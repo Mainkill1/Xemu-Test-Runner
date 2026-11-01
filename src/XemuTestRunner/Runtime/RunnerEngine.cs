@@ -1034,8 +1034,7 @@ public sealed class RunnerEngine
             }
 
             await SettleAsync(plan, "plan").ConfigureAwait(false);
-            if (plan is null ||
-                plan.IsCompletedSuccessfully ||
+            if (plan?.IsCompletedSuccessfully == true ||
                 _control.QuitRequested)
             {
                 planCompleted = true;
