@@ -107,6 +107,20 @@ await Check("live control failure still captures the fallback diagnostic", async
     Require(result.GetProperty("status").GetString() == "control_error", result.GetRawText());
     Require(File.Exists(captures), "Live control failure did not invoke the configured screenshot provider.");
     Require(File.Exists(Path.Combine(directory, "screenshots", "failure.png")), "Live failure diagnostic was lost.");
+    var completion = result.GetProperty("workload").GetProperty("Checks").EnumerateArray()
+        .Single(check => check.GetProperty("Name").GetString() == "plan_completion");
+    Require(!completion.GetProperty("Passed").GetBoolean(),
+        "Control initialization failed before the plan started, but its completion check passed.");
+    Require(result.GetProperty("assessment").GetProperty("Evidence").GetString() == "incomplete",
+        "An unstarted required plan was reported as complete evidence.");
+});
+await Check("control failure does not invent an execution requirement for an empty plan", async () =>
+{
+    var (result, _, _) = await Run("control-error-empty", "control-error-empty");
+    Require(result.GetProperty("status").GetString() == "control_error", result.GetRawText());
+    Require(!result.GetProperty("workload").GetProperty("Checks").EnumerateArray()
+        .Any(check => check.GetProperty("Name").GetString() == "plan_completion"),
+        "An empty plan acquired an execution requirement after a control failure.");
 });
 await Check("live plan failure still captures the fallback diagnostic", async () =>
 {
@@ -167,12 +181,14 @@ async Task<(JsonElement Result, string Directory, string Captures)> Run(string n
         "port1_connected = 1\n[input.bindings]\n" +
         "port1 = 'keyboard'\nport1_driver = 'usb-xbox-gamepad'\n" +
         "[perf]\ncache_shaders = true\n");
+    var controlFailure = mode is "control-error" or "control-error-empty";
     var job = new JobDefinition { Id = name, Executable = Path.GetFileName(Environment.ProcessPath!), Arguments = ["--target"],
-        TimeoutSeconds = 15, RequireInput = mode == "control-error",
-        RuntimeState = mode == "control-error" ? new() { Isolation = new() {
+        TimeoutSeconds = 15, RequireInput = controlFailure,
+        RuntimeState = controlFailure ? new() { Isolation = new() {
             CacheMode = "cold", CacheShaders = true, RequirePrivateGuestState = false
         } } : new(),
-        Plan = mode == "plan-error" ? [new JobStep { Type = "button", Button = "A", DurationMs = 10 }] :
+        Plan = mode == "control-error-empty" ? [] :
+            mode == "plan-error" ? [new JobStep { Type = "button", Button = "A", DurationMs = 10 }] :
             mode == "clean" ? [new JobStep { Type = "wait", DelayMs = 100 }, new JobStep { Type = "quit" }] :
             [new JobStep { Type = "wait", DelayMs = 10000 }] };
     await File.WriteAllTextAsync(Path.Combine(package, "job.json"), JsonSerializer.Serialize(job, ConfigLoader.JsonOptions));
